@@ -1,0 +1,122 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+## [0.1.0] - 2026-07-27
+
+First release. A streaming Gemini model provider for pi, built on Google's
+`agy` CLI, plus an MCP tool bridge that lets agy use pi's installed tools
+(memory, codegraph, Slack, Asana, web, peer delegation, etc.) instead of its
+own. Registers `antigravity/*` models in pi's `/model` picker and streams
+responses by polling the SQLite database agy writes and decoding its
+protobuf step payloads. No generated protobuf code, no native SQLite
+dependency.
+
+### Added
+
+#### Streaming provider
+
+- **Gemini provider for pi.** `antigravity/gemini-*` models appear in pi's
+  `/model` picker, discovered live from `agy models` (with a fallback catalog
+  when discovery fails). Picking one routes each turn through the provider.
+- **Real streaming.** A concurrent poll loop (200ms, `PRAGMA data_version`
+  coalescing) reads agy's conversation DB while agy is still running, so text
+  and tool activity arrive during the turn, not replayed at exit. Three
+  trailing polls catch the final flush; abort skips them for prompt cancel.
+- **Hand-rolled protobuf decoder** for agy's `step_payload` blobs: agent text
+  at field 20.1, tool calls at field 5.4 (name@2/9, input@3), title at 30.4.
+  Field numbers verified against real agy 1.1.7 databases and cross-checked
+  against the shindgew/agy-acp and shubzkothekar/antigravity-acp decoders.
+  Unknown fields are skipped per protobuf wire rules.
+- **Multi-turn conversations.** A pi session is bound to an agy conversation
+  id (persisted at `~/.pi/agent/antigravity-bridge/sessions.json`) and
+  resumed via `--conversation <id>`. agy keeps its own history; only the latest
+  user message is sent each turn. Atomic, dirty-key-merged writes survive
+  concurrent pi processes.
+- **`/agy` slash command** with status, an interactive picker (mode,
+  permissions, narration), and direct subcommands. Settings persist to
+  `~/.pi/agent/antigravity-bridge/config.json`.
+- **Narration filter** drops agy's "I will ..." planning chunks so the
+  transcript reads as prose. On by default; toggle via `/agy narration`.
+  Line-buffered so split deltas don't leak tails ("...ile now.").
+- **Configurable execution mode** (`accept-edits` default, or `plan`) and
+  permissions, overridable by `AGY_MODE` / `AGY_FILTER_NARRATION` /
+  `AGY_SKIP_PERMISSIONS` env vars.
+- **`--dangerously-skip-permissions` passed by default.** Technically
+  required: `accept-edits` auto-approves file edits but not shell commands,
+  so a `run_command` would otherwise hang on an unanswerable `y/n` prompt in
+  non-interactive `-p` mode (upstream google-antigravity/antigravity-cli#318).
+  Consistent with pi's own no-confirmation-gate design.
+- **Conversation-id discovery** by snapshot/diff of agy's conversations dir
+  (agy `-p` never prints the id). Refuses to bind on ambiguity.
+- **Tool-activity visibility.** agy's closed tool loop surfaces in pi's
+  thinking panel as `[agy tool: <name>]`. agy edits/commands land on disk;
+  pi's tools never fire (architectural wall, documented).
+- **Tests.** Unit tests for the protobuf decoder and narration filter; a
+  deterministic fake-agy test that asserts events stream during the run and
+  that abort returns promptly (guards the "provider did not actually stream"
+  regression class).
+
+#### MCP tool bridge (agy -> pi tools)
+
+- **`AskAntigravity` tool** is now provided by this extension (ported from
+  `pi-ask-antigravity` v1.1.0). The bridge ships BOTH the streaming
+  antigravity provider AND the one-shot delegation tool - the same combined
+  shape as `pi-claude-bridge`. Model aliases (flash/pro/gemini, tier/version
+  qualifiers), one-shot vs continued-conversation modes, and the `mode`/
+  `digest` params are all preserved.
+- **Cross-extension clash avoidance.** When both this bridge and
+  `pi-ask-antigravity` are installed, the bridge wins and
+  `pi-ask-antigravity` silently registers nothing (it detects the bridge via
+  package resolution, order-independent). The `AskAntigravity` tool is never
+  duplicated.
+- **`/agy` gains `model` and `thinking` subcommands + picker rows** for the
+  tool's defaults (alias flash/pro/gemini; tier low/medium/high). Persisted
+  alongside the provider settings in `config.json`.
+- **MCP tool bridge.** agy runs as pi's Gemini provider; the bridge exposes
+  pi's installed tools to agy over a Streamable HTTP MCP server so agy can
+  call them (memory, codegraph, Slack, Asana, web, peer delegation, etc.)
+  instead of doing the work itself. Per-pid config directory at
+  `~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`, written into agy's
+  `--add-dir` path so agy reads `.agents/mcp_config.json` from there.
+  Global agy config is never touched.
+- **Capability gate.** The bridge checks for `pi.invokeTool` at startup and
+  silently no-ops the MCP server if the patch is absent (clean pi reinstall
+  drops the patch; bridge still runs as a provider).
+- **Tool filtering.** Builtin tools that agy already has natively (read,
+  write, edit, bash, ls, grep, find) are exposed through the bridge; agy
+  itself is filtered to avoid recursion. `AskAntigravity` is filtered for the
+  same reason.
+- **Security.** Shared-secret `x-bridge-token` header, request body size cap,
+  per-call `AbortController` so agy can cancel in-flight tool calls, full
+  request handler `try/catch`, rawHeaders rewrite for Hono's protocol clamp.
+
+#### Documentation
+
+- `docs/ARCHITECTURE.md` - bridge design and per-pid config layout.
+- `docs/DEVELOPMENT.md` - how to run tests, rebuild, and iterate.
+- `docs/PI-INVOOKETOOL-PATCH.md` - the local patch to pi's dist that the
+  bridge depends on.
+- `docs/PI-BRIDGE-GAPS.md` - capability gaps still open (no conversation
+  history, no streaming progress, no UI primitives beyond
+  `ask_user_question`, no MCP-server double-exposure, etc.). Triaged by
+  effort and payoff for follow-up work.
+
+### Notes
+
+- The Terms-of-Service notice is peer-reviewed (Claude Sonnet + agy flash)
+  and grounded in the actual Antigravity ToS Section 6 and the Feb 2026
+  enforcement record: gray-area-leaning-compliant. The clause targets
+  credential/backend substitution (OpenClaw + OAuth), not spawning the
+  official CLI. Not legal advice.
+- A full second peer-review pass (Sonnet, isolated) caught and fixed an
+  `AGY_MODE` env-override precedence bug, a discovery-miss silent-failure
+  regression, a misleading `input: ["text","image"]` advertisement, a
+  step-boundary race in the poller, and a delta-defeating narration filter.
+- The MCP bridge relies on a local patch to pi's dist (`agent-session.js`,
+  `runner.js`, `loader.js`, `types.d.ts`). Clean pi reinstall drops the patch;
+  `docs/PI-INVOOKETOOL-PATCH.md` describes how to reapply it. Shipped in
+  `package.json`'s `files` so npm consumers receive the doc, but applying it
+  is still a manual step until upstream pi ships equivalent capability.

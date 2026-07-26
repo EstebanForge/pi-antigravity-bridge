@@ -1,0 +1,404 @@
+// The pi provider: streamSimple(model, context, options) -> AssistantMessageEventStream.
+//
+// For each turn pi calls streamSimple. We:
+//   1. extract the latest user message (agy keeps its own history, so we send
+//      only the new prompt, not pi's full transcript)
+//   2. resolve the pi model id to the exact agy model string
+//   3. look up the stored agy conversation id + last streamed step for this
+//      pi session (resume) or start fresh
+//   4. spawn agy via runAgyTurn, mapping decoded AgyEvents to pi stream events
+//   5. persist the conversation id + final step idx for the next turn
+//
+// Event mapping (close-on-switch: at most one content block open at a time,
+// matching pi-claude-bridge's lifecycle):
+//   agy text     -> pi text block  (text_start / text_delta / text_end)
+//   agy thinking -> pi thinking block
+//   agy tool     -> pi thinking block, labelled "[agy tool: <name>]"
+// We do NOT emit toolCall blocks: agy runs its OWN closed tool loop, so there
+// is no toolUse stopReason and no tool-result delivery path back to pi.
+
+import {
+	createAssistantMessageEventStream,
+	type AssistantMessage,
+	type AssistantMessageEventStream,
+	type Context,
+	type Model,
+	type SimpleStreamOptions,
+	type Usage,
+} from "@earendil-works/pi-ai";
+import type { Api } from "@earendil-works/pi-ai";
+import { runAgyTurn, type AgyEvent, type AgyRunOptions } from "./runner.js";
+import { resolveAgyString, type AgyModelEntry } from "./models.js";
+import { SessionStore } from "./sessions.js";
+import { loadConfig } from "./config.js";
+import { isNarration } from "./narration.js";
+
+const DEFAULT_TIMEOUT_MIN = 10;
+
+/** Zero-usage helper. agy doesn't expose token counts; pi's cost math gets
+ *  zeros (we're not billing through this provider). */
+function zeroUsage(): Usage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+/** Extract the latest user message as a flat prompt string. agy maintains its
+ *  own conversation history via --conversation, so we collapse pi's structured
+ *  message to text. Returns null if the last message isn't a user message. */
+function extractUserPrompt(context: Context): string | null {
+	const last = context.messages[context.messages.length - 1];
+	if (!last || last.role !== "user") return null;
+	const content = last.content;
+	if (typeof content === "string") return content;
+	// Flatten text blocks; drop images (agy CLI prompt is text-only via -p).
+	return content
+		.filter((b): b is { type: "text"; text: string } => b.type === "text")
+		.map((b) => b.text)
+		.join("\n")
+		.trim() || null;
+}
+
+/** Build a fresh AssistantMessage shell for this turn. Mutated as blocks
+ *  stream; passed as `partial` with every event. */
+function newAssistant(model: Model<Api>): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: zeroUsage(),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+/** Session key: prefer pi's sessionId (stable per conversation), fall back to
+ *  cwd so a single pi process still resumes correctly when sessionId is absent. */
+function sessionKey(options: SimpleStreamOptions | undefined, cwd: string): string {
+	const sid = (options as { sessionId?: string } | undefined)?.sessionId;
+	return sid && sid.length > 0 ? `sid:${sid}` : `cwd:${cwd}`;
+}
+
+/** Track which content block is currently open so we close-on-switch.
+ *  At most one of textIdx / thinkingIdx is non-null at a time. */
+interface BlockState {
+	partial: AssistantMessage;
+	textIdx: number | null;
+	thinkingIdx: number | null;
+	started: boolean;
+}
+
+export interface StreamSimpleDeps {
+	entries: AgyModelEntry[];
+	store: SessionStore;
+}
+
+/** Build the streamSimple closure. Captures the model catalog + session store
+ *  resolved at extension load. */
+export function createStreamSimple(
+	deps: StreamSimpleDeps,
+): (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
+	const { entries, store } = deps;
+
+	return function streamSimple(model, context, options) {
+		const stream = createAssistantMessageEventStream();
+		// Fire the async turn; return the stream synchronously per pi's contract.
+		void runTurn(stream, model, context, options, entries, store);
+		return stream;
+	};
+}
+
+async function runTurn(
+	stream: AssistantMessageEventStream,
+	model: Model<Api>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	entries: AgyModelEntry[],
+	store: SessionStore,
+): Promise<void> {
+	const partial = newAssistant(model);
+	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+
+	// Narration filter operates on complete lines (see src/narration.ts). Streaming
+	// deltas don't align with line boundaries, so we line-buffer: classify each
+	// complete line individually and keep the trailing partial line until the
+	// next delta (or the block closes). Without this, a narration line that
+	// grows across ticks drops its first chunk and leaks its tail ("...ile now.").
+	const emitTextLines = (lines: string[]): void => {
+		if (lines.length === 0 || !config.filterNarration) return;
+		const kept = lines.filter((l) => !isNarration(l));
+		if (kept.length === 0) return;
+		const delta = kept.join("\n");
+		ensureTextOpen(stream, blocks);
+		textAt(partial, blocks.textIdx!).text += delta;
+		stream.push({ type: "text_delta", contentIndex: blocks.textIdx!, delta, partial });
+	};
+	const emitThinkingLines = (lines: string[]): void => {
+		if (lines.length === 0 || !config.filterNarration) return;
+		const kept = lines.filter((l) => !isNarration(l));
+		if (kept.length === 0) return;
+		const delta = kept.join("\n");
+		ensureThinkingOpen(stream, blocks);
+		thinkingAt(partial, blocks.thinkingIdx!).thinking += delta;
+		stream.push({ type: "thinking_delta", contentIndex: blocks.thinkingIdx!, delta, partial });
+	};
+	let textBuf = "";
+	let thinkingBuf = "";
+	const processTextDelta = (delta: string): void => {
+		textBuf += delta;
+		const i = textBuf.lastIndexOf("\n");
+		if (i < 0) return;
+		const complete = textBuf.slice(0, i).split("\n");
+		textBuf = textBuf.slice(i + 1);
+		emitTextLines(complete);
+	};
+	const processThinkingDelta = (delta: string): void => {
+		thinkingBuf += delta;
+		const i = thinkingBuf.lastIndexOf("\n");
+		if (i < 0) return;
+		const complete = thinkingBuf.slice(0, i).split("\n");
+		thinkingBuf = thinkingBuf.slice(i + 1);
+		emitThinkingLines(complete);
+	};
+	const flushTextBuf = (): void => {
+		if (textBuf.length === 0 || !config.filterNarration) return;
+		emitTextLines([textBuf]);
+		textBuf = "";
+	};
+	const flushThinkingBuf = (): void => {
+		if (thinkingBuf.length === 0 || !config.filterNarration) return;
+		emitThinkingLines([thinkingBuf]);
+		thinkingBuf = "";
+	};
+
+	// Signal the turn has begun IMMEDIATELY. pi's native Working indicator is
+	// driven by the stream's start event (isStreaming). Without this, agy's
+	// initial thinking seconds (before it emits any step) show nothing and the
+	// UI looks frozen. Lazy start (on first content) was the old behavior.
+	ensureStarted(stream, blocks);
+
+	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const key = sessionKey(options, cwd);
+	const existing = store.get(key);
+
+	const prompt = extractUserPrompt(context);
+	if (!prompt) {
+		finalize(stream, blocks, "error", "No user message to send to agy.");
+		return;
+	}
+
+	// Resolve the pi model id to the exact agy string. Fall through to the id
+	// itself on miss  -  agy will likely reject, but the error reaches the user
+	// instead of a silent no-op.
+	const agyModel = resolveAgyString(model.id, entries) ?? model.id;
+
+	// Runtime config (mode, narration filter). Loaded fresh each turn so /agy
+	// toggles take effect immediately without a reload.
+	const config = loadConfig();
+
+	const runOpts: AgyRunOptions = {
+		cwd,
+		model: agyModel,
+		mode: config.mode,
+		skipPermissions: config.skipPermissions,
+		prompt,
+		conversationId: existing?.conversationId ?? null,
+		baseStepIdx: existing?.lastStepIdx ?? -1,
+		timeoutMin: DEFAULT_TIMEOUT_MIN,
+		signal: options?.signal,
+	};
+
+	const onEvent = (event: AgyEvent) => {
+		switch (event.kind) {
+			case "text":
+				flushThinkingBuf();
+				ensureTextOpen(stream, blocks);
+				if (config.filterNarration) {
+					processTextDelta(event.text);
+				} else {
+					textAt(partial, blocks.textIdx!).text += event.text;
+					stream.push({
+						type: "text_delta",
+						contentIndex: blocks.textIdx!,
+						delta: event.text,
+						partial,
+					});
+				}
+				break;
+			case "thinking":
+				flushTextBuf();
+				ensureThinkingOpen(stream, blocks);
+				if (config.filterNarration) {
+					processThinkingDelta(event.text);
+				} else {
+					thinkingAt(partial, blocks.thinkingIdx!).thinking += event.text;
+					stream.push({
+						type: "thinking_delta",
+						contentIndex: blocks.thinkingIdx!,
+						delta: event.text,
+						partial,
+					});
+				}
+				break;
+			case "tool":
+				flushTextBuf();
+				ensureThinkingOpen(stream, blocks);
+				// Route the tool label through the line buffer for consistency
+				// (it's a single narration-safe line, ends in \n).
+				processThinkingDelta(`[agy tool: ${event.name}]\n`);
+				break;
+			case "title":
+				// Conversation title metadata  -  not streamed to the user.
+				break;
+		}
+	};
+
+	let result;
+	try {
+		result = await runAgyTurn(runOpts, onEvent);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		flushTextBuf();
+		flushThinkingBuf();
+		finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
+		return;
+	}
+
+	// Persist for the next turn (resume). Only bind when we actually discovered
+	// an id  -  a discovery miss shouldn't clobber a prior good binding.
+	if (result.conversationId) {
+		store.set(key, {
+			conversationId: result.conversationId,
+			lastStepIdx: result.lastIdx,
+		});
+	}
+
+	if (result.aborted) {
+		flushTextBuf();
+		flushThinkingBuf();
+		finalize(stream, blocks, "aborted", "Operation aborted");
+		return;
+	}
+	if (result.timedOut) {
+		const note = `agy exceeded the ${runOpts.timeoutMin}m timeout`;
+		flushTextBuf();
+		flushThinkingBuf();
+		finalize(stream, blocks, "error", note);
+		return;
+	}
+	if (result.exitCode !== 0) {
+		const detail = result.stderr.trim() || `agy exited with status ${result.exitCode}`;
+		flushTextBuf();
+		flushThinkingBuf();
+		finalize(stream, blocks, "error", detail);
+		return;
+	}
+
+	// Discovery miss: agy exited cleanly but we never bound a conversation id
+	// this turn (ambiguous snapshot, DB not created in time, or a prior session
+	// whose id failed CONV_ID_RE and silently fell through to fresh discovery).
+	// Guard on whether we bound THIS turn, not on whether a prior session
+	// existed - otherwise a corrupt existing entry re-opens the silent-empty-
+	// success hole the first review closed.
+	if (!result.conversationId) {
+		const detail =
+			"agy exited cleanly but its conversation database could not be bound. " +
+			"The run may have partially applied edits with no visible output.";
+		flushTextBuf();
+		flushThinkingBuf();
+		finalize(stream, blocks, "error", detail);
+		return;
+	}
+
+	// Flush any line-buffered tails before the stream closes.
+	flushTextBuf();
+	flushThinkingBuf();
+	// Success. If no text ever streamed (agy did only tool work, or returned
+	// empty), emit an empty text block so pi has a well-formed assistant turn.
+	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
+		flushThinkingBuf();
+		ensureTextOpen(stream, blocks);
+	}
+	finalize(stream, blocks, "stop");
+}
+
+/** Signal the start of the assistant turn exactly once. `start` is
+ *  turn-level (analogous to Anthropic's message_start), not per-block  -  the
+ *  per-block signals are text_start / thinking_start. */
+function ensureStarted(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.started) return;
+	b.started = true;
+	stream.push({ type: "start", partial: b.partial });
+}
+
+/** Open the text block, closing the thinking block first if it's open. */
+function ensureTextOpen(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.textIdx !== null) return;
+	closeThinking(stream, b);
+	ensureStarted(stream, b);
+	b.partial.content.push({ type: "text", text: "" });
+	b.textIdx = b.partial.content.length - 1;
+	stream.push({ type: "text_start", contentIndex: b.textIdx, partial: b.partial });
+}
+
+/** Open the thinking block, closing the text block first if it's open. */
+function ensureThinkingOpen(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.thinkingIdx !== null) return;
+	closeText(stream, b);
+	ensureStarted(stream, b);
+	b.partial.content.push({ type: "thinking", thinking: "" });
+	b.thinkingIdx = b.partial.content.length - 1;
+	stream.push({ type: "thinking_start", contentIndex: b.thinkingIdx, partial: b.partial });
+}
+
+function closeText(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.textIdx === null) return;
+	const idx = b.textIdx;
+	b.textIdx = null;
+	stream.push({ type: "text_end", contentIndex: idx, content: textAt(b.partial, idx).text, partial: b.partial });
+}
+
+function closeThinking(stream: AssistantMessageEventStream, b: BlockState): void {
+	if (b.thinkingIdx === null) return;
+	const idx = b.thinkingIdx;
+	b.thinkingIdx = null;
+	stream.push({ type: "thinking_end", contentIndex: idx, content: thinkingAt(b.partial, idx).thinking, partial: b.partial });
+}
+
+// Typed accessors: AssistantMessage.content is a discriminated union, but we
+// always know which slot holds which block (we just pushed it). The cast is
+// sound and keeps every mutation site free of scattered `as` expressions.
+function textAt(p: AssistantMessage, idx: number): { type: "text"; text: string } {
+	return p.content[idx] as { type: "text"; text: string };
+}
+
+function thinkingAt(p: AssistantMessage, idx: number): { type: "thinking"; thinking: string } {
+	return p.content[idx] as { type: "thinking"; thinking: string };
+}
+
+/** Close any open block and push the terminal event. */
+function finalize(
+	stream: AssistantMessageEventStream,
+	b: BlockState,
+	reason: "stop" | "error" | "aborted",
+	message?: string,
+): void {
+	closeText(stream, b);
+	closeThinking(stream, b);
+	if (reason === "stop") {
+		b.partial.stopReason = "stop";
+		stream.push({ type: "done", reason: "stop", message: b.partial });
+	} else {
+		b.partial.stopReason = reason;
+		if (message) b.partial.errorMessage = message;
+		stream.push({ type: "error", reason, error: b.partial });
+	}
+	stream.end();
+}
