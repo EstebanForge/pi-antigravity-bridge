@@ -2,6 +2,9 @@
 
 A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), both built on Google's `agy` CLI. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
+<img width="3024" height="1774" alt="image" src="https://github.com/user-attachments/assets/9fc2f368-7292-4dde-851b-db2bd579263c" align="center" />
+
+
 If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
 
 ## What it does
@@ -36,9 +39,7 @@ When the capability is present the bridge starts a localhost MCP server inside p
 
 ## Install
 
-```
-pi install npm:@estebanforge/pi-antigravity-bridge
-```
+Not yet. You shouldn't install this. Is a WIP. Which I use daily. But still in process of stabilizing and polishing.
 
 Requires the **`agy` CLI** installed and authenticated. If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable.
 

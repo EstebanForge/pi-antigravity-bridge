@@ -195,9 +195,13 @@ export function registerExitCleanup(
 		const handler = (): void => {
 			cleanup();
 			process.removeListener(sig, handler);
-			// Re-raise so default termination runs with the right exit code. Our
-			// listener is already removed, so this cannot loop.
-			process.kill(process.pid, sig);
+			// Re-raise so default termination runs with the right exit code, BUT
+			// only if no host listener has appeared since install (ours is removed
+			// now, so listenerCount reflects the host). If the host registered
+			// later it already received this delivery alongside us; re-raising
+			// would double-deliver (e.g. triggering a "Ctrl-C twice to quit" path
+			// on the first keypress). When nobody owns it, re-raise safely.
+			if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
 		};
 		process.once(sig, handler);
 		installed.push({ sig, handler });
@@ -297,8 +301,14 @@ export async function startMcpServer(
 					res.writeHead(405).end();
 					return;
 				}
-				// #3: require the shared-secret header.
-				if (req.headers[TOKEN_HEADER] !== token) {
+				// #3: require the shared-secret header. Constant-time compare so a
+				// timing oracle can't recover the token byte-by-byte.
+				const received = req.headers[TOKEN_HEADER];
+				if (
+					typeof received !== "string" ||
+					received.length !== token.length ||
+					!crypto.timingSafeEqual(Buffer.from(received), Buffer.from(token))
+				) {
 					log("unauthorized", { url: req.url });
 					res.writeHead(403, { "content-type": "application/json" }).end('{"error":"forbidden"}');
 					return;
@@ -316,7 +326,9 @@ export async function startMcpServer(
 					}
 				}
 				if (tooLarge) {
-					res.writeHead(413, { "content-type": "application/json" }).end('{"error":"payload too large"}');
+					// We bailed before draining the oversize body; close the connection
+					// so the unread bytes can't desync the next request on this socket.
+					res.writeHead(413, { "content-type": "application/json", connection: "close" }).end('{"error":"payload too large"}');
 					return;
 				}
 				let parsed: { method?: string; params?: { protocolVersion?: string } };

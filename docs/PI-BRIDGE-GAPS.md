@@ -15,153 +15,310 @@ recursion, agy's native duplicates so we don't double-up).
 What this means: agy can now read/write files, use memory, navigate code with
 codegraph, search the web, post to Slack, create Asana tasks, spawn
 subagents, prompt the user with `ask_user_question`, and delegate to peer
-reviewers (Claude, Codex, Antigravity) — all by going through pi's installed
+reviewers (Claude, Codex, Antigravity), all by going through pi's installed
 tooling instead of its own.
 
-## What the bridge does NOT yet give agy
+## Task list: what the bridge does NOT yet give agy
 
-Ten gaps, ordered roughly by impact.
+Ten actionable tasks (G1-G10). Order = G-number, not priority. Each entry
+carries: objective, why it matters, scope (files), acceptance criteria
+(test-first, verifiable), effort, and blockers. Status starts Open.
 
-### G1. No conversation-history access (high impact)
+Tackle order is decided separately (see Triage). Current focus: **G1**.
 
-agy is **stateless across turns** from pi's perspective. Every agy call gets
-one prompt; agy has no tool that lets it read prior turns, prior assistant
-messages, prior tool results, or the user-message stream that pi has been
-accumulating.
+---
 
-Why this hurts: agy cannot reference what the user said two turns ago, what
-decisions were made, what tool errors happened, or what pi summarized at
-context-compaction time. For multi-turn work, pi has to re-stitch context
-into the prompt it sends agy. Today pi does not, so agy answers in a
-vacuum.
+### G1. Give agy conversation-history access [HIGH IMPACT]
 
-Fix shape: add bridge tools `pi_get_messages` (last N turns, with role and
-content), `pi_get_summary` (the compressed form pi holds), `pi_get_tool_log`
-(what tools were called and their results). Source of truth: pi's
-`AgentSession.messages` and compaction state. Requires extending the patch
-in `agent-session.js` with read accessors.
+**Status:** Open
+**Objective:** Expose pi's `AgentSession.messages` and compaction state to agy
+through three read-only bridge tools so agy can reference prior turns.
 
-### G2. No streaming progress for long tool calls (high impact)
+**Why:** agy is stateless across turns from pi's perspective. Each call gets
+one prompt and no memory of what the user said before, what decisions were
+made, what tool errors happened, or what pi summarized at compaction time.
+For multi-turn work pi must re-stitch context; today it does not, so agy
+answers in a vacuum.
 
-When agy invokes `web_research`, `librarian`, `codegraph_explore` on a large
-repo, or any tool that takes more than a second, the bridge **blocks** until
-the tool returns. pi's UI sees a frozen spinner. The user has no signal that
-work is happening.
+**Scope:**
+- Patch `docs/PI-INVOOKETOOL-PATCH.md`: add read accessors on
+  `AgentSession` for messages, summary, and tool log.
+- `src/mcp-server.ts`: wrap `pi_get_messages`, `pi_get_summary`,
+  `pi_get_tool_log`.
+- `tests/mcp-server.test.ts`: round-trip each new tool.
 
-Fix shape: switch the bridge from blocking `invokeTool` to a streaming RPC,
-and use MCP `notifications/progress` (or a `pi_tool_progress` SSE channel)
-to push partial output back to agy. pi-side: tool implementations would need
-to emit progress events; pi already has a progress bus for its own tools, we
-would need to expose it. Most long tools in the catalog do not currently
-emit progress at all, so this is partly a pi-side gap and partly a
-bridge-transport gap.
+**Acceptance criteria:**
+- [ ] `pi_get_messages(limit)` returns last N turns with role + content.
+- [ ] `pi_get_summary()` returns pi's compaction summary (or empty if none).
+- [ ] `pi_get_tool_log(limit)` returns recent tool calls and their results.
+- [ ] All three return JSON; errors are surfaced, never swallowed.
+- [ ] Unit tests cover happy path + empty-state + error path.
+- [ ] Verified end-to-end: a real agy call retrieves a prior turn.
 
-### G3. No access to pi's UI primitives (medium-high impact)
+**Effort:** Medium. Small pi-side patch in `agent-session.js` plus three thin
+bridge wrappers.
 
-Bridge exposes `ask_user_question`. Missing primitives:
+**Blocks:** None. **Blocked by:** None.
 
-- **Confirmation / permission dialog** — agy cannot pop pi's confirm UI for
-  destructive ops. It falls back to its own native confirmation, which the
-  user sees as a different dialog (out of theme, different keybindings).
-- **Notification toast** — agy cannot ping pi's notify system. Useful for
-  "FYI, I started a 30-second task" or "FYI, the save succeeded."
-- **File picker / directory picker** — agy cannot trigger pi's native
-  `select_file` / `select_directory`. It has to ask the user for the path
-  through text.
-- **Status / footer updates** — agy cannot update pi's status bar to
-  indicate "Antigravity: working on X." It can only emit thinking text.
+---
 
-Fix shape: add bridge tools that wrap pi's UI helpers. pi's
-`AgentSession.ui` module is the right seam; we would need to extend the
-patch to expose it.
+### G2. Stream progress for long tool calls [HIGH IMPACT]
 
-### G4. No discovery of pi's other MCP servers (medium impact)
+**Status:** Open
+**Objective:** Stop blocking on long tools (`web_research`, `librarian`,
+`codegraph_explore` on big repos). Push partial output back to agy so pi's
+UI shows live progress instead of a frozen spinner.
 
-If you have MCP servers configured in pi's own config (e.g., a custom docs
-server, a private registry), agy does **not** see those tools. The bridge
-exposes only pi's extension and builtin tools, not pi's MCP-client tools.
+**Why:** Today the bridge blocks until the tool returns. The user has no
+signal that work is happening. This is partly a pi-side gap (most long tools
+do not emit progress) and partly a bridge-transport gap.
 
-This is by design today (we did not want to double-hop or risk circular
-registration), but it means agy's tool catalog and pi's full tool catalog
-diverge.
+**Scope:**
+- `docs/PI-INVOOKETOOL-PATCH.md`: expose pi's progress bus.
+- `src/mcp-server.ts`: switch from blocking `invokeTool` to a streaming RPC
+  using MCP `notifications/progress` (or a `pi_tool_progress` SSE channel).
+- pi-side: audit long tools and add progress emission where missing.
 
-Fix shape: the bridge could optionally include pi's MCP-client tools in its
-`tools/list` response. Risk: some MCP servers may not survive being
-double-registered, and token-amplification on the agy side. Want a config
-flag (`exposePiMcpClients: true`) before defaulting on.
+**Acceptance criteria:**
+- [ ] A tool that runs >1s emits at least one progress notification.
+- [ ] pi's TUI spinner updates during the call, not only on completion.
+- [ ] Result content is identical to the blocking path (no data loss).
+- [ ] Fallback: if a tool does not emit progress, behavior matches today.
 
-### G5. No tool-list refresh mid-session (medium impact)
+**Effort:** Large. Touches pi's progress bus and the MCP transport.
 
-The bridge snapshots pi's tool registry once at `session_start` and
-registers that frozen list with the MCP server. Tools loaded later in the
-session (extensions that initialize lazily, dynamically registered tools)
-do not appear to agy until the next pi session.
+**Blocks:** None. **Blocked by:** None.
 
-Fix shape: either (a) poll `pi.listTools()` on a heartbeat and push updates
-through MCP `notifications/tools/list_changed`, or (b) re-check at every
-agy request. Option (a) is the MCP-blessed pattern.
+---
 
-### G6. No hook / lifecycle event subscription (medium impact)
+### G3. Expose pi's UI primitives [MEDIUM-HIGH IMPACT]
 
-The bridge handles `session_start` and `session_shutdown` to start/stop the
-MCP server. agy cannot subscribe to other lifecycle events (`turn_start`,
-`turn_end`, `tool_call`, `tool_result`, `compaction`, etc.). For a
-long-lived agy session that observes the user's workflow, this would be
-valuable. Today agy is fire-and-forget per turn.
+**Status:** Open
+**Objective:** Let agy drive pi's native UI: confirm dialogs, toasts, file/
+directory pickers, status/footer updates.
 
-Fix shape: expose a `pi_subscribe(event)` tool that returns a stream id, and
-an SSE channel the bridge pushes events into. Requires non-trivial pi-side
-patching.
+**Why:** agy can already `ask_user_question`. Missing: confirm/permission
+dialog for destructive ops (agy falls back to its own out-of-theme dialog),
+notification toast (for "task started" / "save ok"), native file picker
+(replaced today by asking for a path in text), and status-bar updates
+("Antigravity: working on X").
 
-### G7. No access to pi's settings, env, secrets (medium impact)
+**Scope:**
+- `docs/PI-INVOOKETOOL-PATCH.md`: expose `AgentSession.ui` helpers.
+- `src/mcp-server.ts`: wrappers for `pi_confirm`, `pi_notify`,
+  `pi_select_file`, `pi_select_directory`, `pi_set_status`.
 
-agy cannot read `~/.pi/settings.json`, the user's model preferences,
-extension config, or any pi-side secret. Each tool that needs a token
-relies on its own env. For tools where pi has already authenticated
-(Slack, Asana), agy could in principle reuse the credential — but the
-bridge does not expose it.
+**Acceptance criteria:**
+- [ ] `pi_confirm(message)` pops pi's native confirm UI and returns boolean.
+- [ ] `pi_notify(message)` shows a toast.
+- [ ] `pi_select_file`/`pi_select_directory` return chosen paths or null.
+- [ ] `pi_set_status(text)` updates the footer; clears on empty string.
+- [ ] Tests cover each primitive with a mocked `ui` seam.
 
-Fix shape: add `pi_get_setting(key)` (with an allowlist; never expose raw
-secrets through MCP). Or, simpler: have the bridge forward specific
-well-known settings to tools that need them.
+**Effort:** Medium-large. Each primitive is a small pi patch plus a wrapper.
 
-### G8. No diff visualization for file edits (low-medium impact)
+**Blocks:** None. **Blocked by:** None.
 
-When agy uses the bridge's `edit` or `write` tool, pi receives a plain text
-result. pi's native `edit` tool renders a colored diff in the TUI. agy's
-edits get the raw "wrote N bytes to X" output.
+---
 
-Fix shape: bridge could emit a synthetic "diff" content block alongside the
-tool result, and pi could be taught to render it as a diff. Or: have the
-bridge call pi's native `edit` (which is already in the registry) instead
-of the extension `edit`. The latter is one-line.
+### G4. Expose pi's other MCP clients [MEDIUM IMPACT]
 
-### G9. No image / binary content (low impact)
+**Status:** Open
+**Objective:** Optionally include pi's MCP-client tools in the bridge's
+`tools/list` so agy's catalog matches pi's full catalog.
 
-Bridge tools return text/JSON. Any tool that wants to return an image
-(screenshot from `agent-browser`, generated diagram) has to encode as
-base64 or write to a path agy reads separately. pi's vision layer is
-unreachable from agy.
+**Why:** Today the bridge exposes only pi's extension and builtin tools, not
+pi's MCP-client tools. By design (avoid double-hop / circular registration),
+but it means the catalogs diverge.
 
-Fix shape: extend the bridge's content-type handling to accept image blocks.
-Likely small change in `mcp-server.ts`; the bigger constraint is agy's
-ability to consume image content blocks, which is Gemini-dependent.
+**Scope:**
+- Config flag `exposePiMcpClients` (default off) in the bridge config.
+- `src/mcp-server.ts`: when flag is on, merge pi's MCP-client tools into
+  `tools/list`, dedup by name.
+- Risk check: confirm no MCP server breaks under double-registration.
 
-### G10. No file-watching / live state (low impact)
+**Acceptance criteria:**
+- [ ] Flag off by default; behavior unchanged.
+- [ ] Flag on: agy sees pi's MCP-client tools in its catalog.
+- [ ] Dedup prevents name collisions with builtin tools.
+- [ ] Doc note added on token-amplification tradeoff.
 
-If a file changes while agy is running, agy does not get notified. It has
-to re-read. This matches agy's native behavior, so it is mostly a
-non-issue, but worth listing.
+**Effort:** Small-medium. Mainly config + merge logic.
 
-Fix shape: optional `pi_watch(path)` tool that emits change events. Low
-priority.
+**Blocks:** None. **Blocked by:** None. (Touches agy transport: verify
+double-registration safety.)
+
+---
+
+### G5. Refresh tool list mid-session [MEDIUM IMPACT]
+
+**Status:** Open
+**Objective:** Let agy see tools loaded after `session_start` (lazy
+extensions, dynamically registered tools) without a full pi restart.
+
+**Why:** The bridge snapshots the registry once at `session_start`. Tools
+loaded later are invisible to agy until the next session.
+
+**Scope:**
+- `src/mcp-server.ts`: poll `pi.listTools()` on a heartbeat and push
+  `notifications/tools/list_changed` (MCP-blessed pattern).
+- Alternative considered: re-check on every agy request (rejected: too
+  noisy).
+
+**Acceptance criteria:**
+- [ ] A tool registered after `session_start` appears to agy within one
+  heartbeat.
+- [ ] Removed tools disappear the same way.
+- [ ] Heartbeat interval is configurable.
+- [ ] No duplicate registrations on refresh.
+
+**Effort:** Small-medium.
+
+**Blocks:** None. **Blocked by:** None.
+
+---
+
+### G6. Lifecycle event subscription [MEDIUM IMPACT]
+
+**Status:** Open
+**Objective:** Let a long-lived agy session observe pi events: `turn_start`,
+`turn_end`, `tool_call`, `tool_result`, `compaction`.
+
+**Why:** Today the bridge handles only `session_start` and
+`session_shutdown`. agy is fire-and-forget per turn. Event subscription
+enables a class of "observer" tooling.
+
+**Scope:**
+- `docs/PI-INVOOKETOOL-PATCH.md`: add an event-emitter seam on
+  `AgentSession`.
+- `src/mcp-server.ts`: `pi_subscribe(event)` returns a stream id; an SSE
+  channel pushes events.
+
+**Acceptance criteria:**
+- [ ] `pi_subscribe("tool_call")` returns a stream id and subsequent tool
+  calls arrive on the channel.
+- [ ] Unsubscribe cleans up the stream (no leak).
+- [ ] At least three event types supported at close.
+- [ ] No perf regression on the event hot path.
+
+**Effort:** Large. Non-trivial pi-side patching.
+
+**Blocks:** None. **Blocked by:** None.
+
+---
+
+### G7. Settings, env, and secrets access [MEDIUM IMPACT]
+
+**Status:** Open
+**Objective:** Let agy read well-known pi settings (model prefs, extension
+config) through an allowlisted accessor. Never raw secrets.
+
+**Why:** agy cannot read `~/.pi/settings.json`. Each tool relies on its own
+env. For tools where pi has already authenticated (Slack, Asana), agy could
+reuse the credential, but the bridge does not expose it.
+
+**Scope:**
+- `docs/PI-INVOOKETOOL-PATCH.md`: read accessor for settings with an
+  allowlist.
+- `src/mcp-server.ts`: `pi_get_setting(key)`. Reject keys outside the
+  allowlist. Alternatively: forward specific well-known settings to the
+  tools that need them.
+
+**Acceptance criteria:**
+- [ ] Allowlist lives in one place; non-allowlisted keys return an error.
+- [ ] No secret is ever returned in plaintext through MCP.
+- [ ] Model preferences and extension config are readable.
+- [ ] Test confirms a denylisted key is rejected.
+
+**Effort:** Medium.
+
+**Blocks:** None. **Blocked by:** None.
+
+---
+
+### G8. Diff visualization for file edits [LOW-MEDIUM IMPACT]
+
+**Status:** Open
+**Objective:** Make agy edits render as colored diffs in pi's TUI, like pi's
+native `edit` tool does.
+
+**Why:** agy edits via the bridge get a plain "wrote N bytes" result. pi's
+native `edit` renders a colored diff. UX is inconsistent.
+
+**Scope:**
+- Preferred (one-line): route bridge `edit`/`write` calls through pi's
+  native `edit` tool already in the registry.
+- Fallback: bridge emits a synthetic diff content block and pi learns to
+  render it.
+
+**Acceptance criteria:**
+- [ ] agy `edit` shows a colored diff in pi's TUI.
+- [ ] No change to the bytes written to disk.
+- [ ] Existing edit tests still pass.
+
+**Effort:** Small (preferred path).
+
+**Blocks:** None. **Blocked by:** None.
+
+---
+
+### G9. Image / binary content support [LOW IMPACT]
+
+**Status:** Open
+**Objective:** Let bridge tools return image content blocks (screenshots,
+generated diagrams) instead of forcing base64 or out-of-band file reads.
+
+**Why:** Bridge tools return text/JSON today. pi's vision layer is
+unreachable from agy. Main constraint is agy/Gemini's ability to consume
+image content blocks.
+
+**Scope:**
+- `src/mcp-server.ts` (and possibly `mcp-server.ts` transport): accept and
+  forward image content blocks.
+- Verify agy/Gemini consumes image blocks; gate on that.
+
+**Acceptance criteria:**
+- [ ] A tool returning an image block reaches agy intact.
+- [ ] Text/JSON path unchanged.
+- [ ] Fallback to base64 if agy rejects image blocks (documented).
+
+**Effort:** Small-medium, but gated on agy transport support.
+
+**Blocks:** None. **Blocked by:** Confirm agy can consume image content
+blocks.
+
+---
+
+### G10. File-watching / live state [LOW PRIORITY]
+
+**Status:** Open
+**Objective:** Optionally notify agy when a watched file changes, so it does
+not have to re-read blindly.
+
+**Why:** Today agy gets no change notification. This matches agy's native
+behavior, so it is mostly a non-issue, but worth listing.
+
+**Scope:**
+- `src/mcp-server.ts`: optional `pi_watch(path)` tool that emits change
+  events on an SSE channel.
+
+**Acceptance criteria:**
+- [ ] `pi_watch(path)` emits on file change.
+- [ ] Unwatch cleans up.
+- [ ] No leak when paths are removed.
+
+**Effort:** Small. **Priority:** Low.
+
+**Blocks:** None. **Blocked by:** None.
+
+---
 
 ## Triage
 
 Easy wins (small change, big payoff):
 
 - G8: route bridge `edit` calls through pi's native `edit` tool for diff UX.
-- G4: add a `exposePiMcpClients` config flag, default off.
+- G4: add an `exposePiMcpClients` config flag, default off.
 - G5: poll `pi.listTools()` on a heartbeat and push
   `notifications/tools/list_changed`.
 
@@ -186,7 +343,7 @@ Low priority:
 
 ## How to close a gap
 
-For each gap above, the shape is the same:
+For each task above, the shape is the same:
 
 1. Identify the pi-side API to expose (or add).
 2. Extend the patch in `docs/PI-INVOOKETOOL-PATCH.md` with a read accessor
@@ -197,9 +354,10 @@ For each gap above, the shape is the same:
    catalog on next session).
 5. Add a test under `tests/mcp-server.test.ts` that round-trips a real
    call.
+6. Tick the task's acceptance checkboxes in this doc.
 
-Most gaps do not require any change to agy — only to the bridge and to
-pi's dist. The exception is G4 (double-registration of MCP servers) and
+Most tasks do not require any change to agy, only to the bridge and to
+pi's dist. The exceptions are G4 (double-registration of MCP servers) and
 G9 (image content blocks), which touch the agy transport.
 
 ## Cross-references

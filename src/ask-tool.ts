@@ -416,7 +416,9 @@ export async function registerAskAntigravityTool(
 								}
 								await sleep(DISCOVERY_POLL_MS);
 							}
-						})();
+						})().catch(() => {
+							/* best-effort: a bind error must never fail an otherwise-OK turn */
+						});
 					}
 
 					let sigkillTimer: ReturnType<typeof setTimeout> | undefined;

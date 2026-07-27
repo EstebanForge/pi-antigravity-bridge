@@ -31,6 +31,12 @@ export const TRAILING_POLLS = 3;
 export const TRAILING_POLL_MS = 100;
 export const DEFAULT_TIMEOUT_MIN = 10;
 const GRACE_AFTER_TIMEOUT_MS = 5000;
+// Cap on poll-tick retries to bind the conversation id when the snapshot is
+// ambiguous (a concurrent agy also created a .db). Each retry can run a full
+// /proc FD scan, so we stop after this many ticks (~15s at 250ms) and let the
+// turn fail safe rather than scan indefinitely. Generous enough to cover a
+// slow agy startup (OAuth refresh + cold init).
+const MAX_BIND_ATTEMPTS = 60;
 
 // agy conversation ids are UUID DB-stems. First char must be alphanumeric so a
 // leading-dash value can't misbind on agy's arg parser as the token after
@@ -173,6 +179,9 @@ export async function runAgyTurn(
 
 	let stderr = "";
 	let boundId = isContinuation ? rawConvId : null;
+	// Counts bind attempts so the /proc FD scan can't run on every tick forever
+	// when the snapshot stays ambiguous (see MAX_BIND_ATTEMPTS).
+	let bindAttempts = 0;
 
 	// One poller per turn, lazily opened once we know the conversation id.
 	let poller: ConversationPoller | null = null;
@@ -203,7 +212,8 @@ export async function runAgyTurn(
 		// Bind the conversation id on a fresh run (agy doesn't print it).
 		// pid lets newConversationId disambiguate when a concurrent agy also
 		// drops a new .db in the dir during our turn (see discovery.ts).
-		if (!boundId && snapshot) {
+		if (!boundId && snapshot && bindAttempts < MAX_BIND_ATTEMPTS) {
+			bindAttempts++;
 			boundId = newConversationId(dir, snapshot, { pid: proc?.pid });
 		}
 		if (!boundId) return false;
