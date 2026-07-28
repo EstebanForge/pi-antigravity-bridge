@@ -124,6 +124,15 @@ test("compaction clamps the window: pre-compaction messages are dropped", () => 
 	assert.doesNotMatch(digest, /pre-compaction detail/);
 });
 
+test("compaction summary as the immediate predecessor of the prompt injects only the summary", () => {
+	const msgs = [user("older"), compaction("just summarized"), user("now")];
+	const digest = buildContextDigest(msgs, 0);
+	assert.match(digest, /just summarized/);
+	assert.doesNotMatch(digest, /older/); // pre-compaction, dropped
+	// no delta after the summary (the prompt is excluded), so no delta labels
+	assert.doesNotMatch(digest, /\[earlier user message\]/);
+});
+
 test("compaction is detected even when watermark points past older messages", () => {
 	// watermark 3 would normally start at idx 3, but compaction is at idx 1 =>
 	// start clamps to 2, surfacing the post-compaction other-provider turn
@@ -132,11 +141,16 @@ test("compaction is detected even when watermark points past older messages", ()
 	assert.match(digest, /the summary|sum/); // summary always injected
 });
 
-test("maxChars caps the body and appends a truncation marker", () => {
-	const long = "x".repeat(1000);
-	const digest = buildContextDigest([user(long), user("now")], 0, { maxChars: 50 });
-	assert.ok(digest.length < 1000);
-	assert.match(digest, /\[truncated\]$/);
+test("maxChars keeps the NEWEST delta and marks truncation", () => {
+	const msgs = [
+		user("old delta line that should be dropped when over budget"),
+		user("newest delta line that must survive the cap"),
+		user("now"),
+	];
+	const digest = buildContextDigest(msgs, 0, { maxChars: 90 });
+	assert.match(digest, /^\[truncated\]/); // something was cut from the front
+	assert.match(digest, /must survive the cap/); // newest kept
+	assert.doesNotMatch(digest, /should be dropped/); // oldest dropped first
 });
 
 test("maxChars 0 disables the cap", () => {

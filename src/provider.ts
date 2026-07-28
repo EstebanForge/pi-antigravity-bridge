@@ -117,7 +117,11 @@ export interface DigestOptions {
  *
  *  Delta, not replay: skip our own assistant turns (provider === ownProvider)
  *  and clamp the window to after any compaction (pre-compaction detail is
- *  either already in agy's DB or summarized by the injected summary). */
+ *  either already in agy's DB or summarized by the injected summary).
+ *
+ *  Fidelity note: other-provider assistant turns contribute only their text
+ *  blocks; tool-call and thinking blocks are dropped. The intent (which tool)
+ *  is lost, but their results still surface separately as toolResult messages. */
 export function buildContextDigest(
 	messages: Message[],
 	watermark: number,
@@ -127,7 +131,8 @@ export function buildContextDigest(
 	const maxChars = opts.maxChars ?? 8000;
 	if (messages.length === 0) return "";
 
-	const parts: string[] = [];
+	let summaryPart: string | null = null;
+	const deltaParts: string[] = [];
 
 	// 1. Most-recent compaction summary (scan the whole list; it is never in
 	//    agy's DB, so it is always safe and high-value to inject).
@@ -138,7 +143,7 @@ export function buildContextDigest(
 		const t = blocksToText(m.content);
 		if (t.includes(COMPACTION_MARKER)) {
 			lastCompactionIdx = i;
-			parts.push(`[pi compaction summary]\n${stripCompactionWrapping(t)}`);
+			summaryPart = `[pi compaction summary]\n${stripCompactionWrapping(t)}`;
 			break;
 		}
 	}
@@ -154,25 +159,51 @@ export function buildContextDigest(
 			if (m.provider === own) continue; // our own turn: already in agy's DB
 			const t = blocksToText(m.content).trim();
 			if (!t) continue;
-			parts.push(`[assistant turn from ${m.provider}]\n${t}`);
+			deltaParts.push(`[assistant turn from ${m.provider}]\n${t}`);
 		} else if (m.role === "user") {
 			const t = blocksToText(m.content);
-			if (t.includes(COMPACTION_MARKER)) continue; // injected above
+			if (t.includes(COMPACTION_MARKER)) continue; // injected as summaryPart
 			if (!t.trim()) continue;
-			parts.push(`[earlier user message]\n${t}`);
+			deltaParts.push(`[earlier user message]\n${t}`);
 		} else if (m.role === "toolResult") {
 			const t = blocksToText(m.content).trim();
-			parts.push(
+			deltaParts.push(
 				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${t || "(no text output)"}`,
 			);
 		}
 	}
 
-	let body = parts.join("\n\n").trim();
-	if (maxChars > 0 && body.length > maxChars) {
-		body = `${body.slice(0, maxChars)}\n[truncated]`;
+	// Assemble. The compaction summary is always kept intact (it is the
+	// canonical compressed history). The DELTA is truncated from the newest end
+	// backward when over budget: recent context matters more for continuity
+	// than older detail, so drop the oldest delta first. If even the newest
+	// single item exceeds the budget, keep its tail slice.
+	const SEP = "\n\n";
+	const MARKER = "[truncated]";
+	let delta = deltaParts.join(SEP);
+	if (maxChars > 0) {
+		const budget = Math.max(0, maxChars - (summaryPart ? summaryPart.length + SEP.length : 0));
+		if (delta.length > budget) {
+			const kept: string[] = [];
+			let used = 0;
+			for (let i = deltaParts.length - 1; i >= 0; i--) {
+				const cost = deltaParts[i].length + (kept.length > 0 ? SEP.length : 0);
+				if (used + cost > budget) break;
+				kept.unshift(deltaParts[i]);
+				used += cost;
+			}
+			if (kept.length > 0) {
+				delta = `${MARKER}\n${kept.join(SEP)}`;
+			} else {
+				const room = Math.max(0, budget - MARKER.length - 1);
+				delta = room > 0 ? `${MARKER}\n${deltaParts[deltaParts.length - 1].slice(-room)}` : "";
+			}
+		}
 	}
-	return body;
+
+	return [summaryPart, delta]
+		.filter((s): s is string => typeof s === "string" && s.length > 0)
+		.join(SEP);
 }
 
 /** Build a fresh AssistantMessage shell for this turn. Mutated as blocks
@@ -392,6 +423,12 @@ async function runTurn(
 
 	// Persist for the next turn (resume). Only bind when we actually discovered
 	// an id  -  a discovery miss shouldn't clobber a prior good binding.
+	// Persist for the next turn (resume). Only bind when we actually discovered
+	// an id  -  a discovery miss shouldn't clobber a prior good binding. The
+	// lastMessageCount watermark advances on a successful bind even if the turn
+	// later aborted or timed out: the prompt (digest included) was handed to
+	// agy at spawn, so its DB has seen that context. Guarding this on
+	// exitCode===0 would re-inject stale deltas after retryable failures.
 	if (result.conversationId) {
 		store.set(key, {
 			conversationId: result.conversationId,
