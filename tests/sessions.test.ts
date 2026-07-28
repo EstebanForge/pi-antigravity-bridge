@@ -36,9 +36,9 @@ test("SessionStore: load drops malformed entries, keeps valid ones", () => {
 		}) + "\n",
 	);
 	const store = new SessionStore(p);
-	assert.deepEqual(store.get("good"), { conversationId: "abc-123", lastStepIdx: 5 });
+	assert.deepEqual(store.get("good"), { conversationId: "abc-123", lastStepIdx: 5, lastMessageCount: 0 });
 	assert.equal(store.get("badId"), null);
-	assert.deepEqual(store.get("badIdx"), { conversationId: "xyz", lastStepIdx: -1 });
+	assert.deepEqual(store.get("badIdx"), { conversationId: "xyz", lastStepIdx: -1, lastMessageCount: 0 });
 	assert.equal(store.get("nonObj"), null);
 	assert.equal(store.get("missing"), null);
 });
@@ -48,13 +48,13 @@ test("SessionStore: non-finite lastStepIdx (Infinity from 1e999) falls back to -
 	// Raw text: 1e999 parses to Infinity, which Number.isFinite rejects.
 	fs.writeFileSync(p, `{"huge": {"conversationId": "big", "lastStepIdx": 1e999}}\n`);
 	const store = new SessionStore(p);
-	assert.deepEqual(store.get("huge"), { conversationId: "big", lastStepIdx: -1 });
+	assert.deepEqual(store.get("huge"), { conversationId: "big", lastStepIdx: -1, lastMessageCount: 0 });
 });
 
-test("SessionStore: set/get round-trip in memory", () => {
+test("SessionStore: set/get round-trip in memory (incl. lastMessageCount watermark)", () => {
 	const store = new SessionStore(tmpStorePath());
-	store.set("k", { conversationId: "c-1", lastStepIdx: 9 });
-	assert.deepEqual(store.get("k"), { conversationId: "c-1", lastStepIdx: 9 });
+	store.set("k", { conversationId: "c-1", lastStepIdx: 9, lastMessageCount: 42 });
+	assert.deepEqual(store.get("k"), { conversationId: "c-1", lastStepIdx: 9, lastMessageCount: 42 });
 	assert.equal(store.size, 1);
 });
 

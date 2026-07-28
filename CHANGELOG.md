@@ -59,6 +59,20 @@ dependency.
   that abort returns promptly (guards the "provider did not actually stream"
   regression class).
 
+#### Provider context (G1)
+
+- **pi-side context digest for agy.** agy keeps its own conversation history
+  (resumed via `--conversation`), but it never saw pi-side context it wasn't
+  spawned for: pi's compaction summaries and turns handled by other providers
+  or pi's own tools. pi already materializes all of that into
+  `context.messages` every turn (verified in `session-manager.js`), so the
+  provider builds a delta digest (`buildContextDigest` in `src/provider.ts`)
+  and prepends it to the agy prompt. It skips agy's own assistant turns
+  (`provider === "antigravity"`) to avoid double-counting, clamps the window
+  to after any compaction, and caps at 8000 chars. A `lastMessageCount`
+  watermark on `AgySession` (`src/sessions.ts`) marks the delta boundary. No
+  pi dist patch, no new MCP tool. Closes G1 in `docs/PI-BRIDGE-GAPS.md`.
+
 #### MCP tool bridge (agy -> pi tools)
 
 - **`AskAntigravity` tool** is now provided by this extension (ported from
@@ -99,10 +113,10 @@ dependency.
 - `docs/DEVELOPMENT.md` - how to run tests, rebuild, and iterate.
 - `docs/PI-INVOOKETOOL-PATCH.md` - the local patch to pi's dist that the
   bridge depends on.
-- `docs/PI-BRIDGE-GAPS.md` - capability gaps still open (no conversation
-  history, no streaming progress, no UI primitives beyond
-  `ask_user_question`, no MCP-server double-exposure, etc.). Triaged by
-  effort and payoff for follow-up work.
+- `docs/PI-BRIDGE-GAPS.md` - capability gaps, as actionable tasks (G1-G10).
+  G1 (conversation history) is closed via a no-patch provider-side digest; the
+  rest (streaming progress, UI primitives, MCP-server double-exposure, etc.)
+  remain open, triaged by effort and payoff.
 
 ### Notes
 

@@ -23,6 +23,12 @@ const STORE_PATH = path.join(
 export interface AgySession {
 	conversationId: string;
 	lastStepIdx: number;
+	/** pi context.messages length captured at the start of the last agy turn.
+	 *  Used by the provider to compute a delta digest of pi-side context agy
+	 *  was not spawned for (compaction summaries, other-provider turns). 0 on a
+	 *  fresh or pre-watermark session. Optional for backward compat with older
+	 *  persisted sessions that predate the watermark. */
+	lastMessageCount?: number;
 }
 
 type StoreMap = Record<string, AgySession>;
@@ -41,9 +47,11 @@ function narrowStoreMap(parsed: unknown): StoreMap {
 		const conversationId = (value as { conversationId?: unknown }).conversationId;
 		if (typeof conversationId !== "string") continue;
 		const idx = (value as { lastStepIdx?: unknown }).lastStepIdx;
+		const mc = (value as { lastMessageCount?: unknown }).lastMessageCount;
 		clean[key] = {
 			conversationId,
 			lastStepIdx: typeof idx === "number" && Number.isFinite(idx) ? idx : -1,
+			lastMessageCount: typeof mc === "number" && Number.isFinite(mc) ? mc : 0,
 		};
 	}
 	return clean;
@@ -80,7 +88,11 @@ export class SessionStore {
 	get(key: string): AgySession | null {
 		const s = this.cache[key];
 		if (!s || typeof s.conversationId !== "string") return null;
-		return { conversationId: s.conversationId, lastStepIdx: s.lastStepIdx ?? -1 };
+		return {
+			conversationId: s.conversationId,
+			lastStepIdx: s.lastStepIdx ?? -1,
+			lastMessageCount: s.lastMessageCount ?? 0,
+		};
 	}
 
 	/** Update one session and persist atomically (temp file + rename). The

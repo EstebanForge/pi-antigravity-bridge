@@ -22,6 +22,7 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type Context,
+	type Message,
 	type Model,
 	type SimpleStreamOptions,
 	type Usage,
@@ -62,6 +63,116 @@ function extractUserPrompt(context: Context): string | null {
 		.map((b) => b.text)
 		.join("\n")
 		.trim() || null;
+}
+
+// --- G1: pi-side context digest --------------------------------------------------
+//
+// agy keeps its OWN conversation history (resumed via --conversation), so it
+// already holds every turn it produced. What it lacks is pi-side context it was
+// never spawned for: pi's compaction summaries and turns handled by OTHER
+// providers (or pi's own tools). pi materializes all of that into
+// context.messages every turn (verified: session-manager.js -> convertToLlm),
+// so we build a DELTA digest from those messages and prepend it to the prompt.
+// No pi patch, no new MCP tool. See docs/PI-BRIDGE-GAPS.md (G1).
+
+const COMPACTION_MARKER = "compacted into the following summary";
+
+const DIGEST_PREAMBLE =
+	"[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]";
+
+/** Flatten any message content shape (string or content-block array) to text.
+ *  Drops images, thinking, and tool-call blocks. */
+function blocksToText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter(
+			(b): b is { type: "text"; text: string } =>
+				typeof b === "object" && b !== null && (b as { type?: string }).type === "text",
+		)
+		.map((b) => b.text)
+		.join("\n");
+}
+
+/** A compaction summary arrives wrapped in pi's boilerplate prefix/suffix.
+ *  Return just the summary body. */
+function stripCompactionWrapping(t: string): string {
+	const open = t.indexOf("<summary>");
+	const close = t.lastIndexOf("</summary>");
+	if (open >= 0 && close > open) return t.slice(open + "<summary>".length, close).trim();
+	return t.trim();
+}
+
+export interface DigestOptions {
+	/** Provider id whose assistant turns are already in agy's own DB and so
+	 *  must be skipped to avoid double-counting. Default "antigravity". */
+	ownProvider?: string;
+	/** Soft cap on the digest body (0 = unbounded). Default 8000. */
+	maxChars?: number;
+}
+
+/** Build a delta digest of pi-side context agy was not spawned for: the most
+ *  recent compaction summary plus turns since the watermark that were not
+ *  produced by this provider. Pure: no I/O. Exported for unit testing.
+ *
+ *  Delta, not replay: skip our own assistant turns (provider === ownProvider)
+ *  and clamp the window to after any compaction (pre-compaction detail is
+ *  either already in agy's DB or summarized by the injected summary). */
+export function buildContextDigest(
+	messages: Message[],
+	watermark: number,
+	opts: DigestOptions = {},
+): string {
+	const own = opts.ownProvider ?? "antigravity";
+	const maxChars = opts.maxChars ?? 8000;
+	if (messages.length === 0) return "";
+
+	const parts: string[] = [];
+
+	// 1. Most-recent compaction summary (scan the whole list; it is never in
+	//    agy's DB, so it is always safe and high-value to inject).
+	let lastCompactionIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "user") continue;
+		const t = blocksToText(m.content);
+		if (t.includes(COMPACTION_MARKER)) {
+			lastCompactionIdx = i;
+			parts.push(`[pi compaction summary]\n${stripCompactionWrapping(t)}`);
+			break;
+		}
+	}
+
+	// 2. Delta since the watermark, excluding the trailing current prompt.
+	//    Clamp start to just after the compaction summary when one is present.
+	let start = Math.max(0, Math.floor(watermark));
+	if (lastCompactionIdx >= 0) start = Math.max(start, lastCompactionIdx + 1);
+	const end = Math.max(0, messages.length - 1);
+	for (let i = start; i < end; i++) {
+		const m = messages[i];
+		if (m.role === "assistant") {
+			if (m.provider === own) continue; // our own turn: already in agy's DB
+			const t = blocksToText(m.content).trim();
+			if (!t) continue;
+			parts.push(`[assistant turn from ${m.provider}]\n${t}`);
+		} else if (m.role === "user") {
+			const t = blocksToText(m.content);
+			if (t.includes(COMPACTION_MARKER)) continue; // injected above
+			if (!t.trim()) continue;
+			parts.push(`[earlier user message]\n${t}`);
+		} else if (m.role === "toolResult") {
+			const t = blocksToText(m.content).trim();
+			parts.push(
+				`[tool result: ${m.toolName}${m.isError ? " (error)" : ""}]\n${t || "(no text output)"}`,
+			);
+		}
+	}
+
+	let body = parts.join("\n\n").trim();
+	if (maxChars > 0 && body.length > maxChars) {
+		body = `${body.slice(0, maxChars)}\n[truncated]`;
+	}
+	return body;
 }
 
 /** Build a fresh AssistantMessage shell for this turn. Mutated as blocks
@@ -187,12 +298,20 @@ async function runTurn(
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const key = sessionKey(options, cwd);
 	const existing = store.get(key);
+	const messageCount = context.messages.length;
 
 	const prompt = extractUserPrompt(context);
 	if (!prompt) {
 		finalize(stream, blocks, "error", "No user message to send to agy.");
 		return;
 	}
+
+	// G1: inject a delta digest of pi-side context agy was not spawned for
+	// (compaction summaries, other-provider turns). agy keeps its own history,
+	// so this is a delta, not a replay. See docs/PI-BRIDGE-GAPS.md (G1).
+	const watermark = existing?.lastMessageCount ?? 0;
+	const digest = buildContextDigest(context.messages, watermark);
+	const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
 
 	// Resolve the pi model id to the exact agy string. Fall through to the id
 	// itself on miss  -  agy will likely reject, but the error reaches the user
@@ -208,7 +327,7 @@ async function runTurn(
 		model: agyModel,
 		mode: config.mode,
 		skipPermissions: config.skipPermissions,
-		prompt,
+		prompt: fullPrompt,
 		conversationId: existing?.conversationId ?? null,
 		baseStepIdx: existing?.lastStepIdx ?? -1,
 		timeoutMin: DEFAULT_TIMEOUT_MIN,
@@ -277,6 +396,7 @@ async function runTurn(
 		store.set(key, {
 			conversationId: result.conversationId,
 			lastStepIdx: result.lastIdx,
+			lastMessageCount: messageCount,
 		});
 	}
 

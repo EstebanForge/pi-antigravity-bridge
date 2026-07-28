@@ -24,39 +24,64 @@ Ten actionable tasks (G1-G10). Order = G-number, not priority. Each entry
 carries: objective, why it matters, scope (files), acceptance criteria
 (test-first, verifiable), effort, and blockers. Status starts Open.
 
-Tackle order is decided separately (see Triage). Current focus: **G1**.
+Tackle order is decided separately (see Triage). G1 is closed (no-patch delta
+injection); next pick is open.
 
 ---
 
 ### G1. Give agy conversation-history access [HIGH IMPACT]
 
-**Status:** Open
-**Objective:** Expose pi's `AgentSession.messages` and compaction state to agy
-through three read-only bridge tools so agy can reference prior turns.
+**Status:** Done (no-patch delta-digest injection)
 
-**Why:** agy is stateless across turns from pi's perspective. Each call gets
-one prompt and no memory of what the user said before, what decisions were
-made, what tool errors happened, or what pi summarized at compaction time.
-For multi-turn work pi must re-stitch context; today it does not, so agy
-answers in a vacuum.
+**Objective:** Give agy the pi-side context it was not spawned for: pi's
+compaction summaries and turns handled by other providers or pi's own tools.
 
-**Scope:**
-- Patch `docs/PI-INVOOKETOOL-PATCH.md`: add read accessors on
-  `AgentSession` for messages, summary, and tool log.
-- `src/mcp-server.ts`: wrap `pi_get_messages`, `pi_get_summary`,
-  `pi_get_tool_log`.
-- `tests/mcp-server.test.ts`: round-trip each new tool.
+**Premise correction:** The original framing ("agy is stateless across turns")
+was wrong. agy resumes its own thread via `--conversation <id>` and persists
+everything to `~/.gemini/antigravity-cli/conversations/*.db` plus its own
+`conversation_summaries.db`. The bridge already keys `conversationId` +
+`lastStepIdx` per pi session (`src/sessions.ts`). So agy remembers its own
+turns. The real gap was the divergence: pi-side context agy never saw.
+
+**Why no patch (verified):** pi already materializes the compaction summary
+and every prior turn into `context.messages`, the exact array `streamSimple`
+receives every turn. `session-manager.js:185` maps a compaction entry to a
+user message; `buildSessionContext` (line 232) flattens all entries into
+`context.messages`. `provider.ts:extractUserPrompt` was discarding all but
+the last message on purpose. The data was an argument dropped on the floor,
+not behind a capability wall. So: no pi dist patch, no new MCP tool.
+
+**Implementation:**
+- `src/provider.ts`: `buildContextDigest(messages, watermark)` pure
+  function. Injects (1) the most-recent compaction summary (detected by pi's
+  `COMPACTION_SUMMARY_PREFIX`, boilerplate wrapper stripped) and (2) a delta
+  of messages since a watermark, skipping agy's own assistant turns
+  (`provider === "antigravity"`, already in agy's DB) to avoid
+  double-counting, and clamping the window to after any compaction. Prepended
+  to the `-p` prompt under a framing preamble. Capped at 8000 chars.
+- `src/sessions.ts`: `AgySession.lastMessageCount` watermark (optional,
+  backward-compatible), captured at the start of each turn and persisted
+  alongside `conversationId`/`lastStepIdx`.
+- `tests/provider-digest.test.ts`: 14 cases (empty, compaction strip,
+  double-count skip, other-provider include, toolResult, watermark clamp,
+  compaction clamp, maxChars). `tests/sessions.test.ts` updated for the new
+  field.
 
 **Acceptance criteria:**
-- [ ] `pi_get_messages(limit)` returns last N turns with role + content.
-- [ ] `pi_get_summary()` returns pi's compaction summary (or empty if none).
-- [ ] `pi_get_tool_log(limit)` returns recent tool calls and their results.
-- [ ] All three return JSON; errors are surfaced, never swallowed.
-- [ ] Unit tests cover happy path + empty-state + error path.
-- [ ] Verified end-to-end: a real agy call retrieves a prior turn.
+- [x] Compaction summary injected (boilerplate wrapper stripped).
+- [x] Other-provider assistant turns injected since the watermark.
+- [x] agy's own assistant turns skipped (no double-count).
+- [x] pi-tool `toolResult` messages injected.
+- [x] Trailing current prompt never injected.
+- [x] Window clamps to after any compaction.
+- [x] Digest capped; preamble frames it as continuity context.
+- [x] Unit tests pass; typecheck clean; full suite green (68 tests).
 
-**Effort:** Medium. Small pi-side patch in `agent-session.js` plus three thin
-bridge wrappers.
+**Effort:** Small (turned out). No pi patch maintenance burden.
+
+**Follow-ups (not blocking):** branch-summary messages currently pass through
+as generic "earlier user message" (pi's `BRANCH_SUMMARY_PREFIX`); could be
+labeled distinctly if branching sees real use.
 
 **Blocks:** None. **Blocked by:** None.
 
@@ -324,8 +349,9 @@ Easy wins (small change, big payoff):
 
 Medium effort, high payoff:
 
-- G1: bridge tools for `pi_get_messages`, `pi_get_summary`,
-  `pi_get_tool_log`. Requires a small patch in pi's `agent-session.js`.
+- G1 (DONE, no patch): provider-side delta digest in `src/provider.ts` +
+  `lastMessageCount` watermark in `src/sessions.ts`. The data was already in
+  `context.messages`; no `agent-session.js` patch or new MCP tool was needed.
 - G7: `pi_get_setting` with an allowlist.
 
 Larger effort, situational payoff:
