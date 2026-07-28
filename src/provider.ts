@@ -33,6 +33,8 @@ import { resolveAgyString, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
 import { isNarration } from "./narration.js";
+import path from "node:path";
+import { TurnDiffContext, createExecGitOps, parseEditToolInput } from "./diff-render.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -365,6 +367,10 @@ async function runTurn(
 		signal: options?.signal,
 	};
 
+	// G8: per-turn diff context for agy's file edits (write_to_file et al.).
+	// Turn-scoped so concurrent turns never share OLD-content caches.
+	const diffCtx = new TurnDiffContext(createExecGitOps());
+
 	const onEvent = (event: AgyEvent) => {
 		switch (event.kind) {
 			case "text":
@@ -397,13 +403,23 @@ async function runTurn(
 					});
 				}
 				break;
-			case "tool":
+			case "tool": {
 				flushTextBuf();
 				ensureThinkingOpen(stream, blocks);
-				// Route the tool label through the line buffer for consistency
-				// (it's a single narration-safe line, ends in \n).
-				processThinkingDelta(`[agy tool: ${event.name}]\n`);
+				// G8: if agy wrote a file, surface a git-sourced diff; else the plain
+				// tool label. Routed through the line buffer for consistency.
+				const edit = parseEditToolInput(event.inputJson ?? "");
+				if (edit) {
+					const absFile = path.isAbsolute(edit.file) ? edit.file : path.resolve(cwd, edit.file);
+					const outcome = diffCtx.diffEdit(absFile, edit.content);
+					const label = edit.description ?? path.basename(absFile);
+					processThinkingDelta(`[agy edit: ${label}]\n`);
+					if (outcome.text) processThinkingDelta(`${outcome.text}\n`);
+				} else {
+					processThinkingDelta(`[agy tool: ${event.name}]\n`);
+				}
 				break;
+			}
 			case "title":
 				// Conversation title metadata  -  not streamed to the user.
 				break;

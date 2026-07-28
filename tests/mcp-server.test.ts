@@ -132,6 +132,37 @@ test("server lifecycle: token gate, body cap, protocol clamp, tool dispatch, cle
 	assert.equal(bridgeMcpConfigExists(), false);
 });
 
+test("protocol-version clamp: unsupported MCP-Protocol-Version on follow-up -> 200", async () => {
+	// agy negotiates a protocol version newer than the SDK knows (2026-07-28
+	// while the SDK tops out at LATEST). initialize is exempt from the transport's
+	// header check, but every follow-up (tools/list, tools/call,
+	// notifications/initialized) is validated against it -> 400 + transport-error
+	// without a clamp. The bridge rewrites any unsupported value to LATEST.
+	// Isolated on its own server: a prior tools/call leaves its SSE body open,
+	// which would starve undici's pool for a follow-up fetch on the same server.
+	const r = await startMcpServer(makeStubPi(true, {}), { preferredPort: 0 });
+	assert.equal(r.ok, true);
+	try {
+		const url = `http://127.0.0.1:${r.port!}/mcp`;
+		const token = readToken();
+		const res = await fetch(url, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				accept: "application/json, text/event-stream",
+				[TOKEN_HEADER]: token,
+				"MCP-Protocol-Version": "2026-07-28",
+			},
+			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+		});
+		assert.equal(res.status, 200);
+	} finally {
+		// Always close: a failed assert must not orphan the server (its keep-alive
+		// conn then holds the process and hangs the test runner).
+		await r.handle!.close();
+	}
+});
+
 // --- registerExitCleanup: abrupt-termination config cleanup -----------------
 //
 // Uses SIGUSR2 (benign, not used by the test runner or pi) as the stand-in for

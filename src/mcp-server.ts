@@ -30,6 +30,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
+	LATEST_PROTOCOL_VERSION,
+	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
 
 /** Tools we do NOT expose to agy: it would just error (the provider is already
@@ -55,6 +57,30 @@ export interface McpStartResult {
 /** True only if the running pi exposes the local invokeTool patch. */
 export function hasInvokeTool(pi: ExtensionAPI): boolean {
 	return typeof (pi as unknown as { invokeTool?: unknown }).invokeTool === "function";
+}
+
+/** Clamp an unsupported MCP-Protocol-Version header down to the SDK's LATEST.
+ *
+ *  agy negotiates a protocol version newer than this SDK ships (e.g. 2026-07-28
+ *  vs LATEST 2025-11-25). initialize is exempt from the transport's header
+ *  check, and the SDK's initialize handler already downgrades the body version
+ *  itself, but EVERY follow-up (tools/list, tools/call,
+ *  notifications/initialized) is validated against the header -> 400 +
+ *  transport-error. This server is stateless (a fresh transport per request),
+ *  so it cannot track the negotiated version across requests; rewriting any
+ *  unsupported value to LATEST is the correct, spec-friendly downgrade. The
+ *  Node->Web conversion (Hono getRequestListener) builds the Web Request from
+ *  req.rawHeaders, NOT the parsed req.headers object, so the value must be
+ *  rewritten in the raw array (kept in sync with req.headers for any other
+ *  reader). */
+function clampProtocolVersionHeader(req: http.IncomingMessage): void {
+	const sent = req.headers["mcp-protocol-version"];
+	if (typeof sent !== "string" || SUPPORTED_PROTOCOL_VERSIONS.includes(sent)) return;
+	req.headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION;
+	const raw = req.rawHeaders;
+	for (let i = 0; i < raw.length - 1; i += 2) {
+		if (raw[i].toLowerCase() === "mcp-protocol-version") raw[i + 1] = LATEST_PROTOCOL_VERSION;
+	}
 }
 
 interface PiToolMeta {
@@ -338,11 +364,14 @@ export async function startMcpServer(
 					res.writeHead(400).end("invalid json");
 					return;
 				}
-				// Protocol version: agy negotiates 2026-07-28 while the SDK's LATEST is
-				// older. The SDK downgrades an unknown initialize version on its own
-				// (verified: initialize + tools/call return 200 with no header rewrite),
-				// so we no longer mutate req.headers / req.rawHeaders. If a future SDK
-				// stops tolerating newer versions, re-introduce a targeted clamp here.
+				// Protocol version: agy negotiates a version newer than this SDK ships
+				// (e.g. 2026-07-28 vs LATEST 2025-11-25). initialize is exempt from the
+				// transport's header check and the SDK downgrades its body version
+				// itself, but every follow-up (tools/list, tools/call,
+				// notifications/initialized) is header-checked -> 400 + transport-error.
+				// Clamp unsupported headers to LATEST. Stateless server (fresh transport
+				// per request) can't track the negotiated version across requests.
+				clampProtocolVersionHeader(req);
 				// #6: cancel the invoked tool if agy disconnects mid-call (e.g. killed
 				// by the runner timeout). req 'close' would fire on normal completion,
 				// so we only abort on client abort / response-closed-before-finished.

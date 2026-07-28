@@ -2,8 +2,6 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
-
 ## [0.1.0] - 2026-07-27
 
 First release. A streaming Gemini model provider for pi, built on Google's
@@ -21,7 +19,7 @@ dependency.
 - **Gemini provider for pi.** `antigravity/gemini-*` models appear in pi's
   `/model` picker, discovered live from `agy models` (with a fallback catalog
   when discovery fails). Picking one routes each turn through the provider.
-- **Real streaming.** A concurrent poll loop (200ms, `PRAGMA data_version`
+- **Real streaming.** A concurrent poll loop (250ms, `PRAGMA data_version`
   coalescing) reads agy's conversation DB while agy is still running, so text
   and tool activity arrive during the turn, not replayed at exit. Three
   trailing polls catch the final flush; abort skips them for prompt cancel.
@@ -54,24 +52,18 @@ dependency.
 - **Tool-activity visibility.** agy's closed tool loop surfaces in pi's
   thinking panel as `[agy tool: <name>]`. agy edits/commands land on disk;
   pi's tools never fire (architectural wall, documented).
+- **Cross-turn context continuity.** agy keeps its own history, but it now
+  also receives pi-side context it wasn't spawned for (compaction summaries,
+  turns from other providers or pi's own tools) as a brief digest with the
+  prompt each turn, so multi-turn work and provider switches stay coherent.
+- **Edit diffs in the thinking stream.** When agy writes a file, pi's thinking
+  panel shows a line-numbered diff of the change as it lands. Works across
+  nested repos, submodules, and multi-repo workspaces; degrades cleanly for
+  binary, off-repo, or unchanged files.
 - **Tests.** Unit tests for the protobuf decoder and narration filter; a
   deterministic fake-agy test that asserts events stream during the run and
   that abort returns promptly (guards the "provider did not actually stream"
   regression class).
-
-#### Provider context (G1)
-
-- **pi-side context digest for agy.** agy keeps its own conversation history
-  (resumed via `--conversation`), but it never saw pi-side context it wasn't
-  spawned for: pi's compaction summaries and turns handled by other providers
-  or pi's own tools. pi already materializes all of that into
-  `context.messages` every turn (verified in `session-manager.js`), so the
-  provider builds a delta digest (`buildContextDigest` in `src/provider.ts`)
-  and prepends it to the agy prompt. It skips agy's own assistant turns
-  (`provider === "antigravity"`) to avoid double-counting, clamps the window
-  to after any compaction, and caps at 8000 chars. A `lastMessageCount`
-  watermark on `AgySession` (`src/sessions.ts`) marks the delta boundary. No
-  pi dist patch, no new MCP tool. Closes G1 in `docs/PI-BRIDGE-GAPS.md`.
 
 #### MCP tool bridge (agy -> pi tools)
 
@@ -100,9 +92,9 @@ dependency.
   silently no-ops the MCP server if the patch is absent (clean pi reinstall
   drops the patch; bridge still runs as a provider).
 - **Tool filtering.** Builtin tools that agy already has natively (read,
-  write, edit, bash, ls, grep, find) are exposed through the bridge; agy
-  itself is filtered to avoid recursion. `AskAntigravity` is filtered for the
-  same reason.
+  write, edit, bash, ls, grep, find) are filtered out so agy does not double
+  up on its own equivalents; `AskAntigravity` is filtered to avoid recursion.
+  Every other registered tool is exposed.
 - **Security.** Shared-secret `x-bridge-token` header, request body size cap,
   per-call `AbortController` so agy can cancel in-flight tool calls, full
   request handler `try/catch`, rawHeaders rewrite for Hono's protocol clamp.
@@ -114,23 +106,23 @@ dependency.
 - `docs/PI-INVOOKETOOL-PATCH.md` - the local patch to pi's dist that the
   bridge depends on.
 - `docs/PI-BRIDGE-GAPS.md` - capability gaps, as actionable tasks (G1-G10).
-  G1 (conversation history) is closed via a no-patch provider-side digest; the
-  rest (streaming progress, UI primitives, MCP-server double-exposure, etc.)
-  remain open, triaged by effort and payoff.
+  G1 (conversation history) and G8 (edit diffs) are closed via no-patch,
+  provider/decode-side work; the rest (streaming progress, UI primitives,
+  MCP-server double-exposure, etc.) remain open, triaged by effort and payoff.
 
-### Notes
+### Fixed
 
-- The Terms-of-Service notice is peer-reviewed (Claude Sonnet + agy flash)
-  and grounded in the actual Antigravity ToS Section 6 and the Feb 2026
-  enforcement record: gray-area-leaning-compliant. The clause targets
-  credential/backend substitution (OpenClaw + OAuth), not spawning the
-  official CLI. Not legal advice.
-- A full second peer-review pass (Sonnet, isolated) caught and fixed an
-  `AGY_MODE` env-override precedence bug, a discovery-miss silent-failure
-  regression, a misleading `input: ["text","image"]` advertisement, a
-  step-boundary race in the poller, and a delta-defeating narration filter.
-- The MCP bridge relies on a local patch to pi's dist (`agent-session.js`,
-  `runner.js`, `loader.js`, `types.d.ts`). Clean pi reinstall drops the patch;
-  `docs/PI-INVOOKETOOL-PATCH.md` describes how to reapply it. Shipped in
-  `package.json`'s `files` so npm consumers receive the doc, but applying it
-  is still a manual step until upstream pi ships equivalent capability.
+- **Protocol-version clamp for the MCP bridge.** agy negotiates a protocol
+  version newer than the SDK this bridge ships: `@modelcontextprotocol/sdk`
+  1.29.0 tops out at `2025-11-25`, but agy sends `2026-07-28`. `initialize` is
+  exempt from the transport's header check and the SDK downgrades its body
+  version itself, yet every follow-up (`tools/list`, `tools/call`,
+  `notifications/initialized`) is validated against the `MCP-Protocol-Version`
+  header and rejected with `400 Bad Request: Unsupported protocol version`,
+  surfaced as a `transport-error` on every turn. The bridge now rewrites any
+  unsupported header value to `LATEST_PROTOCOL_VERSION` before the transport
+  sees it. The server is stateless (a fresh transport per request), so it
+  cannot track the negotiated version across requests; clamping to LATEST is
+  the correct downgrade. Hono's Node->Web conversion reads `req.rawHeaders`,
+  not the parsed `req.headers` object, so the value is rewritten in the raw
+  array (and mirrored on `req.headers` for other readers).

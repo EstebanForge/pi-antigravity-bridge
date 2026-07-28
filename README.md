@@ -1,4 +1,4 @@
-# pi-antigravity-bridge
+# pi-antigravity-bridge - WIP
 
 A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), both built on Google's `agy` CLI. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
@@ -27,7 +27,7 @@ Residual limits (with or without the bridge):
 
 While agy is the active model it normally cannot see pi's universe of extensions: agentmemory, codegraph, web search, slack/asana, the `Ask*` delegations, and any other installed pi tool. This extension optionally bridges that gap.
 
-When the capability is present the bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and `tools/call` executes them via `pi.invokeTool()`. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
+When the capability is present the bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and `tools/call` executes them via `pi.invokeTool()`. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
 
 **Capability requirement.** `pi.invokeTool()` is not (yet) part of upstream pi. It is a small local patch. Without it the bridge detects the missing capability at load time, skips the MCP server, and everything else works unchanged. See [docs/PI-INVOOKETOOL-PATCH.md](docs/PI-INVOOKETOOL-PATCH.md) for exactly what the patch is, where it goes, and how to apply it.
 
@@ -67,18 +67,22 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 | `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
 | `AGY_FILTER_NARRATION` | `1`/`true` to filter agy's "I will ..." narration chunks, `0`/`false` to stream raw. Wins over the config file. |
 | `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
+| `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |
+| `AGY_DEFAULT_THINKING` | Default thinking tier for the `AskAntigravity` tool: `low`/`medium`/`high`. Anything else falls back to `medium`. Wins over the config file. |
 
 ### The /agy command
 
 `/agy` configures the provider at runtime. Settings persist to `~/.pi/agent/antigravity-bridge/config.json` and take effect on the next turn.
 
 ```
-/agy                      status, or open the mode/narration/permissions picker (TUI)
+/agy                      status, or open the mode/narration/permissions/model/thinking picker (TUI)
 /agy status               print current mode, narration, model + session counts
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
 /agy narration on|off     filter / keep agy's "I will ..." planning chunks
+/agy model flash|pro|gemini   default model alias for the AskAntigravity tool
+/agy thinking low|medium|high default thinking tier for the AskAntigravity tool
 /agy clear                drop all session bindings (force fresh conversations)
 ```
 

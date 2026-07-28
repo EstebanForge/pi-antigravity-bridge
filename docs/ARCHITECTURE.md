@@ -13,8 +13,11 @@ src/protobuf.ts       hand-rolled varint walker + extractors (field 20.1 = text)
 src/discovery.ts      snapshot/diff to bind the conversation id agy never prints
 src/models.ts         agy models -> pi Model projection
 src/sessions.ts       atomic JSON store: pi session -> agy conversation + last step
-src/config.ts         persisted runtime config (mode, narration, permissions)
+src/config.ts         persisted runtime config (mode, narration, permissions, model/thinking defaults)
 src/narration.ts      drop agy's "I will ..." planning chunks
+src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
+src/mcp-server.ts     MCP tool bridge: exposes pi's tools to agy over Streamable HTTP
+src/diff-render.ts    render agy's file edits as git diffs in pi's thinking stream
 ```
 
 No generated protobuf code, no native SQLite dependency.
