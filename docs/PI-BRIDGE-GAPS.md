@@ -44,7 +44,7 @@ that work is happening. This is partly a pi-side gap (most long tools do not
 emit progress) and partly a bridge-transport gap.
 
 **Scope:**
-- `docs/PI-INVOOKETOOL-PATCH.md`: expose pi's progress bus.
+- `docs/PI-INVOKETOOL-PATCH.md`: expose pi's progress bus.
 - `src/mcp-server.ts`: switch from blocking `invokeTool` to a streaming RPC
   using MCP `notifications/progress` (or a `pi_tool_progress` SSE channel).
 - pi-side: audit long tools and add progress emission where missing.
@@ -75,7 +75,7 @@ notification toast (for "task started" / "save ok"), native file picker
 for agy edits, that path is structurally closed (see G8 in `CHANGELOG.md`).
 
 **Scope:**
-- `docs/PI-INVOOKETOOL-PATCH.md`: expose `AgentSession.ui` helpers.
+- `docs/PI-INVOKETOOL-PATCH.md`: expose `AgentSession.ui` helpers.
 - `src/mcp-server.ts`: wrappers for `pi_confirm`, `pi_notify`,
   `pi_select_file`, `pi_select_directory`, `pi_set_status`.
 
@@ -108,7 +108,7 @@ stream; otherwise this risks the same "no consumer" failure that sank
 file-watching (see Discarded ideas).
 
 **Scope:**
-- `docs/PI-INVOOKETOOL-PATCH.md`: add an event-emitter seam on `AgentSession`.
+- `docs/PI-INVOKETOOL-PATCH.md`: add an event-emitter seam on `AgentSession`.
 - `src/mcp-server.ts`: `pi_subscribe(event)` returns a stream id; an SSE
   channel pushes events.
 
@@ -159,7 +159,7 @@ reasoning is in project memory.
 For each open gap, the default shape:
 
 1. Identify the pi-side API to expose (or add).
-2. Extend the patch in `docs/PI-INVOOKETOOL-PATCH.md` with a read (or write)
+2. Extend the patch in `docs/PI-INVOKETOOL-PATCH.md` with a read (or write)
    accessor.
 3. Add a bridge tool wrapper in `src/mcp-server.ts` that calls the patched API.
 4. Register the tool name with the bridge (it appears in agy's tool catalog on
@@ -175,7 +175,7 @@ shape above is a default, not a requirement.
 ## Cross-references
 
 - `docs/ARCHITECTURE.md` — bridge design and per-pid config layout.
-- `docs/PI-INVOOKETOOL-PATCH.md` — the local patch to pi that this whole
+- `docs/PI-INVOKETOOL-PATCH.md` — the local patch to pi that this whole
   feature depends on.
 - `docs/DEVELOPMENT.md` — how to run tests, rebuild, and iterate.
 - `CHANGELOG.md` — shipped work (conversation-history digest, edit diffs).

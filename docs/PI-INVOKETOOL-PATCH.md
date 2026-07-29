@@ -6,6 +6,24 @@
 > small, self-contained, and gated by a runtime capability check, so pi runs
 > that lack it are unaffected. An upstream PR is the durable fix (planned).
 
+> **Self-applied by the extension.** As of v0.1.0, on first load with the patch
+> missing the bridge **asks you once** whether to apply it (`src/patcher.ts`); if
+> you decline it stays silent and won't ask again until `/agy patch apply`, so
+> you normally never touch these files by hand. The edits below are documented
+> for reference, auditing, and manual recovery. Auto-applier facts:
+> - Targets the **running** pi's `dist/` (located via `realpath(process.argv[1])`
+>   and verified by anchor presence), never a sibling extension's decoy copy.
+> - Idempotent and two-phase: validates all anchors before writing, so a pi
+>   version that moved the code aborts cleanly with nothing written. The facade
+>   file is written **last**, so a crashed/partial patch leaves
+>   `hasInvokeTool()` false (safe degraded), never a half-wired chain.
+> - Originals backed up under
+>   `~/.pi/agent/antigravity-bridge/pi-patch-backup/<version>-<ts>-<pid>/`.
+> - `/agy patch status|apply|restore` inspects, forces, or rolls it back; restore
+>   is version-guarded (refuses across pi versions, no silent downgrade).
+> - Takes effect only after a **full pi restart** (not `/reload`): pi caches its
+>   compiled native-ESM core per process.
+
 This document is written for an LLM (or human) that needs to understand exactly
 what was changed, where, and why, without re-deriving it from the codebase.
 
@@ -152,16 +170,19 @@ On the `ExtensionAPI` interface, immediately after `getAllTools(): ToolInfo[];`:
 
 ## How to apply
 
+**You usually don't.** On first load, the extension asks you once whether to
+apply the patch (`src/patcher.ts`); see the note at the top of this document.
+The manual steps below are for reference, auditing, or recovering without the
+extension loaded.
+
 The patch is plain edits to the six compiled files above. Because pi ships no
-`src/`, there is nothing to recompile. After editing, clear jiti's cache so
-already-compiled extensions pick up the change:
+`src/`, there is nothing to recompile. (The old "clear jiti's cache" step is a
+no-op on pi 0.82.1, which sets `moduleCache: false` in its extension loader, so
+jiti never writes an fs cache.)
 
-```bash
-rm -rf /tmp/jiti
-```
-
-A `pi` reinstall or update overwrites `dist/` and **removes the patch**. Re-apply
-it, or (durably) merge it upstream.
+A `pi` reinstall or update overwrites `dist/` and **removes the patch**, but the
+extension re-applies it on the next start (then prompts you to restart pi).
+Durable fix: merge it upstream.
 
 ## How to verify
 

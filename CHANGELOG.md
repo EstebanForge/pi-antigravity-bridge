@@ -103,7 +103,7 @@ dependency.
 
 - `docs/ARCHITECTURE.md` - bridge design and per-pid config layout.
 - `docs/DEVELOPMENT.md` - how to run tests, rebuild, and iterate.
-- `docs/PI-INVOOKETOOL-PATCH.md` - the local patch to pi's dist that the
+- `docs/PI-INVOKETOOL-PATCH.md` - the local patch to pi's dist that the
   bridge depends on.
 - `docs/PI-BRIDGE-GAPS.md` - capability gaps, as actionable tasks (G1-G10).
   G1 (conversation history) and G8 (edit diffs) are closed via no-patch,

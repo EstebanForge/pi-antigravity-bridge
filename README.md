@@ -4,7 +4,6 @@ A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](ht
 
 <img width="3024" height="1774" alt="image" src="https://github.com/user-attachments/assets/9fc2f368-7292-4dde-851b-db2bd579263c" align="center" />
 
-
 If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
 
 ## What it does
@@ -29,7 +28,7 @@ While agy is the active model it normally cannot see pi's universe of extensions
 
 When the capability is present the bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and `tools/call` executes them via `pi.invokeTool()`. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
 
-**Capability requirement.** `pi.invokeTool()` is not (yet) part of upstream pi. It is a small local patch. Without it the bridge detects the missing capability at load time, skips the MCP server, and everything else works unchanged. See [docs/PI-INVOOKETOOL-PATCH.md](docs/PI-INVOOKETOOL-PATCH.md) for exactly what the patch is, where it goes, and how to apply it.
+**Capability requirement.** `pi.invokeTool()` is not (yet) part of upstream pi. On first load with the patch missing, the extension **asks you once** whether to apply it (see [Install](#install)); once applied it activates after a full `pi` restart. Without it the bridge detects the missing capability at load time, skips the MCP server, and everything else works unchanged. See [docs/PI-INVOKETOOL-PATCH.md](docs/PI-INVOKETOOL-PATCH.md) for what the patch is, and `/agy patch status|apply|restore` to inspect, force, or undo it.
 
 **Recursion safety.** Only the provider's agy receives the extra `--add-dir`. The `AskAntigravity` tool spawns its own agy with just the workspace, so that inner agy starts plain (no pi tools) and cannot re-enter. `AskAntigravity` is also filtered from the exposed tool list. Standalone agy is unaffected because nothing is written to its global config.
 
@@ -39,7 +38,31 @@ When the capability is present the bridge starts a localhost MCP server inside p
 
 ## Install
 
-Not yet. You shouldn't install this. Is a WIP. Which I use daily. But still in process of stabilizing and polishing.
+> ⚠️ **Heads-up: this extension patches your `pi` install.** When it loads and
+> the running pi lacks `pi.invokeTool()`, it **asks you once** whether to edit
+> files inside your globally-installed `@earendil-works/pi-coding-agent/dist/`
+> (adding one method) to enable the MCP tool bridge.
+> - **Yes** → applies the patch (reversible via `/agy patch restore`) and tells
+>   you to restart pi. The bridge starts on the next launch.
+> - **No** → it remembers your choice and stays silent; it won't ask again until
+>   you run `/agy patch apply`. The provider and AskAntigravity tool keep working;
+>   only the MCP tool bridge stays off.
+> - The apply is **idempotent & safe** (only what's missing; aborts cleanly if a
+>   pi update moved the code), **backed up** (under
+>   `~/.pi/agent/antigravity-bridge/pi-patch-backup/`), and **self-healing** (a
+>   `pi` reinstall/update wipes `dist/`; re-applied on the next start).
+>
+> The patch only takes effect after a **full `pi` restart** (quit + relaunch) —
+> `/reload` is **not** enough, because pi caches its compiled core for the
+> process. If pi was installed with `sudo`, the first write may need permissions;
+> the error message tells you exactly how to fix it. Details in
+> [docs/PI-INVOKETOOL-PATCH.md](docs/PI-INVOKETOOL-PATCH.md).
+
+Install with pi's package manager:
+
+```bash
+pi install npm:@estebanforge/pi-antigravity-bridge
+```
 
 Requires the **`agy` CLI** installed and authenticated. If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable.
 
@@ -83,6 +106,7 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 /agy narration on|off     filter / keep agy's "I will ..." planning chunks
 /agy model flash|pro|gemini   default model alias for the AskAntigravity tool
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
+/agy patch status|apply|restore   inspect / force / undo the pi.invokeTool patch
 /agy clear                drop all session bindings (force fresh conversations)
 ```
 

@@ -17,6 +17,7 @@ src/config.ts         persisted runtime config (mode, narration, permissions, mo
 src/narration.ts      drop agy's "I will ..." planning chunks
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge: exposes pi's tools to agy over Streamable HTTP
+src/patcher.ts        Auto-applies the pi.invokeTool local patch to enable the MCP tool bridge
 src/diff-render.ts    render agy's file edits as git diffs in pi's thinking stream
 ```
 

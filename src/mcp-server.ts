@@ -16,7 +16,7 @@
 //   - Request body size cap.
 //
 // CAPABILITY GATE: pi.invokeTool is NOT upstream pi (local patch, see
-// docs/PI-INVOOKETOOL-PATCH.md). If absent, startMcpServer returns { ok:false }
+// docs/PI-INVOKETOOL-PATCH.md). If absent, startMcpServer returns { ok:false }
 // and the bridge runs unchanged.
 
 import http from "node:http";

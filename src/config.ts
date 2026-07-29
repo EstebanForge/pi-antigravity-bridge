@@ -38,6 +38,10 @@ export interface AgyConfig {
 	defaultModel: string;
 	/** AskAntigravity tool: default thinking tier when the alias names none. */
 	defaultThinking: ThinkingTier;
+	/** User declined the pi.invokeTool auto-patch consent prompt. When true,
+	 *  session_start silently skips the patch + MCP tool bridge until cleared
+	 *  (by /agy patch apply succeeding, or the patch otherwise becoming live). */
+	invokeToolPatchDeclined?: boolean;
 }
 
 const DEFAULTS: AgyConfig = {
@@ -96,7 +100,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const defaultThinking: ThinkingTier =
 		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
 
-	return { mode, filterNarration, skipPermissions, defaultModel, defaultThinking };
+	return { mode, filterNarration, skipPermissions, defaultModel, defaultThinking, invokeToolPatchDeclined: file.invokeToolPatchDeclined };
 }
 
 /** Atomically persist a config patch (temp + rename). */
