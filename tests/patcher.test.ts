@@ -8,7 +8,7 @@
 // copy and the real globally-patched pi (when that install is present): it
 // proves the patcher reproduces the hand-applied patch exactly.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

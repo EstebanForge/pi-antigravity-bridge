@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
 	newConversationId,
 	procTreeOpenDbResolver,
@@ -102,4 +102,57 @@ test("newConversationId: resolver finds none -> null (fail safe)", () => {
 test("procTreeOpenDbResolver: returns null with <=1 candidate (nothing to disambiguate)", () => {
 	assert.equal(procTreeOpenDbResolver(1, os.tmpdir(), new Set()), null);
 	assert.equal(procTreeOpenDbResolver(1, os.tmpdir(), new Set(["only"])), null);
+});
+
+// --- onAmbiguous: lets a caller bound its retry budget to the genuinely-
+//     ambiguous case only. These pin the fix for the bind-cap coupling bug
+//     where the ordinary "agy hasn't written its DB yet" wait was counted.
+
+test("newConversationId: onAmbiguous NOT called when nothing is new yet", () => {
+	const dir = seed(["pre"]);
+	const before = snapshotConversations(dir);
+	let calls = 0;
+	assert.equal(newConversationId(dir, before, { onAmbiguous: () => calls++ }), null);
+	assert.equal(calls, 0, "the waiting case must not burn the retry budget");
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("newConversationId: onAmbiguous NOT called when exactly one new binds", () => {
+	const dir = seed(["pre"]);
+	const before = snapshotConversations(dir);
+	fs.writeFileSync(path.join(dir, "ours.db"), "");
+	let calls = 0;
+	assert.equal(newConversationId(dir, before, { onAmbiguous: () => calls++ }), "ours");
+	assert.equal(calls, 0);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("newConversationId: onAmbiguous NOT called when the resolver succeeds", () => {
+	const dir = seed(["pre"]);
+	const before = snapshotConversations(dir);
+	fs.writeFileSync(path.join(dir, "ours.db"), "");
+	fs.writeFileSync(path.join(dir, "theirs.db"), "");
+	const stub: OpenDbResolver = (_p, _d, c) => (c.has("ours") ? "ours" : null);
+	let calls = 0;
+	assert.equal(
+		newConversationId(dir, before, { pid: 1, resolveOpenDb: stub, onAmbiguous: () => calls++ }),
+		"ours",
+	);
+	assert.equal(calls, 0);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("newConversationId: onAmbiguous IS called when ambiguous and unresolved", () => {
+	const dir = seed(["pre"]);
+	const before = snapshotConversations(dir);
+	fs.writeFileSync(path.join(dir, "ours.db"), "");
+	fs.writeFileSync(path.join(dir, "theirs.db"), "");
+	const emptyResolver: OpenDbResolver = () => null;
+	let calls = 0;
+	assert.equal(
+		newConversationId(dir, before, { pid: 1, resolveOpenDb: emptyResolver, onAmbiguous: () => calls++ }),
+		null,
+	);
+	assert.equal(calls, 1, "ambiguous + unresolved must signal exactly once");
+	fs.rmSync(dir, { recursive: true, force: true });
 });

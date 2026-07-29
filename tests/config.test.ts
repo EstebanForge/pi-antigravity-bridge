@@ -6,7 +6,7 @@
 // pure decidePatchAction tests still passed because they never touched the
 // file). These tests pin the round-trip and the no-clobber guarantee.
 
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

@@ -32,7 +32,6 @@ import { runAgyTurn, type AgyEvent, type AgyRunOptions } from "./runner.js";
 import { resolveAgyString, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
-import { isNarration } from "./narration.js";
 import path from "node:path";
 import { TurnDiffContext, createExecGitOps, parseEditToolInput } from "./diff-render.js";
 
@@ -242,6 +241,9 @@ interface BlockState {
 export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
+	/** Override the agy turn runner (tests inject a scripted event source).
+	 *  Defaults to the real runAgyTurn. */
+	runAgyTurn?: typeof runAgyTurn;
 }
 
 /** Build the streamSimple closure. Captures the model catalog + session store
@@ -249,12 +251,12 @@ export interface StreamSimpleDeps {
 export function createStreamSimple(
 	deps: StreamSimpleDeps,
 ): (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
-	const { entries, store } = deps;
+	const { entries, store, runAgyTurn: runFn = runAgyTurn } = deps;
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
 		// Fire the async turn; return the stream synchronously per pi's contract.
-		void runTurn(stream, model, context, options, entries, store);
+		void runTurn(stream, model, context, options, entries, store, runFn);
 		return stream;
 	};
 }
@@ -266,60 +268,23 @@ async function runTurn(
 	options: SimpleStreamOptions | undefined,
 	entries: AgyModelEntry[],
 	store: SessionStore,
+	runFn: typeof runAgyTurn,
 ): Promise<void> {
 	const partial = newAssistant(model);
 	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
 
-	// Narration filter operates on complete lines (see src/narration.ts). Streaming
-	// deltas don't align with line boundaries, so we line-buffer: classify each
-	// complete line individually and keep the trailing partial line until the
-	// next delta (or the block closes). Without this, a narration line that
-	// grows across ticks drops its first chunk and leaks its tail ("...ile now.").
-	const emitTextLines = (lines: string[]): void => {
-		if (lines.length === 0 || !config.filterNarration) return;
-		const kept = lines.filter((l) => !isNarration(l));
-		if (kept.length === 0) return;
-		const delta = kept.join("\n");
+	// Direct emit helpers. agy streams deltas that may not align to line
+	// boundaries; pi's TUI renders partial lines fine, so we append and push
+	// each delta straight through (no filtering, no buffering).
+	const appendText = (delta: string): void => {
 		ensureTextOpen(stream, blocks);
 		textAt(partial, blocks.textIdx!).text += delta;
 		stream.push({ type: "text_delta", contentIndex: blocks.textIdx!, delta, partial });
 	};
-	const emitThinkingLines = (lines: string[]): void => {
-		if (lines.length === 0 || !config.filterNarration) return;
-		const kept = lines.filter((l) => !isNarration(l));
-		if (kept.length === 0) return;
-		const delta = kept.join("\n");
+	const appendThinking = (delta: string): void => {
 		ensureThinkingOpen(stream, blocks);
 		thinkingAt(partial, blocks.thinkingIdx!).thinking += delta;
 		stream.push({ type: "thinking_delta", contentIndex: blocks.thinkingIdx!, delta, partial });
-	};
-	let textBuf = "";
-	let thinkingBuf = "";
-	const processTextDelta = (delta: string): void => {
-		textBuf += delta;
-		const i = textBuf.lastIndexOf("\n");
-		if (i < 0) return;
-		const complete = textBuf.slice(0, i).split("\n");
-		textBuf = textBuf.slice(i + 1);
-		emitTextLines(complete);
-	};
-	const processThinkingDelta = (delta: string): void => {
-		thinkingBuf += delta;
-		const i = thinkingBuf.lastIndexOf("\n");
-		if (i < 0) return;
-		const complete = thinkingBuf.slice(0, i).split("\n");
-		thinkingBuf = thinkingBuf.slice(i + 1);
-		emitThinkingLines(complete);
-	};
-	const flushTextBuf = (): void => {
-		if (textBuf.length === 0 || !config.filterNarration) return;
-		emitTextLines([textBuf]);
-		textBuf = "";
-	};
-	const flushThinkingBuf = (): void => {
-		if (thinkingBuf.length === 0 || !config.filterNarration) return;
-		emitThinkingLines([thinkingBuf]);
-		thinkingBuf = "";
 	};
 
 	// Signal the turn has begun IMMEDIATELY. pi's native Working indicator is
@@ -351,7 +316,7 @@ async function runTurn(
 	// instead of a silent no-op.
 	const agyModel = resolveAgyString(model.id, entries) ?? model.id;
 
-	// Runtime config (mode, narration filter). Loaded fresh each turn so /agy
+	// Runtime config (mode, permissions). Loaded fresh each turn so /agy
 	// toggles take effect immediately without a reload.
 	const config = loadConfig();
 
@@ -374,49 +339,23 @@ async function runTurn(
 	const onEvent = (event: AgyEvent) => {
 		switch (event.kind) {
 			case "text":
-				flushThinkingBuf();
-				ensureTextOpen(stream, blocks);
-				if (config.filterNarration) {
-					processTextDelta(event.text);
-				} else {
-					textAt(partial, blocks.textIdx!).text += event.text;
-					stream.push({
-						type: "text_delta",
-						contentIndex: blocks.textIdx!,
-						delta: event.text,
-						partial,
-					});
-				}
+				appendText(event.text);
 				break;
 			case "thinking":
-				flushTextBuf();
-				ensureThinkingOpen(stream, blocks);
-				if (config.filterNarration) {
-					processThinkingDelta(event.text);
-				} else {
-					thinkingAt(partial, blocks.thinkingIdx!).thinking += event.text;
-					stream.push({
-						type: "thinking_delta",
-						contentIndex: blocks.thinkingIdx!,
-						delta: event.text,
-						partial,
-					});
-				}
+				appendThinking(event.text);
 				break;
 			case "tool": {
-				flushTextBuf();
-				ensureThinkingOpen(stream, blocks);
 				// G8: if agy wrote a file, surface a git-sourced diff; else the plain
-				// tool label. Routed through the line buffer for consistency.
+				// tool label. Always shown (agy's own tool loop, surfaced for visibility).
 				const edit = parseEditToolInput(event.inputJson ?? "");
 				if (edit) {
 					const absFile = path.isAbsolute(edit.file) ? edit.file : path.resolve(cwd, edit.file);
 					const outcome = diffCtx.diffEdit(absFile, edit.content);
 					const label = edit.description ?? path.basename(absFile);
-					processThinkingDelta(`[agy edit: ${label}]\n`);
-					if (outcome.text) processThinkingDelta(`${outcome.text}\n`);
+					appendThinking(`[agy edit: ${label}]\n`);
+					if (outcome.text) appendThinking(`${outcome.text}\n`);
 				} else {
-					processThinkingDelta(`[agy tool: ${event.name}]\n`);
+					appendThinking(`[agy tool: ${event.name}]\n`);
 				}
 				break;
 			}
@@ -428,11 +367,9 @@ async function runTurn(
 
 	let result;
 	try {
-		result = await runAgyTurn(runOpts, onEvent);
+		result = await runFn(runOpts, onEvent);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		flushTextBuf();
-		flushThinkingBuf();
 		finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
 		return;
 	}
@@ -454,22 +391,16 @@ async function runTurn(
 	}
 
 	if (result.aborted) {
-		flushTextBuf();
-		flushThinkingBuf();
 		finalize(stream, blocks, "aborted", "Operation aborted");
 		return;
 	}
 	if (result.timedOut) {
 		const note = `agy exceeded the ${runOpts.timeoutMin}m timeout`;
-		flushTextBuf();
-		flushThinkingBuf();
 		finalize(stream, blocks, "error", note);
 		return;
 	}
 	if (result.exitCode !== 0) {
 		const detail = result.stderr.trim() || `agy exited with status ${result.exitCode}`;
-		flushTextBuf();
-		flushThinkingBuf();
 		finalize(stream, blocks, "error", detail);
 		return;
 	}
@@ -484,19 +415,13 @@ async function runTurn(
 		const detail =
 			"agy exited cleanly but its conversation database could not be bound. " +
 			"The run may have partially applied edits with no visible output.";
-		flushTextBuf();
-		flushThinkingBuf();
 		finalize(stream, blocks, "error", detail);
 		return;
 	}
 
-	// Flush any line-buffered tails before the stream closes.
-	flushTextBuf();
-	flushThinkingBuf();
 	// Success. If no text ever streamed (agy did only tool work, or returned
 	// empty), emit an empty text block so pi has a well-formed assistant turn.
 	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
-		flushThinkingBuf();
 		ensureTextOpen(stream, blocks);
 	}
 	finalize(stream, blocks, "stop");

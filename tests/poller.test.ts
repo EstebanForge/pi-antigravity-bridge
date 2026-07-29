@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { test } from "vitest";
 import { ConversationPoller } from "../src/poller.js";
 
 /** Build a conversations DB with a steps table and return a writer handle plus

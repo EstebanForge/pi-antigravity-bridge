@@ -6,7 +6,7 @@
 > small, self-contained, and gated by a runtime capability check, so pi runs
 > that lack it are unaffected. An upstream PR is the durable fix (planned).
 
-> **Self-applied by the extension.** As of v0.1.0, on first load with the patch
+> **Self-applied by the extension.** As of v1.0.0, on first load with the patch
 > missing the bridge **asks you once** whether to apply it (`src/patcher.ts`); if
 > you decline it stays silent and won't ask again until `/agy patch apply`, so
 > you normally never touch these files by hand. The edits below are documented

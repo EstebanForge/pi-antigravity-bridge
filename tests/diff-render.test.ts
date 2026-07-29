@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
 	TurnDiffContext,
 	createExecGitOps,
@@ -165,7 +165,9 @@ function gitAvailable(): boolean {
 
 test("createExecGitOps: toplevel + showHead against a real temp repo", () => {
 	if (!gitAvailable()) return;
-	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "agy-diff-"));
+	// Resolve the symlink: on macOS os.tmpdir() is /var/... but git rev-parse
+	// --show-toplevel returns the canonical /private/var/... form.
+	const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agy-diff-")));
 	try {
 		const run = (args: string[]) => execFileSync("git", args, { cwd: repo, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" });
 		run(["init", "-q"]);

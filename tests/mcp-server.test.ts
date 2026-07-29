@@ -5,7 +5,7 @@
 // Run: npm test
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import fs from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {

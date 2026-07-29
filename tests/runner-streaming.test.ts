@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { test } from "vitest";
 import { runAgyTurn, type AgyEvent } from "../src/runner.js";
 
 /** Build the fake agy binary: a Node script that creates a conversation DB

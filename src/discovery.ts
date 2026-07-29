@@ -157,6 +157,13 @@ export interface BindOptions {
 	pid?: number;
 	/** Override resolver (tests). Defaults to the Linux /proc scanner. */
 	resolveOpenDb?: OpenDbResolver;
+	/** Invoked when the snapshot is ambiguous (more than one new DB since
+	 *  `before`) and the resolver could not authoritatively pick ours. Lets a
+	 *  caller bound its retry budget to the genuinely-ambiguous case only, so
+	 *  the ordinary "agy hasn't created its DB yet" wait is not counted
+	 *  against it. Not invoked when there is nothing new yet, or when exactly
+	 *  one new DB binds, or when the resolver succeeds. */
+	onAmbiguous?: () => void;
 }
 
 /** Find the conversation id created since `before`. Returns null when none
@@ -179,6 +186,7 @@ export function newConversationId(
 		const hit = resolve(opts.pid, dir, new Set(created));
 		if (hit && created.includes(hit)) return hit;
 	}
+	opts.onAmbiguous?.();
 	return null;
 }
 

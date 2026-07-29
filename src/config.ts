@@ -2,12 +2,12 @@
 // ~/.pi/agent/antigravity-bridge/config.json so the /agy command can
 // toggle settings that take effect on the next turn.
 //
-// Two knobs today:
+// Knobs today:
 //   mode            "accept-edits" (default) or "plan". Drives agy's --mode.
-//   filterNarration true (default). Drops agy's "I will ..." planning chunks
-//                   so the streamed transcript reads as prose, not narration.
+//   skipPermissions true (default). Passes --dangerously-skip-permissions so
+//                   commands don't hang on an unanswerable prompt in -p mode.
 //
-// Env overrides (AGY_MODE, AGY_FILTER_NARRATION) win over the file so tests
+// Env overrides (AGY_MODE, AGY_SKIP_PERMISSIONS) win over the file so tests
 // and one-off runs can force a setting without editing the file.
 
 import fs from "node:fs";
@@ -27,7 +27,6 @@ export type ThinkingTier = "low" | "medium" | "high";
 
 export interface AgyConfig {
 	mode: AgyMode;
-	filterNarration: boolean;
 	/** Auto-approve all agy tool permission requests (--dangerously-skip-permissions).
 	 *  Required for non-interactive use: without it, any `run_command` triggers an
 	 *  interactive y/n prompt that hangs forever in `-p` mode. Defaults true.
@@ -46,7 +45,6 @@ export interface AgyConfig {
 
 const DEFAULTS: AgyConfig = {
 	mode: "accept-edits",
-	filterNarration: true,
 	skipPermissions: true,
 	defaultModel: "flash",
 	defaultThinking: "medium",
@@ -65,7 +63,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		/* missing or corrupt  -  fall back to defaults */
 	}
 
-	// Env overrides file (matches the filterNarration/skipPermissions pattern).
+	// Env overrides file (matches the skipPermissions pattern).
 	// The naive OR `env === "plan" || file.mode === "plan"` would ignore an
 	// explicit AGY_MODE=accept-edits when the file says plan, violating the
 	// documented precedence. Check env first.
@@ -77,12 +75,6 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 			: file.mode === "plan"
 				? "plan"
 				: "accept-edits";
-
-	const envFlag = process.env.AGY_FILTER_NARRATION;
-	const filterNarration =
-		envFlag !== undefined
-			? envFlag === "1" || envFlag.toLowerCase() === "true"
-			: file.filterNarration ?? DEFAULTS.filterNarration;
 
 	const envPerm = process.env.AGY_SKIP_PERMISSIONS;
 	const skipPermissions =
@@ -100,7 +92,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const defaultThinking: ThinkingTier =
 		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
 
-	return { mode, filterNarration, skipPermissions, defaultModel, defaultThinking, invokeToolPatchDeclined: file.invokeToolPatchDeclined };
+	return { mode, skipPermissions, defaultModel, defaultThinking, invokeToolPatchDeclined: file.invokeToolPatchDeclined };
 }
 
 /** Atomically persist a config patch (temp + rename). */

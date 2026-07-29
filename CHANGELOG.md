@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.0] - 2026-07-27
+## [1.0.0] - 2026-07-29
 
 First release. A streaming Gemini model provider for pi, built on Google's
 `agy` CLI, plus an MCP tool bridge that lets agy use pi's installed tools
@@ -34,13 +34,10 @@ dependency.
   user message is sent each turn. Atomic, dirty-key-merged writes survive
   concurrent pi processes.
 - **`/agy` slash command** with status, an interactive picker (mode,
-  permissions, narration), and direct subcommands. Settings persist to
+  permissions), and direct subcommands. Settings persist to
   `~/.pi/agent/antigravity-bridge/config.json`.
-- **Narration filter** drops agy's "I will ..." planning chunks so the
-  transcript reads as prose. On by default; toggle via `/agy narration`.
-  Line-buffered so split deltas don't leak tails ("...ile now.").
 - **Configurable execution mode** (`accept-edits` default, or `plan`) and
-  permissions, overridable by `AGY_MODE` / `AGY_FILTER_NARRATION` /
+  permissions, overridable by `AGY_MODE` /
   `AGY_SKIP_PERMISSIONS` env vars.
 - **`--dangerously-skip-permissions` passed by default.** Technically
   required: `accept-edits` auto-approves file edits but not shell commands,
@@ -60,7 +57,7 @@ dependency.
   panel shows a line-numbered diff of the change as it lands. Works across
   nested repos, submodules, and multi-repo workspaces; degrades cleanly for
   binary, off-repo, or unchanged files.
-- **Tests.** Unit tests for the protobuf decoder and narration filter; a
+- **Tests.** Unit tests for the protobuf decoder; a
   deterministic fake-agy test that asserts events stream during the run and
   that abort returns promptly (guards the "provider did not actually stream"
   regression class).

@@ -12,7 +12,7 @@
 //   ("[agy tool: editing foo.ts]") for visibility, but the edits already landed
 //   on disk and pi's inline diff review does not engage.
 //
-// /agy command: status, mode picker (plan / accept-edits), narration toggle,
+// /agy command: status, mode picker (plan / accept-edits),
 // and session clear. Config persists to ~/.pi/agent/antigravity-bridge/
 // config.json so toggles survive restarts.
 
@@ -219,7 +219,6 @@ interface AgyCommandCtx {
 
 interface PendingConfig {
 	mode?: AgyMode;
-	filterNarration?: boolean;
 	skipPermissions?: boolean;
 	defaultModel?: string;
 	defaultThinking?: ThinkingTier;
@@ -234,14 +233,13 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  models:        ${ctx.entries.length} ${source}`,
 		`  mode:          ${config.mode}`,
 		`  permissions:   ${perm}`,
-		`  narration:     ${config.filterNarration ? "filtered" : "raw"}`,
 		`  tool model:    ${config.defaultModel}`,
 		`  tool thinking: ${config.defaultThinking}`,
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
 		`  invokeTool:    ${patchStateLabel()}`,
 		"",
-		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy narration on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy patch status|apply|restore, /agy clear",
+		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy patch status|apply|restore, /agy clear",
 	].join("\n");
 }
 
@@ -256,7 +254,7 @@ function patchStateLabel(): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, mode picker, narration toggle, patch, clear sessions. Usage: /agy [status|mode [plan|accept-edits]|narration [on|off]|patch [status|apply|restore]|clear]",
+			"Antigravity provider: status, mode picker, patch, clear sessions. Usage: /agy [status|mode [plan|accept-edits]|patch [status|apply|restore]|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -285,18 +283,6 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(`permissions: ${next.skipPermissions ? "auto-approved (DANGEROUS)" : "prompt"}${warn}`, next.skipPermissions ? "warning" : "info");
 				} else {
 					ui?.notify(`permissions: ${loadConfig().skipPermissions ? "auto-approved (DANGEROUS)" : "prompt"}\nusage: /agy permissions on|off\n(off hangs any run_command in non-interactive mode)`, "info");
-				}
-				return;
-			}
-			if (sub === "narration") {
-				if (val === "on" || val === "off") {
-					const next = saveConfig({ filterNarration: val === "on" });
-					ui?.notify(`narration ${next.filterNarration ? "filtered" : "raw"}`, "info");
-				} else {
-					ui?.notify(
-						`narration: ${loadConfig().filterNarration ? "filtered" : "raw"}\nusage: /agy narration on|off`,
-						"info",
-					);
 				}
 				return;
 			}
@@ -383,7 +369,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	});
 }
 
-/** Interactive settings picker (TUI only). Rows: mode + narration + permissions. */
+/** Interactive settings picker (TUI only). Rows: mode + permissions + model + thinking. */
 async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const config = loadConfig();
 	const pending: PendingConfig = {};
@@ -396,14 +382,6 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 				"accept-edits: agy applies edits directly. plan: review-only, no writes. Takes effect next turn.",
 			currentValue: config.mode,
 			values: ["accept-edits", "plan"],
-		},
-		{
-			id: "narration",
-			label: "Narration filter",
-			description:
-				"filtered: drop agy's 'I will ...' planning chunks. raw: stream everything agy emits.",
-			currentValue: config.filterNarration ? "filtered" : "raw",
-			values: ["filtered", "raw"],
 		},
 		{
 			id: "permissions",
@@ -443,8 +421,6 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			(id, newValue) => {
 				if (id === "mode") {
 					pending.mode = newValue as AgyMode;
-				} else if (id === "narration") {
-					pending.filterNarration = newValue === "filtered";
 				} else if (id === "permissions") {
 					pending.skipPermissions = newValue === "auto-approved";
 				} else if (id === "model") {
@@ -469,7 +445,6 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 
 	if (
 		pending.mode === undefined &&
-		pending.filterNarration === undefined &&
 		pending.skipPermissions === undefined &&
 		pending.defaultModel === undefined &&
 		pending.defaultThinking === undefined
@@ -480,9 +455,6 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		const next = saveConfig(pending);
 		const changed = [
 			pending.mode ? `mode=${next.mode}` : null,
-			pending.filterNarration !== undefined
-				? `narration=${next.filterNarration ? "filtered" : "raw"}`
-				: null,
 			pending.skipPermissions !== undefined
 				? `permissions=${next.skipPermissions ? "auto-approved" : "prompt"}`
 				: null,

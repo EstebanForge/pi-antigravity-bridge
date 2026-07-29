@@ -14,7 +14,6 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
     *   `discovery.ts`: `agy` conversation database discovery and PID mapping.
     *   `mcp-server.ts`: Internal bridge HTTP/MCP server lifecycle and capability gating.
     *   `models.ts`: Antigravity model catalog loading and background cache refreshing.
-    *   `narration.ts`: Fast regex heuristic for detecting narration vs actionable response lines.
     *   `patcher.ts`: Auto-applies the pi local patch to enable the MCP tool bridge.
     *   `poller.ts`: SQLite polling logic for tracking streaming steps in `agy` databases.
     *   `protobuf.ts`: Binary protobuf parser for decoding internal `agy` step messages.

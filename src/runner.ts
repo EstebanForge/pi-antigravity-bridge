@@ -213,8 +213,14 @@ export async function runAgyTurn(
 		// pid lets newConversationId disambiguate when a concurrent agy also
 		// drops a new .db in the dir during our turn (see discovery.ts).
 		if (!boundId && snapshot && bindAttempts < MAX_BIND_ATTEMPTS) {
-			bindAttempts++;
-			boundId = newConversationId(dir, snapshot, { pid: proc?.pid });
+			boundId = newConversationId(dir, snapshot, {
+				pid: proc?.pid,
+				// Only the genuinely-ambiguous case (>1 new DB, unresolved) counts
+				// against the cap. The ordinary "agy hasn't written its DB yet" wait
+				// must keep polling for the full turn timeout, not burn a budget
+				// meant to bound the expensive /proc FD-scan retries.
+				onAmbiguous: () => { bindAttempts++; },
+			});
 		}
 		if (!boundId) return false;
 

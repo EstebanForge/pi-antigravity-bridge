@@ -30,6 +30,11 @@ Three gaps remain. Every one either needs a pi dist patch (the maintenance cost
 the shipped gaps deliberately avoided) or a verify-before-build step. Ordered by
 former G-number.
 
+**Numbering note:** the G1/G2/G3 labels below are this living doc's renumbered
+open set, NOT the historical G1-G10 in `CHANGELOG.md`. In that historical list
+G1 = conversation-history digest and G8 = edit diffs; both are now closed
+(shipped in 1.0.0) and so dropped from here, leaving the three renumbered below.
+
 ---
 
 ### G1. Stream progress for long tool calls [HIGH IMPACT]

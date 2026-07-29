@@ -6,7 +6,7 @@ How to build, test, and debug this extension outside pi.
 
 ```bash
 npm install
-npm test          # unit tests (protobuf decoder, narration, runner streaming/abort)
+npm test          # unit tests (protobuf decoder, runner streaming/abort, mcp bridge)
 npm run build     # tsc --noEmit type check
 ```
 
@@ -56,8 +56,8 @@ Most "stuck" reports trace to one of:
 ## Regression tests worth knowing
 
 - `tests/protobuf.test.ts` - pure decoder math (varint, field walking, nested submessages).
-- `tests/narration.test.ts` - the narration-prefix filter.
 - `tests/runner-streaming.test.ts` - a fake agy writes rows on a delay; asserts events arrive DURING the run (not all at exit) and that abort returns promptly. This is the test that guards the "provider did not actually stream" class of bug.
+- `tests/mcp-server.test.ts` - the MCP tool bridge end-to-end against a real (port 0) server: capability gate, per-pid config lifecycle, shared-secret token gate, 1 MB body cap, protocol-version clamp, and tool-call dispatch through `pi.invokeTool`. Guards the security and transport-correctness of the bridge.
 
 ## Module map
 

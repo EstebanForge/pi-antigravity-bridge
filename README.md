@@ -1,4 +1,4 @@
-# pi-antigravity-bridge - WIP
+# pi-antigravity-bridge
 
 A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), both built on Google's `agy` CLI. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
@@ -41,12 +41,16 @@ When the capability is present the bridge starts a localhost MCP server inside p
 > ⚠️ **Heads-up: this extension patches your `pi` install.** When it loads and
 > the running pi lacks `pi.invokeTool()`, it **asks you once** whether to edit
 > files inside your globally-installed `@earendil-works/pi-coding-agent/dist/`
-> (adding one method) to enable the MCP tool bridge.
+> (adding one method) to enable the MCP tool bridge. This is, for now, the only
+> way agy can use Pi internal tooling.
+>
 > - **Yes** → applies the patch (reversible via `/agy patch restore`) and tells
 >   you to restart pi. The bridge starts on the next launch.
+>
 > - **No** → it remembers your choice and stays silent; it won't ask again until
 >   you run `/agy patch apply`. The provider and AskAntigravity tool keep working;
 >   only the MCP tool bridge stays off.
+>
 > - The apply is **idempotent & safe** (only what's missing; aborts cleanly if a
 >   pi update moved the code), **backed up** (under
 >   `~/.pi/agent/antigravity-bridge/pi-patch-backup/`), and **self-healing** (a
@@ -54,9 +58,9 @@ When the capability is present the bridge starts a localhost MCP server inside p
 >
 > The patch only takes effect after a **full `pi` restart** (quit + relaunch) —
 > `/reload` is **not** enough, because pi caches its compiled core for the
-> process. If pi was installed with `sudo`, the first write may need permissions;
-> the error message tells you exactly how to fix it. Details in
-> [docs/PI-INVOKETOOL-PATCH.md](docs/PI-INVOKETOOL-PATCH.md).
+> process.
+>
+> Details for the patch can be found in [docs/PI-INVOKETOOL-PATCH.md](docs/PI-INVOKETOOL-PATCH.md).
 
 Install with pi's package manager:
 
@@ -73,6 +77,14 @@ Also requires Node 22.5 or newer (uses the built-in `node:sqlite`).
 Pick a model and talk to pi as usual:
 
 ```
+/model
+```
+
+Look for the models namespaced as: antigravity
+
+Or specify a model directly:
+
+```
 /model antigravity/gemini-3-6-flash-medium
 ```
 
@@ -80,37 +92,21 @@ Model ids are slugified from the `agy models` output (`Gemini 3.6 Flash (Medium)
 
 If `agy models` fails at load (binary missing, auth not done, network stall), a fallback catalog still populates the picker so you get a clear runtime error instead of an empty list.
 
-### Environment variables
-
-| Variable | Purpose |
-| --- | --- |
-| `AGY_BIN` | Path to the agy binary. Defaults to `agy` on PATH. |
-| `AGY_EXTRA_ARGS` | Extra args appended to every invocation. Whitespace-split. |
-| `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
-| `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
-| `AGY_FILTER_NARRATION` | `1`/`true` to filter agy's "I will ..." narration chunks, `0`/`false` to stream raw. Wins over the config file. |
-| `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
-| `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |
-| `AGY_DEFAULT_THINKING` | Default thinking tier for the `AskAntigravity` tool: `low`/`medium`/`high`. Anything else falls back to `medium`. Wins over the config file. |
-
 ### The /agy command
 
 `/agy` configures the provider at runtime. Settings persist to `~/.pi/agent/antigravity-bridge/config.json` and take effect on the next turn.
 
 ```
-/agy                      status, or open the mode/narration/permissions/model/thinking picker (TUI)
-/agy status               print current mode, narration, model + session counts
+/agy                      status, or open the mode/permissions/model/thinking picker (TUI)
+/agy status               print current mode, permissions, model + session counts
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
-/agy narration on|off     filter / keep agy's "I will ..." planning chunks
 /agy model flash|pro|gemini   default model alias for the AskAntigravity tool
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
 /agy patch status|apply|restore   inspect / force / undo the pi.invokeTool patch
 /agy clear                drop all session bindings (force fresh conversations)
 ```
-
-Narration filtering is on by default. agy interleaves short "I will read the file" planning lines before the real answer; in a streaming transcript those are noise. Turn it off with `/agy narration off` if you want everything agy emits.
 
 ### Permissions
 
@@ -123,6 +119,18 @@ If you want agy to execute nothing, use `/agy mode plan`. Do not combine `--sand
 ### Run pi inside a sandbox
 
 For isolation when running any agent that executes commands without a confirmation gate, run pi inside [**construct-cli**](https://github.com/EstebanForge/construct-cli) - EstebanForge's sandbox for AI agents. Isolated container, no path escape, ephemeral filesystem, `strict` / `offline` network modes, secret redaction. The blast radius of a bad command stays in the container, not your host. Install and usage instructions are in that repo.
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `AGY_BIN` | Path to the agy binary. Defaults to `agy` on PATH. |
+| `AGY_EXTRA_ARGS` | Extra args appended to every invocation. Whitespace-split. |
+| `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
+| `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
+| `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
+| `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |
+| `AGY_DEFAULT_THINKING` | Default thinking tier for the `AskAntigravity` tool: `low`/`medium`/`high`. Anything else falls back to `medium`. Wins over the config file. |
 
 ## Development
 
