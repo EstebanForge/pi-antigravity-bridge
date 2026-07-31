@@ -43,16 +43,17 @@ const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
 
 // Static alias overlay for non-Gemini models agy may or may not surface.
 // Live catalog entries win on case-insensitive full-string equality; the
-// overlay resolves the alias when agy doesn't list it.
+// overlay resolves the alias when agy doesn't list it. Names are agy's stable
+// slugs (the same ids `agy models` prints and `--model` accepts).
 const STATIC_ALIAS_OVERLAY: ReadonlyArray<ModelEntry> = [
-	{ full: "Claude Sonnet 4.6 (Thinking)", family: "other", version: null, tier: null },
-	{ full: "Claude Opus 4.6 (Thinking)", family: "other", version: null, tier: null },
-	{ full: "GPT-OSS 120B (Medium)", family: "other", version: null, tier: null },
+	{ full: "claude-sonnet-4-6", family: "other", version: null, tier: null },
+	{ full: "claude-opus-4-6-thinking", family: "other", version: null, tier: null },
+	{ full: "gpt-oss-120b-medium", family: "other", version: null, tier: null },
 ];
 const STATIC_SHORT_ALIAS: ReadonlyMap<string, string> = new Map([
-	["sonnet", "Claude Sonnet 4.6 (Thinking)"],
-	["opus", "Claude Opus 4.6 (Thinking)"],
-	["gpt-oss", "GPT-OSS 120B (Medium)"],
+	["sonnet", "claude-sonnet-4-6"],
+	["opus", "claude-opus-4-6-thinking"],
+	["gpt-oss", "gpt-oss-120b-medium"],
 ]);
 
 // agy conversation ids are UUID DB-stems. First char must be alphanumeric so a
@@ -77,7 +78,7 @@ COMPACT OUTPUT (param: digest): when true, the prompt is prefixed to request com
 type Family = "flash" | "pro" | "other";
 
 interface ModelEntry {
-	full: string; // exact agy string, e.g. "Gemini 3.6 Flash (Medium)"
+	full: string; // exact agy slug, e.g. "gemini-3.6-flash-medium"
 	family: Family;
 	version: string | null; // "3.6"
 	tier: ThinkingTier | null;
@@ -119,7 +120,7 @@ function parseModelLine(line: string): ModelEntry | null {
 			: "other";
 	const versionMatch = lower.match(/(\d+\.\d+)/);
 	const version = versionMatch ? versionMatch[1] : null;
-	const tierMatch = lower.match(/\((low|medium|high)\)/);
+	const tierMatch = lower.match(/-(low|medium|high)$/);
 	const tier = tierMatch ? (tierMatch[1] as ThinkingTier) : null;
 	return { full, family, version, tier };
 }
@@ -248,7 +249,7 @@ export async function registerAskAntigravityTool(
 			model: Type.Optional(
 				Type.String({
 					description:
-						"Model alias or exact id. Friendly: 'flash', 'pro', 'gemini'. Add a tier: 'flash high'. Pin a version: '3.5 flash'. Exact: 'Gemini 3.6 Flash (Medium)'. Omit for the configured default.",
+						"Model alias or exact id. Friendly: 'flash', 'pro', 'gemini'. Add a tier: 'flash high'. Pin a version: '3.5 flash'. Exact: 'gemini-3.6-flash-medium'. Omit for the configured default.",
 				}),
 			),
 			mode: Type.Optional(

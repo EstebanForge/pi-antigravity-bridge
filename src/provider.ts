@@ -25,11 +25,12 @@ import {
 	type Message,
 	type Model,
 	type SimpleStreamOptions,
+	type ThinkingLevel,
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
 import { runAgyTurn, type AgyEvent, type AgyRunOptions } from "./runner.js";
-import { resolveAgyString, type AgyModelEntry } from "./models.js";
+import { type AgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
@@ -246,6 +247,46 @@ export interface StreamSimpleDeps {
 	runAgyTurn?: typeof runAgyTurn;
 }
 
+/** pi thinking-effort order mirrors agy's, for clamping. */
+const AGY_EFFORT_ORDER: readonly AgyEffort[] = ["low", "medium", "high"];
+
+/** Map pi's thinking level onto one of the tiers `efforts` the base actually
+ *  supports, clamping to the nearest available. agy rejects an effort tier a
+ *  base doesn't list (e.g. medium on Pro), so we never emit one. A base slug is
+ *  invalid without --effort, so when pi sends no level we default to the
+ *  middle tier (or the highest available). */
+export function toAgyEffort(
+	reasoning: ThinkingLevel | undefined,
+	efforts: readonly AgyEffort[],
+): AgyEffort {
+	let candidate: AgyEffort;
+	switch (reasoning) {
+		case "minimal":
+		case "low":
+			candidate = "low";
+			break;
+		case "medium":
+			candidate = "medium";
+			break;
+		case "high":
+		case "xhigh":
+		case "max":
+			candidate = "high";
+			break;
+		default:
+			candidate = efforts[0] ?? "low";
+	}
+	if (efforts.includes(candidate)) return candidate;
+	const i = AGY_EFFORT_ORDER.indexOf(candidate);
+	for (let j = i; j < AGY_EFFORT_ORDER.length; j++) {
+		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
+	}
+	for (let j = i - 1; j >= 0; j--) {
+		if (efforts.includes(AGY_EFFORT_ORDER[j])) return AGY_EFFORT_ORDER[j];
+	}
+	return efforts[0] ?? "low";
+}
+
 /** Build the streamSimple closure. Captures the model catalog + session store
  *  resolved at extension load. */
 export function createStreamSimple(
@@ -311,20 +352,27 @@ async function runTurn(
 	const digest = buildContextDigest(context.messages, watermark);
 	const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
 
-	// Resolve the pi model id to the exact agy string. Fall through to the id
-	// itself on miss  -  agy will likely reject, but the error reaches the user
+	// Resolve the pi model id to its catalog entry. On a miss, fall through to
+	// the id itself  -  agy will likely reject, but the error reaches the user
 	// instead of a silent no-op.
-	const agyModel = resolveAgyString(model.id, entries) ?? model.id;
+	const entry = entries.find((e) => e.id === model.id) ?? null;
+	const agyModel = entry?.full ?? model.id;
 
 	// Runtime config (mode, permissions). Loaded fresh each turn so /agy
 	// toggles take effect immediately without a reload.
 	const config = loadConfig();
+
+	// Effort-driven bases always need --effort (a base slug is invalid on its
+	// own); fixed models never get it (agy rejects --effort for them). For an
+	// effort-driven base we clamp pi's level to the tiers agy offers it.
+	const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 
 	const runOpts: AgyRunOptions = {
 		cwd,
 		model: agyModel,
 		mode: config.mode,
 		skipPermissions: config.skipPermissions,
+		effort,
 		prompt: fullPrompt,
 		conversationId: existing?.conversationId ?? null,
 		baseStepIdx: existing?.lastStepIdx ?? -1,

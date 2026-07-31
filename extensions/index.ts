@@ -83,6 +83,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			name: m.name,
 			api: m.api,
 			reasoning: m.reasoning,
+			thinkingLevelMap: m.thinkingLevelMap,
 			input: m.input,
 			cost: m.cost,
 			contextWindow: m.contextWindow,

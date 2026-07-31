@@ -21,9 +21,9 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { createStreamSimple } from "../src/provider.js";
+import { createStreamSimple, toAgyEffort } from "../src/provider.js";
 import { SessionStore } from "../src/sessions.js";
-import { runAgyTurn, type AgyEvent, type AgyRunResult } from "../src/runner.js";
+import { runAgyTurn, type AgyEvent, type AgyRunOptions, type AgyRunResult } from "../src/runner.js";
 
 const model: Model<Api> = {
 	id: "gemini-flash",
@@ -177,4 +177,94 @@ test("agy exit failure surfaces as an error event, not a hang", async () => {
 		(err!.error.errorMessage ?? "").includes("agy blew up"),
 		`error message should carry agy stderr, got: ${JSON.stringify(err!.error.errorMessage)}`,
 	);
+});
+
+// --- reasoning-effort bridging (agy --effort) ---------------------------------
+
+test("toAgyEffort maps pi levels onto the base's supported tiers (clamped)", () => {
+	const flash = ["low", "medium", "high"] as const;
+	const pro = ["low", "high"] as const;
+	assert.equal(toAgyEffort("low", flash), "low");
+	assert.equal(toAgyEffort("medium", flash), "medium");
+	assert.equal(toAgyEffort("high", flash), "high");
+	assert.equal(toAgyEffort("minimal", flash), "low");
+	// Pro has no medium -> clamp up to nearest available (high).
+	assert.equal(toAgyEffort("medium", pro), "high");
+	assert.equal(toAgyEffort("low", pro), "low");
+	assert.equal(toAgyEffort("high", pro), "high");
+	// No level -> default to the cheapest available tier.
+	assert.equal(toAgyEffort(undefined, flash), "low");
+	assert.equal(toAgyEffort(undefined, pro), "low");
+});
+
+/** A runner that records the opts it was called with, so a test can assert how
+ *  the provider translated pi's options into agy run opts. */
+function capturingRunner(seen: { opts?: AgyRunOptions }): typeof runAgyTurn {
+	return async (opts) => {
+		seen.opts = opts;
+		return {
+			exitCode: 0,
+			conversationId: "11111111-1111-4111-8111-111111111111",
+			lastIdx: 0,
+			aborted: false,
+			timedOut: false,
+			stderr: "",
+			durationMs: 1,
+		};
+	};
+}
+
+test("streamSimple forwards options.reasoning as effort for an effort-driven base", async () => {
+	const seen: { opts?: AgyRunOptions } = {};
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
+		store: new SessionStore(tmpStorePath()),
+		runAgyTurn: capturingRunner(seen),
+	});
+	const stream = streamSimple(
+		{ ...model, id: "gemini-flash", reasoning: true },
+		contextWith("hi"),
+		{ cwd: process.cwd(), reasoning: "high" } as unknown as SimpleStreamOptions,
+	);
+	for await (const _ev of stream) void _ev;
+
+	assert.equal(seen.opts?.model, "gemini-3.6-flash");
+	assert.equal(seen.opts?.effort, "high");
+});
+
+test("streamSimple clamps an unsupported tier to the base's nearest effort", async () => {
+	const seen: { opts?: AgyRunOptions } = {};
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.1-pro", id: "pro", efforts: ["low", "high"] }],
+		store: new SessionStore(tmpStorePath()),
+		runAgyTurn: capturingRunner(seen),
+	});
+	const stream = streamSimple(
+		{ ...model, id: "pro", reasoning: true },
+		contextWith("hi"),
+		// medium is not valid for Pro (hidden in the toggle); provider clamps to high.
+		{ cwd: process.cwd(), reasoning: "medium" } as unknown as SimpleStreamOptions,
+	);
+	for await (const _ev of stream) void _ev;
+
+	assert.equal(seen.opts?.model, "gemini-3.1-pro");
+	assert.equal(seen.opts?.effort, "high");
+});
+
+test("streamSimple omits effort for a fixed (non-effort) model", async () => {
+	const seen: { opts?: AgyRunOptions } = {};
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "claude-sonnet-4-6", id: "claude-sonnet" }],
+		store: new SessionStore(tmpStorePath()),
+		runAgyTurn: capturingRunner(seen),
+	});
+	const stream = streamSimple(
+		{ ...model, id: "claude-sonnet" },
+		contextWith("hi"),
+		{ cwd: process.cwd(), reasoning: "high" } as unknown as SimpleStreamOptions,
+	);
+	for await (const _ev of stream) void _ev;
+
+	assert.equal(seen.opts?.model, "claude-sonnet-4-6");
+	assert.equal(seen.opts?.effort, undefined);
 });

@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-07-31
+
+### Added
+
+- **Full agy catalog in the picker, grouped like agy's own.** Gemini models
+  collapse to base entries (gemini-3.6-flash, gemini-3.1-pro) with a
+  thinking-effort toggle; Claude (Sonnet/Opus) and GPT-OSS appear as fixed
+  entries with no toggle, since their thinking cannot be changed. The earlier
+  Gemini-only filter is gone. Google's Antigravity subscription bills all of
+  these through agy, so routing Claude here uses the agy quota you already pay
+  for (if you also run pi-claude-bridge you will simply see two Claude
+  entries).
+- **Reasoning-effort bridging (`agy --effort`).** For an effort-driven Gemini
+  base, pi's thinking-effort toggle drives agy's `--effort` (agy 1.1.5+), and
+  the toggle only offers the tiers that base actually accepts (Flash:
+  low/medium/high; Pro: low/high), so it can never request a tier agy rejects.
+  The level is clamped to the base's supported tiers and always passed (a base
+  slug is invalid on its own). Fixed models never receive `--effort` (agy
+  rejects it for them). Behavior verified by local experiments against agy
+  1.1.9.
+
+### Changed
+
+- **Breaking: Gemini model ids changed shape.** Effort is no longer part of the
+  model id (`antigravity/gemini-3-6-flash-medium` →
+  `antigravity/gemini-3-6-flash`); it is now chosen via pi's thinking-effort
+  toggle. A persisted default model, a `--model antigravity/...` flag, or a
+  scoped-model pattern set before upgrading will need re-selection.
+  Claude/GPT-OSS ids keep their qualified shape (e.g.
+  `antigravity/claude-sonnet-4-6`).
+- **Requires agy >= 1.1.5.** Base slugs and the `--effort` flag landed there;
+  older agy rejects every Gemini entry with a flag error.
+
+### Fixed
+
+- **AskAntigravity model resolution** now parses agy's stable-slug catalog
+  (`gemini-3.6-flash-high`, `claude-sonnet-4-6`) instead of the legacy human
+  names. The `sonnet`/`opus`/`gpt-oss` aliases and the `/agy thinking` tier had
+  silently resolved to invalid `--model` values since agy switched to slugs;
+  they now resolve to exact valid slugs.
+
 ## [1.0.0] - 2026-07-29
 
 First release. A streaming Gemini model provider for pi, built on Google's

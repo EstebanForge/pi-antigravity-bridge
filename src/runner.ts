@@ -88,6 +88,9 @@ export interface AgyRunOptions {
 	/** Exact agy model string, e.g. "Gemini 3.6 Flash (Medium)". Caller
 	 *  resolves aliases; the runner passes this through verbatim. */
 	model?: string;
+	/** Reasoning effort passed to agy --effort (low|medium|high). Omit to let
+	 *  the model slug's own effort stand (requires agy >= 1.1.5). */
+	effort?: "low" | "medium" | "high";
 	/** agy execution mode. accept-edits = agy applies edits; plan = review-only. */
 	mode?: "accept-edits" | "plan";
 	/** Pass --dangerously-skip-permissions so commands don't hang on an
@@ -168,6 +171,7 @@ export async function runAgyTurn(
 	// this dir, so its agy stays plain (no recursion).
 	if (bridgeMcpConfigExists()) args.push("--add-dir", bridgeMcpConfigDir());
 	if (opts.model) args.push("--model", opts.model);
+	if (opts.effort) args.push("--effort", opts.effort);
 	args.push("--mode", mode);
 	// Without this, any run_command triggers an interactive permission prompt
 	// that hangs forever in non-interactive print mode (no TTY to answer y/n).
