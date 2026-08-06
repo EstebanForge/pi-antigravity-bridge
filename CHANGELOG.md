@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-08-06
+
+### Changed
+- **Dependencies updated.** Raised the `pi-coding-agent`, `pi-ai`, `pi-tui` dev pins to `^0.84.0`. Audited against the pi v0.84.0 breaking changes; the custom `streamSimple` provider still matches pi-ai 0.84.0's stream-event contract, and `tsc --noEmit` passes.
+
 ## [1.1.0] - 2026-07-31
 
 ### Added
