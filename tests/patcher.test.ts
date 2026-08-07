@@ -46,7 +46,11 @@ const TARGET_FILES = [
 	"core/extensions/types.d.ts",
 ];
 
-const PI_VERSION = "0.82.1";
+const PI_VERSION = (
+	JSON.parse(
+		fs.readFileSync(path.join(PRISTINE_DIST, "..", "package.json"), "utf8"),
+	) as { version: string }
+).version;
 
 /** Build a throwaway fake pi root from the pristine local dist. */
 function makeFakeRoot(): { root: string; backupBase: string } {
