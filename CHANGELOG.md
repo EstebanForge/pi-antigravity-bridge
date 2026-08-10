@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-08-10
+
+### Fixed
+
+- **Model parsing now handles agy's real two-column output.** `agy models`
+  prints `<slug>  <display label>` per line, and `--model` accepts only the
+  slug. `entriesFromRaw` (provider path) applied its slug regex to the whole
+  line, so every real line was rejected and the provider always fell back to
+  the hardcoded catalog; it now splits column 1 and requires a hyphen, which
+  also drops banner words split out of column 1. The AskAntigravity resolver
+  swallowed slug + label into `--model`, which agy rejected; it now returns a
+  `{model, effort?}` shape that sends Gemini-family bases' base slug to
+  `--model` and their tier to `--effort`, while fixed-thinking families
+  (Claude, GPT-OSS) keep the exact slug with no `--effort` (agy rejects it for
+  them). Matches the provider's collapse + clamping path. Tests rewritten to
+  the verified live `agy models` fixture.
+
 ## [1.1.2] - 2026-08-10
 
 ### Fixed

@@ -84,6 +84,15 @@ interface ModelEntry {
 	tier: ThinkingTier | null;
 }
 
+/** Argv-facing model resolution: the exact --model slug plus an optional
+ *  --effort tier. Gemini bases split the tier out (the base slug alone is
+ *  invalid without --effort); fixed-thinking families keep agy's exact slug
+ *  and carry no effort. */
+interface ResolvedModel {
+	model: string;
+	effort?: ThinkingTier;
+}
+
 // --- Version helpers -------------------------------------------------------
 
 /** Descending numeric version compare (3.10 > 3.9, not lexical). */
@@ -110,7 +119,10 @@ function mergeCatalog(live: ModelEntry[]): ModelEntry[] {
 }
 
 function parseModelLine(line: string): ModelEntry | null {
-	const full = line.trim();
+	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
+	// slug (col 1), so split it off; the label is display-only and must never
+	// reach --model. A bare-slug line (no whitespace) splits to itself.
+	const full = line.trim().split(/\s+/)[0] ?? "";
 	if (!full) return null;
 	const lower = full.toLowerCase();
 	const family: Family = lower.includes("flash")
@@ -135,21 +147,36 @@ function nearestTier(available: ThinkingTier[], preferred: ThinkingTier): Thinki
 	return sorted[0] ?? preferred;
 }
 
-/** Resolve a friendly alias / partial name to an exact agy model string. */
+/** Build the argv-facing resolution from a picked catalog entry. Gemini bases
+ *  (slugs starting "gemini-") accept a separate --effort, so split the tier
+ *  suffix out of the slug: the base alone (gemini-3.6-flash) is what --model
+ *  wants, and the tier goes to --effort. Fixed-thinking families keep agy's
+ *  exact slug even when it carries a -medium suffix (gpt-oss-120b-medium):
+ *  agy rejects --effort for them, so the suffix stays part of the slug. */
+function toResolved(full: string, tier: ThinkingTier | null): ResolvedModel {
+	if (tier && full.toLowerCase().startsWith("gemini-")) {
+		return { model: full.replace(/-(low|medium|high)$/, ""), effort: tier };
+	}
+	return { model: full };
+}
+
+/** Resolve a friendly alias / partial name to an argv-facing {model, effort?}.
+ *  Returns null only when the family is unrecognized; the caller then passes
+ *  the raw input straight to agy. */
 export function resolveModel(
 	input: string,
 	entries: ModelEntry[],
 	defaultThinking: ThinkingTier,
-): string | null {
+): ResolvedModel | null {
 	const lower = input.toLowerCase().trim();
 
 	const exact = entries.find((e) => e.full.toLowerCase() === lower);
-	if (exact) return exact.full;
+	if (exact) return toResolved(exact.full, exact.tier);
 
 	if (STATIC_SHORT_ALIAS.has(lower)) {
 		const target = STATIC_SHORT_ALIAS.get(lower) as string;
 		const fromCatalog = entries.find((e) => e.full.toLowerCase() === target.toLowerCase());
-		return fromCatalog ? fromCatalog.full : target;
+		return toResolved(fromCatalog?.full ?? target, fromCatalog?.tier ?? null);
 	}
 
 	let family: Family | null = lower.includes("flash")
@@ -193,13 +220,14 @@ export function resolveModel(
 	const familyTiers = new Set(
 		candidates.map((e) => e.tier).filter((t): t is ThinkingTier => t !== null),
 	);
-	if (familyTiers.size === 0) return candidates[0].full;
+	if (familyTiers.size === 0) return toResolved(candidates[0].full, null);
 
 	const preferred =
 		tier ??
 		(familyTiers.has(defaultThinking) ? defaultThinking : FAMILY_DEFAULT_TIER[family]);
 	const chosenTier = nearestTier([...familyTiers], preferred);
-	return (candidates.find((e) => e.tier === chosenTier) ?? candidates[0]).full;
+	const picked = candidates.find((e) => e.tier === chosenTier) ?? candidates[0];
+	return toResolved(picked.full, picked.tier);
 }
 
 /** Parse raw `agy models` text into tool-catalog entries (all families, plus
@@ -304,7 +332,9 @@ export async function registerAskAntigravityTool(
 				};
 			}
 			const resolved =
-				resolveModel(requestedModel, entries, config.defaultThinking) ?? requestedModel;
+				resolveModel(requestedModel, entries, config.defaultThinking) ?? {
+					model: requestedModel,
+				};
 
 			const start = Date.now();
 			const cwd = params.cwd || ctx.cwd || process.cwd();
@@ -313,13 +343,13 @@ export async function registerAskAntigravityTool(
 				if (!stat.isDirectory()) {
 					return {
 						content: [{ type: "text", text: `cwd is not a directory: ${cwd}` }],
-						details: emptyDetails(requestedModel, resolved),
+						details: emptyDetails(requestedModel, resolved.model),
 					};
 				}
 			} catch {
 				return {
 					content: [{ type: "text", text: `cwd does not exist: ${cwd}` }],
-					details: emptyDetails(requestedModel, resolved),
+					details: emptyDetails(requestedModel, resolved.model),
 				};
 			}
 
@@ -340,7 +370,8 @@ export async function registerAskAntigravityTool(
 			const args: string[] = ["--add-dir", cwd];
 			const extra = extraArgs();
 			if (extra.length) args.push(...extra);
-			if (resolved) args.push("--model", resolved);
+			if (resolved.model) args.push("--model", resolved.model);
+			if (resolved.effort) args.push("--effort", resolved.effort);
 			args.push("--mode", mode);
 			// Honor the shared permissions setting (same knob as the provider). Non-
 			// interactive -p can't answer a permission prompt, so when this is off
@@ -352,7 +383,7 @@ export async function registerAskAntigravityTool(
 
 			const details: AgyDetails = {
 				model: requestedModel,
-				resolvedModel: resolved,
+				resolvedModel: resolved.model,
 				mode,
 				digest: useDigest,
 				conversationId: isContinuation ? (rawConvId as string) : null,

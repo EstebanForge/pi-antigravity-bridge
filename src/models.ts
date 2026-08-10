@@ -1,11 +1,13 @@
 // Discover models from `agy models` and project them into pi's Model shape so
 // they appear in the /model picker as antigravity/<slug>.
 //
-// agy lists effort-qualified slugs one per line, e.g.:
-//   gemini-3.6-flash-high / -medium / -low
-//   gemini-3.1-pro-high / -low            (Pro has NO medium variant)
-//   claude-sonnet-4-6                      (fixed thinking, no effort tiers)
-//   gpt-oss-120b-medium                    (fixed, no effort tiers)
+// agy prints TWO columns per line: "<slug>  <display label>". --model takes
+// ONLY the slug (col 1); the label is display-only. Verified live, e.g.:
+//   gemini-3.6-flash-high     Gemini 3.6 Flash (High)
+//   gemini-3.6-flash-medium   Gemini 3.6 Flash (Medium)   (+ -low)
+//   gemini-3.1-pro-high       Gemini 3.1 Pro (High)        (Pro has NO medium)
+//   claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking) (fixed, no tiers)
+//   gpt-oss-120b-medium       GPT-OSS 120B (Medium)        (fixed, no tiers)
 //
 // Gemini models are collapsed to a BASE slug (gemini-3.6-flash) and exposed
 // with a thinking-effort toggle whose levels match exactly the tiers agy
@@ -34,11 +36,13 @@ const EFFORT_RANK: Record<AgyEffort, number> = { low: 0, medium: 1, high: 2 };
  *  IS its suffix here, claude-opus-4-6-thinking is not a tier). */
 const TIER_RE = /^(.+)-(high|medium|low)$/;
 
-/** agy emits clean slug ids (gemini-3.6-flash-high). Reject anything else so a
- *  banner / auth / "Fetching models…" line can't register as a model, and a
- *  leading-dash token (e.g. "-high") can't reach agy's flag parser as
- *  --model. First char must be alphanumeric (no leading dash, no dot). */
-const MODEL_LINE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** agy emits clean slug ids (gemini-3.6-flash-high). Validate col1 of each
+ *  line so a banner / auth / "Fetching models…" line can't register as a
+ *  model, and a leading-dash token (e.g. "-high") can't reach agy's flag
+ *  parser as --model. First char must be alphanumeric; the slug must contain
+ *  at least one hyphen (every real agy slug does: family-version-name), which
+ *  also drops a prose banner word split out of col1 ("Available"). */
+const MODEL_LINE_RE = /^[A-Za-z0-9][A-Za-z0-9._]*-[A-Za-z0-9._-]*$/;
 
 /** Model families VERIFIED to accept base-slug + --effort. Only these collapse
  *  to a base slug with a thinking toggle. Any other family stays as agy's exact
@@ -210,22 +214,23 @@ export async function loadModelCatalogRaw(
  *  medium) or none (claude-sonnet-4-6) means fixed thinking, where --effort is
  *  unsupported. Insertion order of first-seen bases is preserved. */
 export function entriesFromRaw(raw: string): AgyModelEntry[] {
-	const lines = raw
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0)
-		.filter((line) => MODEL_LINE_RE.test(line));
+	// agy prints TWO columns: "<slug>  <display label>". --model takes only the
+	// slug, so split col1 and validate THAT; the label is display-only. A
+	// bare-slug line (no whitespace) splits to itself, so this also tolerates
+	// the legacy one-column shape.
 	const groups = new Map<string, { lines: string[]; tiers: Set<AgyEffort> }>();
-	for (const line of lines) {
-		const m = TIER_RE.exec(line);
-		const base = m ? (m[1] as string) : line;
+	for (const line of raw.split("\n")) {
+		const slug = line.trim().split(/\s+/)[0] ?? "";
+		if (!slug || !MODEL_LINE_RE.test(slug)) continue;
+		const m = TIER_RE.exec(slug);
+		const base = m ? (m[1] as string) : slug;
 		const tier = m ? (m[2] as AgyEffort) : null;
 		let g = groups.get(base);
 		if (!g) {
 			g = { lines: [], tiers: new Set<AgyEffort>() };
 			groups.set(base, g);
 		}
-		g.lines.push(line);
+		g.lines.push(slug);
 		if (tier) g.tiers.add(tier);
 	}
 	const entries: AgyModelEntry[] = [];

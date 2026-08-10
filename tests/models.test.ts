@@ -185,6 +185,52 @@ test("entriesFromRaw: drops noise/leading-dash lines; non-gemini families stay q
 	]);
 });
 
+// agy prints TWO columns: "<slug>  <display label>". --model takes only the
+// slug (col 1); the label is display-only and must never reach --model. This
+// is the REAL `agy models` stdout shape (verified live), distinct from the
+// bare-slug fixtures above, which document format tolerance (a line with no
+// whitespace splits to col1 = itself, so bare slugs still parse).
+test("entriesFromRaw: splits slug from label in agy's real two-column output", () => {
+	const raw = [
+		"gemini-3.6-flash-high     Gemini 3.6 Flash (High)",
+		"gemini-3.6-flash-medium   Gemini 3.6 Flash (Medium)",
+		"gemini-3.6-flash-low      Gemini 3.6 Flash (Low)",
+		"gemini-3.5-flash-high     Gemini 3.5 Flash (High)",
+		"gemini-3.5-flash-medium   Gemini 3.5 Flash (Medium)",
+		"gemini-3.5-flash-low      Gemini 3.5 Flash (Low)",
+		"gemini-3.1-pro-high       Gemini 3.1 Pro (High)",
+		"gemini-3.1-pro-low        Gemini 3.1 Pro (Low)",
+		"claude-sonnet-4-6         Claude Sonnet 4.6 (Thinking)",
+		"claude-opus-4-6-thinking  Claude Opus 4.6 (Thinking)",
+		"gpt-oss-120b-medium       GPT-OSS 120B (Medium)",
+	].join("\n");
+	const summary = entriesFromRaw(raw).map((e) =>
+		e.efforts ? `${e.id}[${e.efforts.join("/")}]` : e.id,
+	);
+	assert.deepEqual(summary, [
+		"gemini-3-6-flash[low/medium/high]",
+		"gemini-3-5-flash[low/medium/high]",
+		"gemini-3-1-pro[low/high]",
+		"claude-sonnet-4-6",
+		"claude-opus-4-6-thinking",
+		"gpt-oss-120b-medium",
+	]);
+});
+
+// A banner word split from its line (col1 = "Available") is NOT a model slug.
+// Real agy slugs always contain a hyphen (family-version-name); requiring one
+// keeps prose banners out once we split columns (the old whole-line space
+// rejection no longer applies after the col1 split).
+test("entriesFromRaw: two-column output drops banner tokens lacking a hyphen", () => {
+	const raw = [
+		"Available models:",
+		"gemini-3.6-flash-high   Gemini 3.6 Flash (High)",
+		"gemini-3.6-flash-low    Gemini 3.6 Flash (Low)",
+	].join("\n");
+	const summary = entriesFromRaw(raw).map((e) => e.id);
+	assert.deepEqual(summary, ["gemini-3-6-flash"]);
+});
+
 // --- toPiModel: toggle + level restriction follow the base's tiers -----------
 
 test("toPiModel: effort-driven base shows toggle restricted to its tiers", () => {

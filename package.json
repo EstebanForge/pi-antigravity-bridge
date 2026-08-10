@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-antigravity-bridge",
-  "version": "1.1.2",
+  "version": "1.2.3",
   "description": "Streaming Gemini provider for pi, built on the agy CLI. Registers antigravity/* models in pi's /model picker via SQLite polling + protobuf decode of agy's conversation DBs.",
   "keywords": [
     "pi-package",
