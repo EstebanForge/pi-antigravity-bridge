@@ -106,24 +106,31 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// unchanged (other instances do not break). Started on session_start so it is
 	// live before the provider's first turn; torn down on session_shutdown.
 	let mcpHandle: McpServerHandle | null = null;
-	const mcpLog = (s: string, d?: unknown) => {
-		// Quiet by default: surface only lifecycle/error events to stderr.
-		// Lifecycle + error events only. Per-turn success events (list-tools /
-		// call-tool) are deliberately NOT surfaced: writing to stderr during an
-		// active turn corrupts the pi TUI / construct daemon rendering (spinner
-		// gets stuck, hint text leaks into the display). Use a status-bar API for
-		// in-turn visibility instead.
-		const surfaced = new Set([
-			"listening", "capability-missing", "http-error", "closed",
-			"bridge-config-written", "bridge-config-removed", "bridge-config-write-failed",
-			"call-tool-fail", "transport-error", "handleRequest-error",
-			"request-error", "request-handler-error", "unauthorized", "self-patch-error",
-		]);
-		if (surfaced.has(s)) {
-			console.error(`[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`);
-		}
-	};
 	pi.on("session_start", async (_event, ctx) => {
+		// Bridge lifecycle/error logger. Routes through ctx.ui.notify (an
+		// ephemeral toast that fades) instead of stderr: pi's TUI captures stderr
+		// and pins it above the input for the whole session, which left the
+		// startup "bridge-config-written" / "listening" lines stuck on screen all
+		// session. Headless modes (print/json, hasUI === false) have no toast, so
+		// fall back to stderr there. Per-turn success events (list-tools /
+		// call-tool) stay silent either way.
+		const mcpLog = (s: string, d?: unknown) => {
+			const surfaced = new Set([
+				"listening", "capability-missing", "http-error", "closed",
+				"bridge-config-written", "bridge-config-removed", "bridge-config-write-failed",
+				"call-tool-fail", "transport-error", "handleRequest-error",
+				"request-error", "request-handler-error", "unauthorized", "self-patch-error",
+			]);
+			if (!surfaced.has(s)) return;
+			const msg = `[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`;
+			if (ctx.hasUI) {
+				const ok = s === "listening" || s === "bridge-config-written"
+					|| s === "bridge-config-removed" || s === "closed";
+				ctx.ui.notify(msg, ok ? "info" : "warning");
+			} else {
+				console.error(msg);
+			}
+		};
 		// Decide the pi.invokeTool patch + MCP tool bridge path. The patch is only
 		// needed for the bridge; the provider and AskAntigravity tool always work.
 		// The bridge can only start when the patch is LIVE in this process; a

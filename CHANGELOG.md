@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] - 2026-08-10
+
+### Fixed
+
+- **MCP bridge startup messages no longer pin above the input.** pi's TUI
+captures extension stderr and pins it above the editor for the whole session,
+which left the `[antigravity-bridge mcp] bridge-config-written` and
+`listening` lines stuck on screen. The lifecycle logger now routes through
+`ctx.ui.notify` (an ephemeral toast that fades); headless print/json modes
+fall back to stderr. Error and diagnostic events use the same channel, so
+they no longer pin either.
+
 ## [1.1.1] - 2026-08-06
 
 ### Changed
