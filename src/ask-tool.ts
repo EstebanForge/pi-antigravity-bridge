@@ -15,6 +15,9 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, getAgentDir, keyHint } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { contentText } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
 	CONVERSATIONS_DIR,
@@ -30,6 +33,10 @@ const DEFAULT_TIMEOUT_MIN = 10;
 const GRACE_AFTER_TIMEOUT_MS = 5000;
 const STATUS_INTERVAL_MS = 1000;
 const STATUS_TAIL_CHARS = 160;
+
+// renderCall / renderResult preview limits (match pi-claude-bridge).
+const PREVIEW_MAX_CHARS = 1000;
+const PREVIEW_MAX_LINES = 6;
 const DISCOVERY_POLL_ATTEMPTS = 5;
 const DISCOVERY_POLL_MS = 100;
 
@@ -302,7 +309,78 @@ export async function registerAskAntigravityTool(
 			timeoutMinutes: Type.Optional(
 				Type.Number({ description: `Hard cap on the agy run in minutes. Default ${DEFAULT_TIMEOUT_MIN}.` }),
 			),
+			includeContext: Type.Optional(
+				Type.Boolean({
+					description:
+						"When true, export the current pi conversation (resolved, as markdown) to a temp file inside the workspace and tell agy to read it first. Default false (isolated one-shot). Opt in only when the user explicitly wants agy to see the full conversation; it costs agy tokens to read.",
+				}),
+			),
 		}),
+		renderCall(args, theme, _context) {
+			// Show RESOLVED model/thinking/mode (config defaults applied) so the
+			// row identifies what will actually run, not just explicit args.
+			const cfg = loadConfig();
+			const requestedModel = (args.model as string | undefined)?.trim() || cfg.defaultModel;
+			const resolved =
+				resolveModel(requestedModel, entries, cfg.defaultThinking) ?? { model: requestedModel };
+			const thinking: ThinkingTier = resolved.effort ?? cfg.defaultThinking;
+			const mode: AgyMode = (args.mode as AgyMode | undefined) ?? "accept-edits";
+			const useDigest = typeof args.digest === "boolean" ? args.digest : mode === "plan";
+			const isContinue =
+				typeof args.conversationId === "string" && CONV_ID_RE.test(args.conversationId);
+
+			const tags: string[] = [`model=${resolved.model}`, `thinking=${thinking}`];
+			if (mode !== "accept-edits") tags.push(`mode=${mode}`);
+			if (useDigest) tags.push("digest");
+			if (isContinue) tags.push("continue");
+			if (args.includeContext) tags.push("context=full");
+
+			let text = theme.fg("mdLink", theme.bold("AskAntigravity "));
+			text += `${theme.fg("accent", `[${tags.join(", ")}]`)} `;
+
+			const prompt = String(args.prompt ?? "");
+			const truncated = prompt.length > PREVIEW_MAX_CHARS ? prompt.slice(0, PREVIEW_MAX_CHARS) : prompt;
+			const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
+			text += theme.fg("muted", `"${lines.join("\n")}"`);
+			if (prompt.length > PREVIEW_MAX_CHARS || prompt.split("\n").length > PREVIEW_MAX_LINES) {
+				text += theme.fg("dim", " …");
+			}
+			return new Text(text, 0, 0);
+		},
+		renderResult(result, { expanded, isPartial }, theme) {
+			const d = result.details as AgyDetails | undefined;
+			if (isPartial) {
+				const status = result.content[0]?.type === "text" ? result.content[0].text : "working...";
+				return new Text(theme.fg("mdLink", "◉ AskAntigravity ") + theme.fg("muted", status), 0, 0);
+			}
+
+			const body = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const errored = d?.exitCode !== 0 || !!d?.aborted || !!d?.timedOut;
+
+			let text = errored
+				? theme.fg("error", "✗ AskAntigravity error")
+				: theme.fg("mdLink", "✓ AskAntigravity");
+
+			const rTags: string[] = [];
+			if (d?.resolvedModel || d?.model) rTags.push(`model=${d?.resolvedModel ?? d?.model}`);
+			if (d?.thinking) rTags.push(`thinking=${d.thinking}`);
+			if (d?.mode && d.mode !== "accept-edits") rTags.push(`mode=${d.mode}`);
+			if (d?.includeContext) rTags.push("context=full");
+			if (rTags.length) text += ` ${theme.fg("accent", `[${rTags.join(", ")}]`)}`;
+			if (d?.durationMs) text += ` ${theme.fg("dim", `${(d.durationMs / 1000).toFixed(1)}s`)}`;
+
+			if (expanded) {
+				if (body) text += `\n${theme.fg("toolOutput", body)}`;
+			} else {
+				const truncated = body.length > PREVIEW_MAX_CHARS ? body.slice(0, PREVIEW_MAX_CHARS) : body;
+				const lines = truncated.split("\n").slice(0, PREVIEW_MAX_LINES);
+				if (lines.length) text += `\n${theme.fg("toolOutput", lines.join("\n"))}`;
+				if (body.length > PREVIEW_MAX_CHARS || body.split("\n").length > PREVIEW_MAX_LINES) {
+					text += `\n${theme.fg("dim", `… (${keyHint("app.tools.expand", "to expand")})`)}`;
+				}
+			}
+			return new Text(text, 0, 0);
+		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			// Circular-delegation guard: refuse if already running through the
 			// antigravity provider.
@@ -367,6 +445,29 @@ export async function registerAskAntigravityTool(
 				? `(Use compact digests, not full file contents.)\n${params.prompt}`
 				: params.prompt;
 
+			// Opt-in full-context export (isolated stays the default).
+			let contextFile: string | null = null;
+			if (params.includeContext) {
+				try {
+					const { messages } = buildSessionContext(ctx.sessionManager.getBranch());
+					if (messages.length) {
+						const md = renderAgentMessagesMarkdown(messages);
+						const ctxDir = askContextDir();
+						fs.mkdirSync(ctxDir, { recursive: true });
+						contextFile = path.join(
+							ctxDir,
+							`.ask-context-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`,
+						);
+						fs.writeFileSync(contextFile, md, { mode: 0o600 });
+					}
+				} catch {
+					contextFile = null;
+				}
+			}
+			const effectivePrompt = contextFile
+				? `The full pi conversation context (as markdown) is at: ${contextFile}\nRead that file first for context, then do the task below.\n\n---\n\n${finalPrompt}`
+				: finalPrompt;
+
 			const args: string[] = ["--add-dir", cwd];
 			const extra = extraArgs();
 			if (extra.length) args.push(...extra);
@@ -379,14 +480,17 @@ export async function registerAskAntigravityTool(
 			if (config.skipPermissions !== false) args.push("--dangerously-skip-permissions");
 			if (isContinuation) args.push("--conversation", rawConvId as string);
 			args.push("--print-timeout", `${timeoutMin}m`);
-			args.push("-p", finalPrompt);
+			if (contextFile) args.push("--add-dir", askContextDir());
+			args.push("-p", effectivePrompt);
 
 			const details: AgyDetails = {
 				model: requestedModel,
 				resolvedModel: resolved.model,
+				thinking: resolved.effort ?? config.defaultThinking,
 				mode,
 				digest: useDigest,
 				conversationId: isContinuation ? (rawConvId as string) : null,
+				includeContext: contextFile !== null,
 				exitCode: 0,
 				aborted: false,
 				timedOut: false,
@@ -578,16 +682,91 @@ export async function registerAskAntigravityTool(
 				const msg = err instanceof Error ? err.message : String(err);
 				return { content: [{ type: "text", text: `failed to run agy: ${msg}` }], details };
 			}
+			finally {
+				if (contextFile) {
+					try {
+						fs.unlinkSync(contextFile);
+					} catch {}
+				}
+			}
 		},
 	});
+}
+
+// --- Full-context export (opt-in includeContext) --------------------------
+// NOTE: duplicated per pi-ask-* / bridge package (each is self-contained).
+// Duck-typed over role/content to tolerate AgentMessage's union + custom types.
+
+// Tool-call inputs and tool-result bodies are clamped so the exported
+// transcript stays reviewable; the agent can re-read any source file by path.
+// User/assistant prose is kept in full (that IS the conversation).
+const CONTEXT_BLOCK_MAX_CHARS = 2000;
+
+function clampBlock(text: unknown, limit = CONTEXT_BLOCK_MAX_CHARS): string {
+	const t = String(text ?? "");
+	return t.length > limit ? `${t.slice(0, limit)}\n…[truncated, ${t.length - limit} more chars]` : t;
+}
+
+/** Render resolved pi AgentMessages to a readable markdown transcript.
+ *  Pure: no IO. Caller writes the returned string to a temp file. */
+function renderAgentMessagesMarkdown(messages: readonly unknown[]): string {
+	const lines: string[] = [
+		"# Pi conversation context",
+		"",
+		`_Exported for full-context delegation. ${messages.length} message(s)._`,
+		"",
+	];
+	for (const raw of messages) {
+		const m = raw as { role?: string; content?: unknown };
+		const role = m.role ?? "message";
+		const content = m.content;
+		if (role === "assistant") {
+			const blocks = (Array.isArray(content) ? content : []) as ReadonlyArray<{
+				type: string;
+				text?: string;
+				name?: string;
+				input?: unknown;
+			}>;
+			const text = blocks
+				.filter((b) => b.type === "text")
+				.map((b) => b.text ?? "")
+				.join("\n");
+			if (text.trim()) lines.push("## Assistant", "", text, "");
+			for (const b of blocks) {
+				if (b.type === "toolCall" || b.type === "tool_use") {
+					const input = clampBlock(
+						typeof b.input === "string" ? b.input : JSON.stringify(b.input ?? ""),
+						500,
+					);
+					lines.push(`> tool call: ${b.name ?? "(unknown)"}(${input})`, "");
+				}
+			}
+		} else if (role === "toolResult" || role === "tool_result" || role === "tool") {
+			const text = contentText(content as any);
+			if (text.trim()) lines.push("## Tool result", "", clampBlock(text), "");
+		} else {
+			const text = contentText(content as any);
+			if (text.trim()) lines.push(`## ${role}`, "", clampBlock(text), "");
+		}
+	}
+	return lines.join("\n");
+}
+
+/** Centralized scratch dir for full-context exports, following the
+ *  ~/.pi/extensions-data/<author>/<extension>/ convention (see pi-token-cost-ledger).
+ *  Derived from getAgentDir() so rebranded distros resolve correctly. */
+function askContextDir(): string {
+	return path.join(path.dirname(getAgentDir()), "extensions-data", "estebanforge", "pi-antigravity-bridge");
 }
 
 interface AgyDetails {
 	model: string | null;
 	resolvedModel: string | null;
+	thinking: ThinkingTier | null;
 	mode: AgyMode;
 	digest: boolean;
 	conversationId: string | null;
+	includeContext: boolean;
 	exitCode: number;
 	aborted: boolean;
 	timedOut: boolean;
@@ -595,12 +774,19 @@ interface AgyDetails {
 	stderr: string;
 }
 
-function emptyDetails(model: string | null = null, resolvedModel: string | null = null): AgyDetails {
+function emptyDetails(
+	model: string | null = null,
+	resolvedModel: string | null = null,
+	thinking: ThinkingTier | null = null,
+	includeContext: boolean = false,
+): AgyDetails {
 	return {
 		model,
 		resolvedModel,
+		thinking,
 		mode: "accept-edits",
 		digest: false,
+		includeContext,
 		conversationId: null,
 		exitCode: 0,
 		aborted: false,

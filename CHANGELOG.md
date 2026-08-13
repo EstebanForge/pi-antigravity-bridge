@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.4] - 2026-08-13
+
+### Added
+
+- **Model, thinking tier, and mode shown next to the tool name.** The
+  `AskAntigravity` tool now renders
+  `AskAntigravity [model=gemini-3.6-flash, thinking=high]` with a prompt
+  preview while a delegation runs, plus a tidy result row
+  (`✓ AskAntigravity 12.3s`) with an expandable body. Built on pi's
+  `renderCall`/`renderResult` hooks; the values shown are the resolved
+  config defaults (model alias + tier), not just the args the caller passed.
+  `AgyDetails` gained a `thinking` field.
+- **Opt-in full-context delegation (`includeContext`).** New boolean param
+  (default `false`, isolated one-shot unchanged). When `true`, the current pi
+  conversation is exported as resolved markdown to
+  `~/.pi/extensions-data/estebanforge/pi-antigravity-bridge/` and the prompt
+  tells agy to read it first. The run passes `--add-dir` for that folder so
+  the sandbox can read it; the temp file is removed after the run.
+
 ## [1.2.3] - 2026-08-10
 
 ### Fixed
