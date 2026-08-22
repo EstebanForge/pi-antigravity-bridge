@@ -107,6 +107,9 @@ const onEvent = (event: AgyEvent) => {
 		case "title":
 			// Title updates are metadata; note but don't clutter the stream.
 			break;
+		case "warning":
+			process.stdout.write(`\n${stamp()} [agy warning] ${event.text}\n`);
+			break;
 	}
 };
 

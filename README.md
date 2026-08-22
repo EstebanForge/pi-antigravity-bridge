@@ -68,7 +68,7 @@ Install with pi's package manager:
 pi install npm:@estebanforge/pi-antigravity-bridge
 ```
 
-Requires the **`agy` CLI** installed and authenticated. If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable.
+Requires the **`agy` CLI** installed and authenticated. Tested against agy 1.1.7 and 1.1.18; other versions are untested, but decoding is version-agnostic — unknown payloads fail soft, with a visible warning when a turn's text could not be decoded (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)). If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable.
 
 Also requires Node 22.5 or newer (uses the built-in `node:sqlite`).
 

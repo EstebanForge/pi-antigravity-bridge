@@ -410,6 +410,10 @@ async function runTurn(
 			case "title":
 				// Conversation title metadata  -  not streamed to the user.
 				break;
+			case "warning":
+				// Turn-end decoder diagnostics: visible hint, not response content.
+				appendThinking(`${event.text}\n`);
+				break;
 		}
 	};
 

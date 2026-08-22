@@ -49,7 +49,8 @@ export type AgyEvent =
 	| { kind: "text"; text: string }
 	| { kind: "thinking"; text: string }
 	| { kind: "tool"; name: string; inputJson: string }
-	| { kind: "title"; title: string };
+	| { kind: "title"; title: string }
+	| { kind: "warning"; text: string };
 
 // step_type values observed in real DBs. Tool steps share the same payload
 // layout (field 5 -> toolCall), so we decode them uniformly. Unknown types
@@ -189,27 +190,55 @@ export async function runAgyTurn(
 
 	// One poller per turn, lazily opened once we know the conversation id.
 	let poller: ConversationPoller | null = null;
-	// agy extends the step it is currently writing in place (same idx, growing
-	// text). poll() returns only idx > lastIdx, so we re-read the last
-	// text/thinking step each tick and emit the grown suffix as a delta.
-	// flushStreamStep also runs BEFORE the loop so a step boundary landing
-	// inside this tick doesn't drop the outgoing step's final in-place tail
-	// (the loop may switch streamIdx to a new idx before we'd re-read).
-	let streamIdx = -1;
-	let streamKind: "text" | "thinking" | null = null;
-	let streamEmitted = 0;
-	const flushStreamStep = (): void => {
-		if (streamIdx < 0 || !poller || !streamKind) return;
-		const s = poller.readStepAt(streamIdx);
-		if (!s) return;
-		try {
-			const t = extractAgentText(s.payload);
-			if (t && t.text.length > streamEmitted) {
-				onEvent({ kind: streamKind, text: t.text.slice(streamEmitted) });
-				streamEmitted = t.text.length;
+
+	// agy commits agent-text/thinking rows in TWO phases (observed on agy
+	// 1.1.18; absent in 1.1.7-era behavior; exact introducing version unknown):
+	// first a metadata-only placeholder frame (status != 3, protobuf
+	// field 20 present but empty), then the same row grows IN PLACE until its
+	// final content lands under field 20.1 with status flipped to complete.
+	// extractAgentText therefore returns null on FIRST sight of such a row, so
+	// we arm a pending entry for EVERY text-like row on first sight - regardless
+	// of decode outcome - and re-read each entry on every tick where a commit
+	// landed, emitting grown suffixes as deltas. An entry settles once its row
+	// is complete AND its decoded length stopped growing across consecutive
+	// reads. See docs/ARCHITECTURE.md ("Two-phase writes").
+	interface PendingStream {
+		kind: "text" | "thinking";
+		emitted: number;
+		lastLen: number;
+	}
+	const pendingStreams = new Map<number, PendingStream>();
+	// Diagnostics for the turn-end zero-decode warning: did agy complete at
+	// least one agent-text row, and did any text actually reach the caller?
+	let sawCompletedTextRow = false;
+	let emittedTextChars = 0;
+	const emit = (event: AgyEvent): void => {
+		if (event.kind === "text") emittedTextChars += event.text.length;
+		onEvent(event);
+	};
+	const flushPendingStreams = (): void => {
+		if (!poller) return;
+		for (const [idx, p] of pendingStreams) {
+			const s = poller.readStepAt(idx);
+			if (!s) continue;
+			if (s.stepType === 15 && s.status === 3) sawCompletedTextRow = true;
+			try {
+				const t = extractAgentText(s.payload);
+				const len = t ? t.text.length : 0;
+				if (t && len > p.emitted) {
+					emit({ kind: p.kind, text: t.text.slice(p.emitted) });
+					p.emitted = len;
+				}
+				// Settled: complete and stable across consecutive reads. The -1
+				// sentinel guarantees at least one confirming read per entry.
+				if (s.status === 3 && len === p.lastLen && p.lastLen !== -1) {
+					pendingStreams.delete(idx);
+				} else {
+					p.lastLen = len;
+				}
+			} catch {
+				/* torn re-read; next poll retries */
 			}
-		} catch {
-			/* torn re-read; next poll retries */
 		}
 	};
 	const pollOnce = (): boolean => {
@@ -234,14 +263,15 @@ export async function runAgyTurn(
 		if (!poller.isOpen && !poller.tryOpen()) return false;
 
 		// Coalesce: one data_version check per tick gates BOTH the in-place
-		// re-read (flushStreamStep -> readStepAt) and the new-row read. While
+		// re-read (flushPendingStreams -> readStepAt) and the new-row read. While
 		// agy is thinking and hasn't committed, hasChanged() is false and we
 		// skip both SELECTs, so no row read fires on an idle tick.
 		if (!poller.hasChanged()) return false;
 
-		// Catch the currently-tracked step's final in-place growth BEFORE the
-		// loop may switch tracking to a new step.
-		flushStreamStep();
+		// Catch every tracked step's final in-place growth BEFORE processing
+		// new rows, so an outgoing step's tail isn't dropped if this tick arms
+		// newer rows.
+		flushPendingStreams();
 		const steps = poller.readNewSteps();
 		for (const step of steps) {
 			// A torn read (agy mid-write) can throw RangeError out of the protobuf
@@ -250,19 +280,30 @@ export async function runAgyTurn(
 			// to the decode layer where the throw actually originates.)
 			try {
 				const event = decodeStep(step);
-				if (event) {
-					onEvent(event);
-					if (event.kind === "text" || event.kind === "thinking") {
-						streamIdx = step.idx;
-						streamKind = event.kind;
-						streamEmitted = event.text.length;
-					}
+				if (event) emit(event);
+				// Arm tracking on FIRST sight of every text-like row, decoded or
+				// not: placeholder frames decode to null today but carry their
+				// content later via in-place growth (two-phase writes).
+				if (
+					(step.stepType === 15 || step.stepType === 14) &&
+					!pendingStreams.has(step.idx)
+				) {
+					const decodedLen =
+						event && (event.kind === "text" || event.kind === "thinking")
+							? event.text.length
+							: 0;
+					pendingStreams.set(step.idx, {
+						kind: step.stepType === 15 ? "text" : "thinking",
+						emitted: decodedLen,
+						lastLen: -1,
+					});
 				}
+				if (step.stepType === 15 && step.status === 3) sawCompletedTextRow = true;
 			} catch {
 				/* drop undecodable step; lastIdx still advances past it */
 			}
 		}
-		flushStreamStep();
+		flushPendingStreams();
 		lastIdx = poller.lastIdx;
 		return steps.length > 0;
 	};
@@ -371,7 +412,20 @@ export async function runAgyTurn(
 		for (let i = 0; i < TRAILING_POLLS; i++) {
 			pollOnce();
 			await sleep(TRAILING_POLL_MS);
+			flushPendingStreams();
 		}
+	}
+
+	// Turn-end diagnostics: agy completed agent-text
+	// rows while nothing reached the caller means its DB layout drifted beyond
+	// this bridge's decoder. Surface it once instead of failing silently empty.
+	if (sawCompletedTextRow && emittedTextChars === 0) {
+		onEvent({
+			kind: "warning",
+			text:
+				"[agy] agent-text step(s) were written but none could be decoded; " +
+				"agy's conversation DB format may have changed beyond what this bridge supports.",
+		});
 	}
 
 	// CFA note: poller/proc are assigned inside closures that TS can't track

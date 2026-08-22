@@ -24,22 +24,30 @@ No generated protobuf code, no native SQLite dependency.
 
 ## The decode pipeline
 
-agy writes each step to a SQLite row with a protobuf blob in `step_payload`. The text we want lives at field 20, submessage field 1. Tool calls live at field 5, submessage field 4, with the name at field 2 or 9 and the raw input JSON at field 3. These field numbers are reverse-engineered facts (cross-checked against the shindgew/agy-acp and shubzkothekar/antigravity-acp decoders, then verified against real databases on agy 1.1.7). They are load-bearing. Unknown fields are skipped per protobuf wire rules, so a future agy that adds fields will not break decoding.
+agy writes each step to a SQLite row with a protobuf blob in `step_payload`. The text we want lives at field 20, submessage field 1. Tool calls live at field 5, submessage field 4, with the name at field 2 or 9 and the raw input JSON at field 3. These field numbers are reverse-engineered facts (cross-checked against the shindgew/agy-acp and shubzkothekar/antigravity-acp decoders, verified against real databases on agy 1.1.7, and re-verified on agy 1.1.18 for agent text and title). They are load-bearing. Unknown fields are skipped per protobuf wire rules, so a future agy that adds fields will not break decoding.
 
 ### Step types
 
 | step_type | meaning |
 | --- | --- |
 | 15 | agent text (payload field 20 -> field 1) |
-| 14 | thinking |
+| 14 | thinking (same payload path on 1.1.7-era DBs) |
 | 23 | title update (payload field 30 -> field 4) |
 | 5, 7, 8, 9, 17, 21, 33, 101, 132, 138 | tool run (payload field 5 -> field 4 -> name@2/9, input@3) |
 
 Status 3 = complete; anything else = in-flight.
 
+On agy 1.1.18, type-14 (thinking) payloads no longer carry text at field 20.1 (observed instead: field 5 = metadata submessage, field 19 = turn context; the introducing version is unknown). Thinking steps from that generation decode to null and are dropped — a known limitation left to a follow-up change.
+
+### Two-phase writes (observed on agy >= 1.1.18)
+
+Some agy versions commit an agent-text row in TWO phases — observed on 1.1.18, absent in 1.1.7-era behavior, exact introducing version unknown (the public changelog does not document storage details): first a metadata-only placeholder frame (status != 3, field 20 present but empty), then the same row grows IN PLACE until its final content lands under field 20.1 and status flips to complete. The first observation of such a row therefore decodes to null by design.
+
+To tolerate this without any version detection, the runner arms a pending entry for EVERY text-like row on first sight — regardless of decode outcome — and re-reads each entry whenever a commit lands, emitting grown suffixes as deltas. An entry settles once its row is complete and its decoded length stopped growing across consecutive reads. Legacy agy (single-phase, pre-filled rows) streams exactly as before; entries just settle after their second confirming read. If a turn ends with completed agent-text rows but zero decoded characters, the runner emits a single `warning` event, so a future layout shift surfaces as a visible hint instead of a silent empty response.
+
 ## Polling
 
-The runner spawns `agy -p`, then polls its conversation DB on a 250ms interval concurrent with the running process (this is what makes the provider actually stream, not replay at exit). Each tick issues a single `PRAGMA data_version` check; while agy is thinking and has not committed, that check is false and no row SELECT runs at all (neither the new-row read nor the in-place re-read of the step agy is currently extending). Only when a commit lands do both reads fire in one pass. Three trailing polls at 100ms after agy exits catch the last flush; on abort these are skipped so cancellation is prompt.
+The runner spawns `agy -p`, then polls its conversation DB on a 250ms interval concurrent with the running process (this is what makes the provider actually stream, not replay at exit). Each tick issues a single `PRAGMA data_version` check; while agy is thinking and has not committed, that check is false and nothing is read at all. When a commit lands, the tick re-reads every pending text-like row (see two-phase writes above) and fetches newly appended rows in one pass. Three trailing polls at 100ms after agy exits catch the last flush; on abort these are skipped so cancellation is prompt.
 
 ## Conversation id discovery
 

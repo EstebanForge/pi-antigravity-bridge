@@ -160,3 +160,146 @@ test("runAgyTurn aborts promptly and skips trailing polls", async () => {
 
 	fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// Regression guard for agy "two-phase writes" (observed on 1.1.18; the
+// introducing version is unknown - not present in 1.1.7-era behavior):
+// the agent-text row is FIRST committed as a metadata-only placeholder frame
+// (status != 3, protobuf field 20 present but empty) and only later grows,
+// in place, into its final content under the SAME idx. The old single-shot
+// tracking armed only after a successful decode, so a null decode on first
+// sight meant the row was skipped forever - pi showed an empty response even
+// though the settled DB held perfect text (decode-db proved it).
+test("runAgyTurn streams text from a two-phase placeholder -> filled row", async () => {
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-two-phase-"));
+	const convDir = path.join(tmp, "conversations");
+	fs.mkdirSync(convDir, { recursive: true });
+	const fakeBin = path.join(tmp, "fake-agy-two-phase.mjs");
+	const script = `#!/usr/bin/env node
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+
+const dir = process.env.AGY_FAKE_CONV_DIR;
+if (!dir) { console.error("AGY_FAKE_CONV_DIR unset"); process.exit(2); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function agentText(text) {
+  const textBytes = Buffer.from(text, "utf8");
+  const inner = Buffer.concat([Buffer.from([0x0a, textBytes.length]), textBytes]);
+  return Buffer.concat([Buffer.from([0xa2, 0x01, inner.length]), inner]);
+}
+
+// Placeholder frame captured live from agy 1.1.18: step_type=15 (field 1),
+// status=8/in-flight (field 4), field 20 present but EMPTY.
+function placeholderFrame() {
+  return Buffer.from([0x08, 0x0f, 0x20, 0x08, 0xa2, 0x01, 0x00]);
+}
+
+await sleep(150);
+const dbPath = path.join(dir, randomUUID() + ".db");
+const db = new DatabaseSync(dbPath);
+db.exec("CREATE TABLE steps (idx integer, step_type integer NOT NULL DEFAULT 0, status integer NOT NULL DEFAULT 0, step_payload blob, PRIMARY KEY (idx))");
+const ins = db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?,?,?,?)");
+
+await sleep(300);
+ins.run(0, 15, 8, placeholderFrame()); // phase 1: decodes to null
+await sleep(400);
+db.prepare("UPDATE steps SET status = ?, step_payload = ? WHERE idx = 0")
+  .run(3, agentText("recovered tail")); // phase 2: same row grows in place
+db.close();
+process.exit(0);
+`;
+	fs.writeFileSync(fakeBin, script, { mode: 0o755 });
+
+	process.env.AGY_FAKE_CONV_DIR = convDir;
+	const events: AgyEvent[] = [];
+	const result = await runAgyTurn(
+		{
+			cwd: tmp,
+			prompt: "ignored by fake",
+			conversationsDir: convDir,
+			binary: fakeBin,
+			timeoutMin: 1,
+		},
+		(event) => events.push(event),
+	);
+	delete process.env.AGY_FAKE_CONV_DIR;
+
+	const texts = events
+		.filter((e): e is Extract<AgyEvent, { kind: "text" }> => e.kind === "text")
+		.map((e) => e.text)
+		.join("");
+
+	assert.equal(result.exitCode, 0, "fake agy should exit 0");
+	assert.equal(result.lastIdx, 0, "should have seen the placeholder row");
+	assert.equal(
+		texts,
+		"recovered tail",
+		`placeholder frame's eventual content must be streamed, got ${JSON.stringify(texts)}`,
+	);
+	assert.equal(
+		events.filter((e) => e.kind === "warning").length,
+		0,
+		"no warning when text was successfully decoded",
+	);
+
+	fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// Turn-end diagnostics: if agy completes agent-text
+// rows but NONE of them decode (a future layout shift), the caller gets one
+// visible warning instead of a silently empty response.
+test("runAgyTurn warns once when completed text rows never decode", async () => {
+	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-undecodable-"));
+	const convDir = path.join(tmp, "conversations");
+	fs.mkdirSync(convDir, { recursive: true });
+	const fakeBin = path.join(tmp, "fake-agy-undecodable.mjs");
+	const script = `#!/usr/bin/env node
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
+import path from "node:path";
+
+const dir = process.env.AGY_FAKE_CONV_DIR;
+if (!dir) { console.error("AGY_FAKE_CONV_DIR unset"); process.exit(2); }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+await sleep(150);
+const dbPath = path.join(dir, randomUUID() + ".db");
+const db = new DatabaseSync(dbPath);
+db.exec("CREATE TABLE steps (idx integer, step_type integer NOT NULL DEFAULT 0, status integer NOT NULL DEFAULT 0, step_payload blob, PRIMARY KEY (idx))");
+const ins = db.prepare("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?,?,?,?)");
+
+await sleep(300);
+// Complete agent-text row (status=3) whose payload has NO field 20 - i.e. a
+// layout this bridge's extractor cannot navigate.
+ins.run(0, 15, 3, Buffer.from([0x08, 0x0f, 0x20, 0x03, 0x2a, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05]));
+db.close();
+process.exit(0);
+`;
+	fs.writeFileSync(fakeBin, script, { mode: 0o755 });
+
+	process.env.AGY_FAKE_CONV_DIR = convDir;
+	const events: AgyEvent[] = [];
+	const result = await runAgyTurn(
+		{
+			cwd: tmp,
+			prompt: "ignored by fake",
+			conversationsDir: convDir,
+			binary: fakeBin,
+			timeoutMin: 1,
+		},
+		(event) => events.push(event),
+	);
+	delete process.env.AGY_FAKE_CONV_DIR;
+
+	const warnings = events.filter((e) => e.kind === "warning");
+	assert.equal(result.exitCode, 0, "fake agy should exit 0");
+	assert.equal(
+		events.filter((e) => e.kind === "text").length,
+		0,
+		"undecodable row must not produce text",
+	);
+	assert.equal(warnings.length, 1, `expected exactly 1 warning, got ${warnings.length}`);
+
+	fs.rmSync(tmp, { recursive: true, force: true });
+});
