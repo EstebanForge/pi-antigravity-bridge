@@ -71,6 +71,10 @@ extension APIs reference. That indirection is why a single method must be wired
 at **six** places: the implementation, the actions-bundle binding, the runner's
 copy, the runner's delegating method, the facade method, and the type.
 
+Since pi 0.84.3 there is a **seventh edit**, not part of the chain but the
+switch that makes the chain reachable: the entry redirect in
+`bundle/cli.js` (see Site 7).
+
 ## Where it goes (paths are relative to the pi package root)
 
 pi ships **compiled** (`dist/`); there is no `src/` to edit. Find the package
@@ -81,7 +85,9 @@ node -e "console.log(require('path').dirname(require.resolve('@earendil-works/pi
 # typical: ~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent
 ```
 
-All paths below are under `<package>/dist/`. Developed against pi `^0.82.1`.
+All paths below are under `<package>/dist/`. Developed against pi `^0.82.1`;
+anchors verified against `0.84.3` (the `loader.js` facade switched to a local
+`assertActive()` guard in 0.84.3).
 
 ### Site 1 — `core/agent-session.js`: the implementation on `AgentSession`
 
@@ -151,7 +157,7 @@ In the `api` object literal returned to extensions, immediately after the
 
 ```js
         invokeTool(name, args, options) {
-            runtime.assertActive();
+            assertActive();
             return runtime.invokeTool(name, args, options);
         },
 ```
@@ -159,7 +165,6 @@ In the `api` object literal returned to extensions, immediately after the
 ### Site 6 — `core/extensions/types.d.ts`: the type declaration
 
 On the `ExtensionAPI` interface, immediately after `getAllTools(): ToolInfo[];`:
-
 ```ts
     /**
      * LOCAL PATCH (pi-antigravity-bridge): invoke a registered tool by name
@@ -168,6 +173,27 @@ On the `ExtensionAPI` interface, immediately after `getAllTools(): ToolInfo[];`:
     invokeTool(name: string, args?: Record<string, unknown>, options?: { toolCallId?: string; signal?: AbortSignal; onUpdate?: (update: unknown) => void }): Promise<{ content: unknown[]; details: unknown; isError?: boolean }>;
 ```
 
+### Site 7 — `bundle/cli.js`: the entry redirect (pi 0.84.3+)
+
+pi 0.84.3 points its `bin` at `dist/bundle/cli.js`, a bundled runtime with its
+own embedded copy of the core. A process launched from the bundle never loads
+`dist/core/*`, so the six sites above stay inert. The fix is a full-file
+replacement of the tiny bundle entry with a shim that loads the still-shipped
+modular `dist/cli.js`:
+
+```js
+#!/usr/bin/env node
+// LOCAL PATCH (pi-antigravity-bridge): redirect pi's bundled entry to the
+// modular runtime under dist/, where the invokeTool patch sites take effect.
+// Restore via /agy patch restore. See docs/PI-INVOKETOOL-PATCH.md.
+import "../cli.js";
+```
+
+Tradeoff: pi starts through the modular runtime, giving up the bundle's faster
+startup. The patcher validates before writing that the file really is the
+bundled entry (it imports `chunks/`) and that `dist/cli.js` exists; on pre-bundle
+pi the file is absent and this site is skipped entirely.
+
 ## How to apply
 
 **You usually don't.** On first load, the extension asks you once whether to
@@ -175,10 +201,11 @@ apply the patch (`src/patcher.ts`); see the note at the top of this document.
 The manual steps below are for reference, auditing, or recovering without the
 extension loaded.
 
-The patch is plain edits to the six compiled files above. Because pi ships no
-`src/`, there is nothing to recompile. (The old "clear jiti's cache" step is a
-no-op on pi 0.82.1, which sets `moduleCache: false` in its extension loader, so
-jiti never writes an fs cache.)
+The patch is plain edits to the six compiled files above (plus the entry
+redirect on pi 0.84.3+). Because pi ships no `src/`, there is nothing to
+recompile. (The old "clear jiti's cache" step is a
+no-op on pi 0.82.1+ (including 0.84.3), which sets `moduleCache: false` in its
+extension loader, so jiti never writes an fs cache.)
 
 A `pi` reinstall or update overwrites `dist/` and **removes the patch**, but the
 extension re-applies it on the next start (then prompts you to restart pi).

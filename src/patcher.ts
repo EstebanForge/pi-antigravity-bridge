@@ -1,9 +1,11 @@
 // Self-applier for the pi.invokeTool local patch (docs/PI-INVOKETOOL-PATCH.md).
 //
-// Adds pi.invokeTool() at 6 sites in 4 compiled files under pi's dist/. pi ships
-// compiled (no src/); these are plain, sentinel-detectable text insertions, so a
-// runtime patcher can apply them durably and idempotently. This lets the bridge
-// self-heal after a pi reinstall/update without manual re-patching.
+// Adds pi.invokeTool() at 6 sites in 4 compiled files under pi's dist/, plus
+// (pi 0.84.3+) an entry redirect that swaps the bundled dist/bundle/cli.js
+// for a shim loading the modular dist/cli.js. pi ships compiled (no src/);
+// these are plain, sentinel-detectable text edits, so a runtime patcher can
+// apply them durably and idempotently. This lets the bridge self-heal after a
+// pi reinstall/update without manual re-patching.
 //
 // Activation: pi's core is native ESM, cached per process; /reload does NOT pick
 // up these edits. A patched dist only takes effect on a FULL pi restart. The
@@ -126,9 +128,9 @@ const PATCH_FILES: Array<{ file: string; sites: PatchSite[] }> = [
 			{
 				file: "core/extensions/loader.js",
 				anchor:
-					"        getAllTools() {\n            runtime.assertActive();\n            return runtime.getAllTools();\n        },\n",
+					"        getAllTools() {\n            assertActive();\n            return runtime.getAllTools();\n        },\n",
 				insertion: `        invokeTool(name, args, options) {
-            runtime.assertActive();
+            assertActive();
             return runtime.invokeTool(name, args, options);
         },
 `,
@@ -139,6 +141,30 @@ const PATCH_FILES: Array<{ file: string; sites: PatchSite[] }> = [
 ];
 
 const ALL_SITES: PatchSite[] = PATCH_FILES.flatMap((f) => f.sites);
+
+/**
+ * Entry redirect (pi 0.84.3+). pi's bin now points at dist/bundle/cli.js, a
+ * bundled runtime with its own embedded core; text patches to dist/core/ never
+ * reach a process launched from the bundle. Fix: replace the tiny bundle entry
+ * with a shim that loads the still-shipped modular dist/cli.js, where the six
+ * insertion sites live. The file is absent on pre-bundle pi (bin already
+ * modular); apply, status, and restore skip it there.
+ */
+const ENTRY_REDIRECT = {
+	/** Path relative to pi's dist/. */
+	file: "bundle/cli.js",
+	/** Proves an unpatched file is the bundled entry (it imports hashed chunks). */
+	probe: "chunks/",
+	/** Proves the redirect is already applied. */
+	sentinel: 'import "../cli.js";',
+	/** Full replacement content. */
+	content: `#!/usr/bin/env node
+// LOCAL PATCH (pi-antigravity-bridge): redirect pi's bundled entry to the
+// modular runtime under dist/, where the invokeTool patch sites take effect.
+// Restore via /agy patch restore. See docs/PI-INVOKETOOL-PATCH.md.
+import "../cli.js";
+`,
+};
 
 export interface PatchResult {
 	/** True when every required site is present (after this run). */
@@ -219,7 +245,10 @@ function candidateFromArgv(): string | null {
 		const real = fs.realpathSync(launched);
 		const dir = path.dirname(real);
 		if (path.basename(dir) === "dist") return path.dirname(dir);
-		// Some launchers place the entry directly under <root>/dist; if not, bail.
+		// pi 0.84.3+ ships the bin entry at dist/bundle/cli.js.
+		if (path.basename(dir) === "bundle" && path.basename(path.dirname(dir)) === "dist") {
+			return path.dirname(path.dirname(dir));
+		}
 		return null;
 	} catch {
 		return null;
@@ -297,10 +326,20 @@ function siteMissing(content: string, site: PatchSite): boolean {
 	return !content.includes(site.sentinel);
 }
 
-/** Atomic write: per-pid tmp in the SAME dir (same filesystem) + rename. */
+/** Atomic write: per-pid tmp in the SAME dir (same filesystem) + rename.
+ *  Preserves the destination's existing permission bits: the bundle entry is
+ *  pi's bin target and must keep its execute bit through patch and restore.
+ *  A destination that does not exist yet is created 0o644. */
 function atomicWrite(filePath: string, content: string): void {
+	let mode = 0o644;
+	try {
+		mode = fs.statSync(filePath).mode & 0o777;
+	} catch {
+		/* destination absent: new file, plain default */
+	}
 	const tmp = `${filePath}.${process.pid}.tmp`;
-	fs.writeFileSync(tmp, content);
+	fs.writeFileSync(tmp, content, { mode });
+	fs.chmodSync(tmp, mode);
 	fs.renameSync(tmp, filePath);
 }
 
@@ -387,6 +426,13 @@ export function patchStatus(opts: { root?: string; backupBase?: string } = {}): 
 			if (siteMissing(txt, site)) missing.push(`${f.file}:${site.sentinel.slice(0, 40)}`);
 		}
 	}
+	// Entry redirect: required when the bundled entry exists (pi 0.84.3+).
+	const entryPath = path.join(root.root, "dist", ENTRY_REDIRECT.file);
+	if (fs.existsSync(entryPath)) {
+		const txt = fs.readFileSync(entryPath, "utf8");
+		if (!txt.includes(ENTRY_REDIRECT.sentinel)) missing.push(ENTRY_REDIRECT.file);
+	}
+	// Absent file = pre-bundle pi: the bin already points at the modular entry.
 	const backup = findNewestBackup(backupBaseOf(opts));
 	return {
 		present: missing.length === 0,
@@ -470,7 +516,46 @@ export function applyInvokeToolPatch(opts: PatchOpts = {}): PatchResult {
 		plan.push({ file: f.file, original, next, changed });
 	}
 
-	const anyChange = plan.some((p) => p.changed);
+	// Phase 1b: entry redirect. An absent file means pre-bundle pi; skip.
+	// Compute the previous backup now: the copy-forward in phase 2 needs it,
+	// and the already-redirected warning below needs to know whether any
+	// backup still holds the original entry bytes.
+	const prevBackup = findNewestBackup(backupBaseOf(opts));
+	let entry: { original: string } | null = null;
+	const entryPath = path.join(root, "dist", ENTRY_REDIRECT.file);
+	if (fs.existsSync(entryPath)) {
+		const original = fs.readFileSync(entryPath, "utf8");
+		if (!original.includes(ENTRY_REDIRECT.sentinel)) {
+			if (!original.includes(ENTRY_REDIRECT.probe)) {
+				const msg =
+					`unexpected content in ${ENTRY_REDIRECT.file} (pi ${version}); it does not look like ` +
+					`pi's bundled entry. No files were written. See docs/PI-INVOKETOOL-PATCH.md.`;
+				errors.push(msg);
+				log("entry-unexpected", { file: ENTRY_REDIRECT.file, version });
+				return { present: false, patched: false, alreadyPresent: false, changedFiles, errors, root, version };
+			}
+			if (!fs.existsSync(path.join(root, "dist", "cli.js"))) {
+				const msg =
+					`modular dist/cli.js not found (pi ${version}); the bundled entry has nowhere to ` +
+					`redirect to. No files were written.`;
+				errors.push(msg);
+				log("entry-target-missing", { version });
+				return { present: false, patched: false, alreadyPresent: false, changedFiles, errors, root, version };
+			}
+			entry = { original };
+		} else if (!prevBackup || !fs.existsSync(path.join(prevBackup.dir, ENTRY_REDIRECT.file))) {
+			// Already redirected, but no backup holds the original entry. Repair
+			// still proceeds (core sites matter); only the entry becomes unrestorable.
+			const msg =
+				`entry redirect already applied but no backup holds the original ${ENTRY_REDIRECT.file}; ` +
+				`/agy patch restore cannot revert it. Reinstall pi to fully revert.`;
+			errors.push(msg);
+			log("entry-original-missing", { file: ENTRY_REDIRECT.file });
+		}
+	}
+	// Absent entry file: pre-bundle pi, the bin already points at the modular entry.
+
+	const anyChange = plan.some((p) => p.changed) || entry !== null;
 	if (!anyChange) {
 		log("already-present", { root, version });
 		return { present: true, patched: false, alreadyPresent: true, changedFiles, errors, root, version };
@@ -485,8 +570,25 @@ export function applyInvokeToolPatch(opts: PatchOpts = {}): PatchResult {
 			path.join(backupDir, "VERSION"),
 			`${JSON.stringify({ version, root, createdAt: new Date().toISOString() }, null, 2)}\n`,
 		);
-		// Back up the validated originals (in memory) for restore.
-		for (const p of plan) backupOriginal(p.file, p.original, backupDir);
+		// Copy-forward: seed the new backup with the previous SAME-version backup
+		// so it stays complete even when this run changes only some files (a
+		// repair run after a partial patch). Without this, a repair that does not
+		// touch the entry would create a backup lacking it, and a later restore
+		// would silently skip the entry redirect.
+		if (prevBackup && prevBackup.version === version) {
+			for (const rel of [...PATCH_FILES.map((f) => f.file), ENTRY_REDIRECT.file]) {
+				const src = path.join(prevBackup.dir, rel);
+				if (!fs.existsSync(src)) continue;
+				const dst = path.join(backupDir, rel);
+				fs.mkdirSync(path.dirname(dst), { recursive: true });
+				fs.copyFileSync(src, dst);
+			}
+		}
+		// Overlay the pre-change bytes ONLY for files this run is about to write,
+		// so already-patched files keep their pristine bytes from the older backup
+		// instead of capturing current (patched) bytes.
+		for (const p of plan) if (p.changed) backupOriginal(p.file, p.original, backupDir);
+		if (entry) backupOriginal(ENTRY_REDIRECT.file, entry.original, backupDir);
 		log("backup-written", { backupDir });
 	} catch (e) {
 		const msg = `backup failed (${e instanceof Error ? e.message : String(e)}); aborting before any write.`;
@@ -510,6 +612,23 @@ export function applyInvokeToolPatch(opts: PatchOpts = {}): PatchResult {
 			// up, so a retry (or restore) recovers cleanly. hasInvokeTool() stays
 			// false unless the facade (last file) already succeeded.
 			break;
+		}
+	}
+
+	// The entry redirect goes LAST: it is the activator. Until it lands, the
+	// patched core stays inert (the bundle still runs), so a partial run fails
+	// closed exactly like a facade-only failure. Never written after any write
+	// error: activating the modular runtime is the accepted tradeoff of a
+	// SUCCESSFUL patch, not of a failed one.
+	if (entry && errors.length === 0) {
+		try {
+			atomicWrite(entryPath, ENTRY_REDIRECT.content);
+			changedFiles.push(ENTRY_REDIRECT.file);
+			log("entry-redirected", { file: ENTRY_REDIRECT.file });
+		} catch (e) {
+			const msg = describeWriteError(e, root);
+			errors.push(`failed writing ${ENTRY_REDIRECT.file}: ${msg}`);
+			log("write-failed", { file: ENTRY_REDIRECT.file, code: (e as NodeJS.ErrnoException)?.code });
 		}
 	}
 
@@ -548,17 +667,18 @@ export function restorePatch(opts: PatchOpts = {}): RestoreResult {
 	}
 
 	const restoredFiles: string[] = [];
-	for (const f of PATCH_FILES) {
-		const src = path.join(backup.dir, f.file);
-		const dst = path.join(root, "dist", f.file);
+	// Entry redirect restores last, mirroring apply order.
+	for (const rel of [...PATCH_FILES.map((f) => f.file), ENTRY_REDIRECT.file]) {
+		const src = path.join(backup.dir, rel);
+		const dst = path.join(root, "dist", rel);
 		if (!fs.existsSync(src)) continue;
 		try {
 			const content = fs.readFileSync(src, "utf8");
 			atomicWrite(dst, content);
-			restoredFiles.push(f.file);
+			restoredFiles.push(rel);
 		} catch (e) {
 			const msg = describeWriteError(e, root);
-			return { ok: false, restoredFiles, backupDir: backup.dir, reason: `failed restoring ${f.file}: ${msg}` };
+			return { ok: false, restoredFiles, backupDir: backup.dir, reason: `failed restoring ${rel}: ${msg}` };
 		}
 	}
 	log("restore-done", { backupDir: backup.dir, count: restoredFiles.length });

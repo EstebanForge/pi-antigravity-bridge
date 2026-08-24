@@ -8,7 +8,7 @@
 // copy and the real globally-patched pi (when that install is present): it
 // proves the patcher reproduces the hand-applied patch exactly.
 
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -44,7 +44,10 @@ const TARGET_FILES = [
 	"core/extensions/runner.js",
 	"core/extensions/loader.js",
 	"core/extensions/types.d.ts",
+	"bundle/cli.js",
 ];
+// TARGET_FILES plus the modular entry the bundle redirect targets.
+const COPY_FILES = [...TARGET_FILES, "cli.js"];
 
 const PI_VERSION = (
 	JSON.parse(
@@ -57,7 +60,8 @@ function makeFakeRoot(): { root: string; backupBase: string } {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-patch-test-"));
 	const backupBase = fs.mkdtempSync(path.join(os.tmpdir(), "pi-patch-bak-"));
 	fs.mkdirSync(path.join(root, "dist", "core", "extensions"), { recursive: true });
-	for (const rel of TARGET_FILES) {
+	fs.mkdirSync(path.join(root, "dist", "bundle"), { recursive: true });
+	for (const rel of COPY_FILES) {
 		fs.copyFileSync(path.join(PRISTINE_DIST, rel), path.join(root, "dist", rel));
 	}
 	fs.writeFileSync(
@@ -106,7 +110,7 @@ test("apply: patches all sites, reports changed files, no errors", () => {
 		assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
 		assert.equal(res.root, root);
 		assert.equal(res.version, PI_VERSION);
-		assert.equal(res.changedFiles.length, 4);
+		assert.equal(res.changedFiles.length, 5);
 		assert.deepEqual([...res.changedFiles].sort(), [...TARGET_FILES].sort());
 
 		// Every sentinel present, exactly once (no double-insertion).
@@ -116,6 +120,11 @@ test("apply: patches all sites, reports changed files, no errors", () => {
 			assert.equal(countOccurrences(txt, site.sentinel), 1, `sentinel duplicated in ${site.file}`);
 		}
 		assert.equal(patchStatus({ root, backupBase }).present, true);
+
+		// Entry redirect landed: the bundle entry is now the documented shim.
+		const entryTxt = fs.readFileSync(path.join(root, "dist", "bundle/cli.js"), "utf8");
+		assert.ok(entryTxt.includes('import "../cli.js";'), "entry redirect missing");
+		assert.ok(entryTxt.includes("#!/usr/bin/env node"), "entry shim lost its shebang");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 		fs.rmSync(backupBase, { recursive: true, force: true });
@@ -134,6 +143,44 @@ test("apply is idempotent: second run is a no-op", () => {
 		for (const site of listSites()) {
 			const txt = fs.readFileSync(path.join(root, "dist", site.file), "utf8");
 			assert.equal(countOccurrences(txt, site.sentinel), 1, `sentinel duplicated after re-apply in ${site.file}`);
+		}
+		// And exactly one entry-redirect import.
+		const entryTxt = fs.readFileSync(path.join(root, "dist", "bundle/cli.js"), "utf8");
+		assert.equal(countOccurrences(entryTxt, 'import "../cli.js";'), 1, "entry redirect duplicated");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(backupBase, { recursive: true, force: true });
+	}
+});
+
+test("pre-bundle layout: entry redirect skipped, core sites still patched", () => {
+	const { root, backupBase } = makeFakeRoot();
+	try {
+		// Simulate pi < 0.84.3: no dist/bundle/ at all.
+		fs.rmSync(path.join(root, "dist", "bundle"), { recursive: true, force: true });
+		const res = applyInvokeToolPatch({ root, backupBase });
+		assert.equal(res.patched, true);
+		assert.equal(res.errors.length, 0, JSON.stringify(res.errors));
+		assert.equal(res.changedFiles.length, 4);
+		assert.equal(patchStatus({ root, backupBase }).present, true);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(backupBase, { recursive: true, force: true });
+	}
+});
+
+test("unexpected bundle entry content aborts with no files written", () => {
+	const { root, backupBase } = makeFakeRoot();
+	try {
+		// Overwrite the entry with something that is not the bundled cli.
+		fs.writeFileSync(path.join(root, "dist", "bundle/cli.js"), "// some other entry\n");
+		const res = applyInvokeToolPatch({ root, backupBase });
+		assert.equal(res.patched, false);
+		assert.ok(res.errors.length > 0);
+		assert.match(res.errors[0], /unexpected content/i);
+		for (const site of listSites()) {
+			const after = fs.readFileSync(path.join(root, "dist", site.file), "utf8");
+			assert.ok(!after.includes(site.sentinel), `site ${site.file} was written despite abort`);
 		}
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
@@ -182,6 +229,9 @@ test("anchor missing (version drift) aborts with no files written", () => {
 			const after = fs.readFileSync(path.join(root, "dist", site.file), "utf8");
 			assert.ok(!after.includes(site.sentinel), `site ${site.file} was written despite abort`);
 		}
+		// The entry redirect was not written either.
+		const entryAfter = fs.readFileSync(path.join(root, "dist", "bundle/cli.js"), "utf8");
+		assert.ok(!entryAfter.includes('import "../cli.js";'), "entry redirect written despite abort");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 		fs.rmSync(backupBase, { recursive: true, force: true });
@@ -199,7 +249,7 @@ test("restore round-trips files back to pristine", () => {
 		applyInvokeToolPatch({ root, backupBase });
 		const r = restorePatch({ root, backupBase });
 		assert.equal(r.ok, true, r.reason ?? "restore failed");
-		assert.equal(r.restoredFiles.length, 4);
+		assert.equal(r.restoredFiles.length, 5);
 
 		for (const rel of TARGET_FILES) {
 			const after = fs.readFileSync(path.join(root, "dist", rel), "utf8");
@@ -294,6 +344,84 @@ test("findPiRoot resolves and verifies the real running pi (sanity)", () => {
 });
 
 // --- decidePatchAction: the consent-gate decision matrix -------------------
+
+test("exec bit on the bundle entry survives patch and restore", () => {
+	const { root, backupBase } = makeFakeRoot();
+	try {
+		// pi installs the bin target executable; the shim must stay executable.
+		fs.chmodSync(path.join(root, "dist", "bundle/cli.js"), 0o755);
+		const before = fs.statSync(path.join(root, "dist", "bundle/cli.js")).mode & 0o777;
+		assert.equal(before, 0o755);
+
+		applyInvokeToolPatch({ root, backupBase });
+		const afterApply = fs.statSync(path.join(root, "dist", "bundle/cli.js")).mode & 0o777;
+		assert.equal(afterApply, 0o755, "apply stripped the execute bit from pi's bin entry");
+
+		restorePatch({ root, backupBase });
+		const afterRestore = fs.statSync(path.join(root, "dist", "bundle/cli.js")).mode & 0o777;
+		assert.equal(afterRestore, 0o755, "restore stripped the execute bit from pi's bin entry");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(backupBase, { recursive: true, force: true });
+	}
+});
+
+test("core write failure never activates the entry redirect", () => {
+	const { root, backupBase } = makeFakeRoot();
+	const rename = vi.spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+		if (String(from).includes("loader.js")) throw Object.assign(new Error("mock EACCES"), { code: "EACCES" });
+		return fs.renameSync(from, to);
+	});
+	try {
+		const res = applyInvokeToolPatch({ root, backupBase });
+		assert.ok(res.errors.length > 0, "expected the loader.js write failure to surface");
+		const entryTxt = fs.readFileSync(path.join(root, "dist", "bundle/cli.js"), "utf8");
+		assert.ok(!entryTxt.includes('import "../cli.js";'), "entry redirect written despite a failed core write");
+		assert.ok(entryTxt.includes("chunks/"), "entry redirect clobbered despite a failed core write");
+	} finally {
+		rename.mockRestore();
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(backupBase, { recursive: true, force: true });
+	}
+});
+
+test("repair after a partial patch keeps backups complete and restores the entry", () => {
+	const { root, backupBase } = makeFakeRoot();
+	try {
+		// History: a full apply, then loader.js alone was reverted (e.g. a
+		// partial restore). Entry stays redirected, one core site is pristine.
+		const first = applyInvokeToolPatch({ root, backupBase });
+		assert.ok(first.backupDir);
+		fs.copyFileSync(
+			path.join(PRISTINE_DIST, "core/extensions/loader.js"),
+			path.join(root, "dist", "core/extensions/loader.js"),
+		);
+
+		// Repair run: re-patches loader.js only.
+		const repair = applyInvokeToolPatch({ root, backupBase });
+		assert.equal(repair.errors.length, 0, JSON.stringify(repair.errors));
+		assert.deepEqual(repair.changedFiles, ["core/extensions/loader.js"]);
+		assert.ok(repair.backupDir);
+		// The #3 regression: the new backup must still hold the entry original.
+		assert.ok(
+			fs.existsSync(path.join(repair.backupDir!, "bundle/cli.js")),
+			"repair backup lost the entry original (copy-forward failed)",
+		);
+
+		// Restoring from the newest (repair) backup must revert everything,
+		// including the entry redirect.
+		const r = restorePatch({ root, backupBase });
+		assert.equal(r.ok, true, r.reason ?? "restore failed");
+		const entryTxt = fs.readFileSync(path.join(root, "dist", "bundle/cli.js"), "utf8");
+		assert.ok(entryTxt.includes("chunks/"), "entry redirect not reverted by restore after repair");
+		assert.ok(!entryTxt.includes('import "../cli.js";'), "entry shim survived restore after repair");
+		const loaderTxt = fs.readFileSync(path.join(root, "dist", "core/extensions/loader.js"), "utf8");
+		assert.ok(!loaderTxt.includes("return runtime.invokeTool"), "loader.js not reverted to pristine");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+		fs.rmSync(backupBase, { recursive: true, force: true });
+	}
+});
 
 test("decidePatchAction: live patch always proceeds", () => {
 	assert.equal(decidePatchAction(true, false, false, false).kind, "proceed");

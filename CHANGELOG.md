@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.5] - 2026-08-24
+
+### Fixed
+
+- **Patch updated for pi 0.84.3's bundled runtime.** Two upstream changes
+  broke the `pi.invokeTool` patch. First, the `core/extensions/loader.js`
+  facade was refactored (`runtime.assertActive()` became a local
+  `assertActive()` guard), so the sixth site no longer matched and the
+  two-phase apply aborted (fail-closed, no files written). Second, pi's `bin`
+  now launches `dist/bundle/cli.js`, a bundled runtime with its own embedded
+  core, so patching `dist/core/` could never affect a running pi. The patcher
+  now also replaces `dist/bundle/cli.js` with a shim that loads the modular
+  `dist/cli.js`, making the six sites live again; `findPiRoot` understands
+  the `dist/bundle` argv layout. Tradeoff: pi starts via the modular runtime
+  (the bundle's faster startup is forfeited while the patch is applied).
+  After upgrading, re-apply via `/agy patch apply` and fully restart pi.
+- **Patcher hardening (peer-reviewed).** Atomic writes now preserve the
+  destination's permission bits. Without this, every apply stripped the
+  execute bit from `dist/bundle/cli.js` (pi's bin target) and broke the `pi`
+  command. The entry redirect is never written after any write error, so a
+  failed run can no longer silently switch pi to the modular runtime. Backups
+  copy forward from the previous same-version backup, so a repair run after a
+  partial patch keeps backups complete and restore still reverts the entry
+  redirect; an already-redirected entry with no surviving original now warns
+  loudly instead of failing silently later.
+
 ## [1.2.4] - 2026-08-13
 
 ### Added
