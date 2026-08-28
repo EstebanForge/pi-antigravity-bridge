@@ -308,7 +308,7 @@ export function toPiModel(entry: AgyModelEntry): Model<Api> {
  *  can still select a model and get a clear runtime error instead of an empty
  *  list. Update these when agy ships new Gemini versions. */
 export const FALLBACK_MODELS: AgyModelEntry[] = [
-	{ full: "gemini-3.6-flash", id: "gemini-3-6-flash", efforts: ["low", "medium", "high"] },
+	{ full: "gemini-3.7-flash", id: "gemini-3-7-flash", efforts: ["low", "medium", "high"] },
 	{ full: "gemini-3.1-pro", id: "gemini-3-1-pro", efforts: ["low", "high"] },
 	{ full: "claude-sonnet-4-6", id: "claude-sonnet-4-6" },
 ];

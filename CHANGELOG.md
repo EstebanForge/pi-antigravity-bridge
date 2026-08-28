@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.6] - 2026-08-28
+
+### Changed
+
+- **Offline fallback Flash bumped to Gemini 3.7.** `FALLBACK_MODELS`
+  (served only when `agy models` fails or is unauthenticated at load) now
+  offers `gemini-3.7-flash` instead of `gemini-3.6-flash`. Live discovery
+  always overrides the fallback, so this only affects the picker when agy
+  is missing or broken.
+
 ## [1.2.5] - 2026-08-24
 
 ### Fixed
