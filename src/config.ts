@@ -52,6 +52,20 @@ export interface AgyConfig {
 	 *  "mcp" (pi-mcp-adapter tools + skills bridge; default), "all" (every
 	 *  registered non-builtin tool incl. other Ask* delegations). */
 	bridgeTools: BridgeTools;
+	/** Inject a delta digest of pi-side context (compaction summaries, turns
+	 *  handled by other providers or pi's own tools) into each agy prompt.
+	 *
+	 *  Default OFF. The digest changes every turn, which defeats agy's
+	 *  server-side prompt cache: every turn re-bills the full context
+	 *  (~25-30k tokens observed). With it off, prompts stay stable and the
+	 *  cache hits.
+	 *
+	 *  Enable when you mix providers in one pi session (Claude turns, pi-side
+	 *  tool runs, or a compaction that agy should know about) and you value
+	 *  agy seeing that context over the cache re-billing. Pure antigravity
+	 *  sessions gain nothing: agy already keeps its own history, and bridge
+	 *  round-trips deliver tool results through the bridge, not the digest. */
+	digest: boolean;
 }
 
 const DEFAULTS: AgyConfig = {
@@ -61,6 +75,7 @@ const DEFAULTS: AgyConfig = {
 	defaultThinking: "medium",
 	engine: "stream-json",
 	bridgeTools: "mcp",
+	digest: false,
 };
 
 /** Load config merged over defaults. Env vars override the file when set. */
@@ -114,6 +129,10 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" ? bridgeRaw : "mcp";
 
+	const digest = process.env.AGY_DIGEST !== undefined
+		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())
+		: file.digest ?? false;
+
 	return {
 		mode,
 		skipPermissions,
@@ -121,6 +140,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		defaultThinking,
 		engine,
 		bridgeTools,
+		digest,
 		patchCleanupNotified: file.patchCleanupNotified === true,
 	};
 }

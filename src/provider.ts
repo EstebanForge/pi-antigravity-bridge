@@ -626,7 +626,7 @@ async function runTurnDriver(
 		const agyModel = entry?.full ?? model.id;
 		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 		const watermark = existing?.lastMessageCount ?? 0;
-		const digest = buildContextDigest(context.messages, watermark);
+		const digest = config.digest ? buildContextDigest(context.messages, watermark) : "";
 		const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
 		try {
 			handle = await deps.driver.run({
@@ -751,11 +751,16 @@ async function runTurn(
 		return;
 	}
 
+	// Runtime config (mode, permissions, digest). Loaded fresh each turn so
+	// /agy toggles take effect immediately without a reload.
+	const config = loadConfig();
+
 	// G1: inject a delta digest of pi-side context agy was not spawned for
-	// (compaction summaries, other-provider turns). agy keeps its own history,
-	// so this is a delta, not a replay. See docs/PI-BRIDGE-GAPS.md (G1).
+	// (compaction summaries, other-provider turns), gated on config.digest:
+	// the digest changes every turn and defeats agy's prompt cache. agy keeps
+	// its own history; see docs/PI-BRIDGE-GAPS.md (G1).
 	const watermark = existing?.lastMessageCount ?? 0;
-	const digest = buildContextDigest(context.messages, watermark);
+	const digest = config.digest ? buildContextDigest(context.messages, watermark) : "";
 	const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
 
 	// Resolve the pi model id to its catalog entry. On a miss, fall through to
@@ -764,9 +769,6 @@ async function runTurn(
 	const entry = entries.find((e) => e.id === model.id) ?? null;
 	const agyModel = entry?.full ?? model.id;
 
-	// Runtime config (mode, permissions). Loaded fresh each turn so /agy
-	// toggles take effect immediately without a reload.
-	const config = loadConfig();
 
 	// Effort-driven bases always need --effort (a base slug is invalid on its
 	// own); fixed models never get it (agy rejects --effort for them). For an

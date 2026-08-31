@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-08-31
+
+### Added
+
+- Stream-json engine: one persistent `agy --input-format stream-json` process per provider; conversation binding from the `init` event (no more SQLite snapshot diffing), native tool-step events (no protobuf decoding), and token usage mapped onto pi's usage when agy reports it. `AGY_ENGINE=legacy-sqlite` keeps the old engine for one release.
+- No-patch MCP tool bridge: bridge calls park in a round-trip store; the provider emits them as real pi `toolUse` turns, pi executes with native cards/permissions/hooks, and the toolResult completes the parked MCP response on the next stream call. `bridgeTools` config selects the surface: `none` / `mcp` (default) / `all`.
+- Native re-execution of agy read-only tools as real pi builtins (native cards, live output).
+- Display-only `antigravity` wrapper tool: mutating agy steps land as real toolCall/toolResult pairs via recorded-output replay.
+- Skills bridge: `activate_skill` tool exposing the pi Agent Skills catalog to agy, answered by the bridge directly.
+- `/agy doctor`: engine, bridge, driver counters, and lifecycle tail, zero tokens.
+- Legacy patch cleanup: `src/patch-cleanup.ts` detects a leftover invokeTool patch, one-time notice on session start, and `/agy patch-cleanup` restores the original files from the versioned backup.
+
+### Changed
+
+- The MCP tool bridge no longer patches pi. The `pi.invokeTool` round-trip is replaced by the provider-owned park/emit/resolve flow above.
+
+### Fixed
+
+- Live stream-json protocol shapes against real agy: terminal status is `SUCCESS` (not `OK`) and agent text arrives as `text_delta`. The first burn-in turn failed on both; both are pinned by a regression test.
+- Native re-exec tool calls include the `reasoning` argument pi requires on read/edit-class builtins; without it pi rejected every native `read` card at validation.
+- Peer-review round 2 (engine): parked bridge calls suspend the stdout idle timer (a >5-minute permission prompt no longer kills the turn); turn lifetimes are serialized (a second `run()` can no longer orphan an open turn); the cumulative-text guard points the right direction; a settled turn fails round-trips parked against it.
+- Peer-review round 2 (cleanup): backup selection prefers an exact version match over newest-by-mtime (stacked multi-version backups made legitimate restores refuse); `WrapperReplay` entries are single-use (no unbounded growth, no enumerable stale outputs); `rt`-kind round-trips are removed on turn death; the one-time leftover-patch notice is headless-safe (`ctx.hasUI` gate with stderr fallback) and set after surfacing, not before.
+
+### Removed
+
+- `pi.invokeTool` patch: `src/patcher.ts`, the load-time consent prompt, `/agy patch` subcommands, `docs/PI-INVOKETOOL-PATCH.md`, and the `invokeToolPatchDeclined` config flag.
+
+
 ## [1.2.6] - 2026-08-28
 
 ### Changed
@@ -253,21 +281,3 @@ dependency.
   the correct downgrade. Hono's Node->Web conversion reads `req.rawHeaders`,
   not the parsed `req.headers` object, so the value is rewritten in the raw
   array (and mirrored on `req.headers` for other readers).
-
-## 1.3.0 - unreleased
-
-### Changed
-
-- Stream-json engine: one persistent `agy --input-format stream-json` process per provider; conversation binding from the `init` event (no more SQLite snapshot diffing), native tool-step events (no protobuf decoding), and token usage mapped onto pi's usage when agy reports it. `AGY_ENGINE=legacy-sqlite` keeps the old engine for one release.
-- MCP tool bridge no longer patches pi. Bridge calls park in a round-trip store; the provider emits them as real pi `toolUse` turns, pi executes with native cards/permissions/hooks, and the toolResult completes the parked MCP response on the next stream call (mechanism credit: tianzuo/pi-antigravity). `bridgeTools` config selects the surface: `none` / `mcp` (default) / `all`.
-
-### Added
-
-- Native re-execution of agy read-only tools as real pi builtins (native cards, live output).
-- Display-only `antigravity` wrapper tool: mutating agy steps land as real toolCall/toolResult pairs via recorded-output replay.
-- Skills bridge: `activate_skill` tool exposing the pi Agent Skills catalog to agy, answered by the bridge directly.
-- `/agy doctor`: engine, bridge, driver counters, and lifecycle tail, zero tokens.
-
-### Removed
-
-- `pi.invokeTool` patch: `src/patcher.ts`, the load-time consent prompt, `/agy patch` subcommands, `docs/PI-INVOKETOOL-PATCH.md`, and the `invokeToolPatchDeclined` config flag.

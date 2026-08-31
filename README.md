@@ -8,25 +8,25 @@ If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/Esteban
 
 ## What it does
 
-You pick a Gemini model in pi's `/model` picker. pi routes each turn through this provider. The provider spawns `agy -p` in your workspace, polls the SQLite database agy writes as it works, decodes the protobuf step payloads, and streams the agent text back into pi token by token.
+You pick a Gemini model in pi's `/model` picker. pi routes each turn through this provider. The default `stream-json` engine runs one persistent agy process in your workspace, feeds it each turn, parses its stream-json events, and streams the agent text back into pi token by token. Token usage is live. A `legacy-sqlite` fallback engine (spawn `agy -p`, poll its SQLite conversation DB, decode its protobuf steps) still exists; see [Engine and bridge surface](#engine-and-bridge-surface).
 
 Multi-turn works. The provider binds a pi session to an agy conversation id (persisted under `~/.pi/agent/antigravity-bridge/sessions.json`) and resumes it on the next turn via `--conversation <id>`. agy keeps its own history, so only the latest user message is sent each turn.
 
 ## What it cannot do
 
-agy runs its own closed tool loop (`read_file`, `write_file`, `edit_file`, `run_command`) against `--add-dir`. By default pi's own `read`/`write`/`edit`/`bash` do not fire for agy's file and shell work, and that is fine: agy has capable native equivalents. What used to be a hard wall for everything else is now bridgeable; see [MCP tool bridge](#mcp-tool-bridge-agy-uses-pis-tools) below.
+agy runs its own closed tool loop (`read_file`, `write_file`, `edit_file`, `run_command`) against `--add-dir`. Its read-only steps (`view_file`, `list_dir`, `grep_search`, `find_by_name`) re-run as real pi builtins (`read`, `ls`, `grep`, `find`) so their cards render natively; mutating steps never execute in pi - they replay through a display-only `antigravity` wrapper tool. What used to be a hard wall for pi's other tools is bridgeable; see [MCP tool bridge](#mcp-tool-bridge-agy-uses-pis-tools) below.
 
 Residual limits (with or without the bridge):
 
 - agy's own edits still land directly on disk; pi's inline diff review does not engage for them.
 - agy commands run without per-action approval, same as every other tool in pi. See [Permissions](#permissions) below.
-- No token usage or cost accounting. agy does not expose token counts, so usage reports as zero.
+- No cost accounting: cost stays zero because agy runs on your subscription quota. Token usage is live on the `stream-json` engine; the `legacy-sqlite` fallback reports usage as zero.
 
 ## MCP tool bridge (agy uses pi's tools)
 
 While agy is the active model it normally cannot see pi's universe of extensions: agentmemory, codegraph, web search, slack/asana, the `Ask*` delegations, and any other installed pi tool. This extension optionally bridges that gap.
 
-The bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and `tools/call` executes them via `pi.invokeTool()`. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
+The bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and a `tools/call` routes into pi's own tool loop via the round-trip described below. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
 
 **No patch required.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call. This is the same mechanism tianzuo/pi-antigravity uses; upstream pi APIs only.
 
@@ -54,29 +54,7 @@ tokens.
 
 ## Install
 
-> ⚠️ **Heads-up: this extension patches your `pi` install.** When it loads and
-> the running pi lacks `pi.invokeTool()`, it **asks you once** whether to edit
-> files inside your globally-installed `@earendil-works/pi-coding-agent/dist/`
-> (adding one method) to enable the MCP tool bridge. This is, for now, the only
-> way agy can use Pi internal tooling.
->
-> - **Yes** → applies the patch (reversible via `/agy patch restore`) and tells
->   you to restart pi. The bridge starts on the next launch.
->
-> - **No** → it remembers your choice and stays silent; it won't ask again until
->   you run `/agy patch apply`. The provider and AskAntigravity tool keep working;
->   only the MCP tool bridge stays off.
->
-> - The apply is **idempotent & safe** (only what's missing; aborts cleanly if a
->   pi update moved the code), **backed up** (under
->   `~/.pi/agent/antigravity-bridge/pi-patch-backup/`), and **self-healing** (a
->   `pi` reinstall/update wipes `dist/`; re-applied on the next start).
->
-> The patch only takes effect after a **full `pi` restart** (quit + relaunch) —
-> `/reload` is **not** enough, because pi caches its compiled core for the
-> process.
->
-> Details for the patch can be found in [docs/PI-INVOKETOOL-PATCH.md](docs/PI-INVOKETOOL-PATCH.md).
+> **No patch required.** The bridge runs on pi's public APIs only; the extension never edits your pi install. If an older version of this extension patched your pi (adding `pi.invokeTool()`), the leftover is inert and a pi update removes it. The extension detects it once and offers `/agy patch-cleanup` to restore the original files from the backup immediately.
 
 Install with pi's package manager:
 
@@ -116,8 +94,9 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 | --- | --- | --- |
 | `engine` | `stream-json` (persistent agy process, toolUse round-trips, live usage) or `legacy-sqlite` (spawn `agy -p`, poll its SQLite) | `stream-json` |
 | `bridgeTools` | `none` (bridge off), `mcp` (pi-mcp-adapter tools), `all` (every non-builtin tool, incl. other `Ask*` delegations) | `mcp` |
+| `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 
-Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`. The `legacy-sqlite` engine is kept as a fallback and is scheduled for removal once the stream-json engine has burned in.
+Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`. The `legacy-sqlite` engine is kept as a fallback and is scheduled for removal once the stream-json engine has burned in.
 
 ### The /agy command
 
@@ -126,12 +105,14 @@ Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`. The `legacy-sqlite` engine is k
 ```
 /agy                      status, or open the mode/permissions/model/thinking picker (TUI)
 /agy status               print current mode, permissions, model + session counts
+/agy doctor               engine state, driver counters, bridge port, last lifecycle events
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
 /agy model flash|pro|gemini   default model alias for the AskAntigravity tool
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
-/agy patch status|apply|restore   inspect / force / undo the pi.invokeTool patch
+/agy digest on|off        inject pi-side context into agy prompts (default off; see engine table)
+/agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)
 ```
 
@@ -139,7 +120,7 @@ Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`. The `legacy-sqlite` engine is k
 
 pi itself has no built-in approval gate. Unlike codex, claude, or agy running interactively, pi does not prompt you to confirm each tool action before it runs. That is the host environment this extension lives in.
 
-Because agy in `-p` (print) mode cannot answer an interactive `y/n` prompt, this extension passes `--dangerously-skip-permissions` by default. It is technically necessary: `accept-edits` auto-approves file edits but not shell commands, so a `run_command` would otherwise hang forever waiting for a prompt nothing can answer (upstream [google-antigravity/antigravity-cli#318](https://github.com/google-antigravity/antigravity-cli/issues/318)). The net effect is that agy executes commands the same way pi already executes your other tools: without per-action review.
+Because agy runs non-interactively under this provider (nothing can answer a `y/n` prompt), this extension passes `--dangerously-skip-permissions` by default. It is technically necessary: `accept-edits` auto-approves file edits but not shell commands, so a `run_command` would otherwise hang forever waiting for a prompt nothing can answer (upstream [google-antigravity/antigravity-cli#318](https://github.com/google-antigravity/antigravity-cli/issues/318)). The net effect is that agy executes commands the same way pi already executes your other tools: without per-action review.
 
 If you want agy to execute nothing, use `/agy mode plan`. Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
 
@@ -161,13 +142,13 @@ For isolation when running any agent that executes commands without a confirmati
 
 ## Development
 
-Build, test, and debug instructions live in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). For the internal architecture (decode pipeline, polling, conversation discovery) see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Build, test, and debug instructions live in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). For the internal architecture (engines, bridge round-trips, conversation discovery) see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Terms of Service notice
 
 Google's [Antigravity ToS](https://antigravity.google/terms) (Section 6) prohibits accessing the service "in connection with products not provided by us", and names as its example using tools like Hermes/OpenClaw with Antigravity OAuth. That targets reusing your credentials in a non-Google harness that calls Google's backend directly.
 
-This extension does not do that. It spawns the official, unmodified `agy` binary as a subprocess; `agy` performs its own OAuth and makes its own calls to Google. This code never sees, extracts, or reuses your token, and never contacts Antigravity's backend. It only reads the local SQLite file `agy` writes. From Google's server-side view there is no signal that distinguishes "agy launched by pi" from "agy launched by a terminal, an IDE task runner, or cron": same signed binary, same authenticated calls.
+This extension does not do that. It spawns the official, unmodified `agy` binary as a subprocess; `agy` performs its own OAuth and makes its own calls to Google. This code never sees, extracts, or reuses your token, and never contacts Antigravity's backend. It only reads what `agy` itself produces locally: its stream-json output on the default engine, its SQLite conversation DB on the fallback engine. From Google's server-side view there is no signal that distinguishes "agy launched by pi" from "agy launched by a terminal, an IDE task runner, or cron": same signed binary, same authenticated calls.
 
 Google's reported enforcement to date (the February 2026 suspensions) targeted token-reuse tools, not spawning the official CLI.
 

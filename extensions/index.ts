@@ -303,6 +303,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  config:        ${CONFIG_PATH}`,
 		`  engine:        ${config.engine}`,
 		`  bridge tools:  ${config.bridgeTools}`,
+		`  digest:        ${config.digest ? "on" : "off"}`,
 		"",
 		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy clear",
 	].join("\n");
@@ -312,7 +313,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|digest on|off|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -394,6 +395,21 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				return;
 			}
+			if (sub === "digest") {
+				if (val === "on" || val === "off") {
+					const next = saveConfig({ digest: val === "on" });
+					ui?.notify(
+						next.digest
+							? "digest on. pi-side context (compaction summaries, other-provider turns) is injected into each agy prompt. Note: this defeats agy's prompt cache (~25-30k tokens re-billed per turn)."
+							: "digest off. agy prompts contain only your message; agy's prompt cache stays stable. Enable when mixing providers in one session and agy must see pi-side context.",
+						"info",
+					);
+				} else {
+					ui?.notify(`digest: ${loadConfig().digest ? "on" : "off"}\nusage: /agy digest on|off`, "info");
+				}
+				return;
+			}
+
 			if (sub === "thinking") {
 				if (val === "low" || val === "medium" || val === "high") {
 					const next = saveConfig({ defaultThinking: val as ThinkingTier });

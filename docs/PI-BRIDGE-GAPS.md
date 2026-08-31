@@ -2,71 +2,48 @@
 
 Status of the MCP tool bridge between agy (Antigravity CLI, used as pi's Gemini
 provider) and pi's extension/builtin tools. This doc tracks **open gaps only**.
-Shipped work lives in `CHANGELOG.md` (most recently: a conversation-history
-delta digest, and git-sourced edit diffs). Ideas that were weighed and rejected
-are listed at the end under "Discarded ideas".
+Shipped work lives in `CHANGELOG.md` (most recently, 1.3.0: the stream-json
+engine and the no-patch toolUse round-trip that replaced `pi.invokeTool`).
+Ideas that were weighed and rejected are listed at the end under "Discarded
+ideas".
 
 ## What the bridge already does
 
-agy -> bridge MCP server -> `pi.invokeTool(name, args)` -> pi's tool registry
--> result returned through MCP -> agy model context. The chain was verified
-end-to-end with `memory_search` and `ask_user_question`. The bridge exposes
-pi's extension tools (builtins are filtered out since agy has native
-equivalents; `AskAntigravity` is filtered to avoid recursion).
+agy -> bridge MCP server `tools/call` -> the call parks in the provider's
+round-trip store -> the provider ends the pi assistant message with a
+`toolUse` stop reason for the real pi tool -> pi executes it in its own loop
+(native cards, permissions, hooks) -> the `toolResult` completes the parked
+MCP response on the next stream call. No pi patch. Verified end-to-end with
+`memory_search` and `ask_user_question`. The bridge exposes pi's extension
+tools (builtins are filtered out since agy has native equivalents;
+`AskAntigravity` is filtered to avoid recursion).
 
 What this means in practice: agy can read/write files, use memory, navigate
 code with codegraph, search the web, post to Slack, create Asana tasks, spawn
 subagents, prompt the user with `ask_user_question`, and delegate to peer
 reviewers (Claude, Codex, Antigravity), all by going through pi's installed
-tooling instead of its own. Tools run in pi's process with pi's own credentials,
-so a secret never crosses the bridge. agy's file edits surface as git-sourced
-diffs in pi's thinking stream, and each turn agy receives a delta digest of
-pi-side context (compaction summaries, other-provider turns) it was not spawned
-for.
+tooling instead of its own. Tools run in pi's process with pi's own
+credentials, so a secret never crosses the bridge, and a long call renders in
+pi's native UI while it runs. agy's file edits surface as git-sourced diffs in
+pi's thinking stream. A delta digest of pi-side context (compaction summaries,
+other-provider turns) is available but OFF by default (`/agy digest on`): the
+digest changes every turn and defeats agy's server-side prompt cache.
 
 ## Open gaps
 
-Three gaps remain. Every one either needs a pi dist patch (the maintenance cost
-the shipped gaps deliberately avoided) or a verify-before-build step. Ordered by
-former G-number.
+Two gaps remain. Both now sit on the no-patch round-trip path, so closing them
+means provider- or bridge-side work only; there is no pi dist patch to extend
+anymore. Ordered by impact.
 
-**Numbering note:** the G1/G2/G3 labels below are this living doc's renumbered
-open set, NOT the historical G1-G10 in `CHANGELOG.md`. In that historical list
-G1 = conversation-history digest and G8 = edit diffs; both are now closed
-(shipped in 1.0.0) and so dropped from here, leaving the three renumbered below.
-
----
-
-### G1. Stream progress for long tool calls [HIGH IMPACT]
-
-**Status:** Open
-**Objective:** Stop blocking on long tools (`web_research`, `librarian`,
-`codegraph_explore` on big repos). Push partial output back to agy so pi's UI
-shows live progress instead of a frozen spinner.
-
-**Why:** Today the bridge blocks until the tool returns. The user has no signal
-that work is happening. This is partly a pi-side gap (most long tools do not
-emit progress) and partly a bridge-transport gap.
-
-**Scope:**
-- `docs/PI-INVOKETOOL-PATCH.md`: expose pi's progress bus.
-- `src/mcp-server.ts`: switch from blocking `invokeTool` to a streaming RPC
-  using MCP `notifications/progress` (or a `pi_tool_progress` SSE channel).
-- pi-side: audit long tools and add progress emission where missing.
-
-**Acceptance criteria:**
-- [ ] A tool that runs >1s emits at least one progress notification.
-- [ ] pi's TUI spinner updates during the call, not only on completion.
-- [ ] Result content is identical to the blocking path (no data loss).
-- [ ] Fallback: if a tool does not emit progress, behavior matches today.
-
-**Effort:** Large. Touches pi's progress bus and the MCP transport.
-
-**Blocks:** None. **Blocked by:** None.
+**Numbering note:** the G1/G2 labels below are this living doc's renumbered
+open set, NOT the historical G-numbers. In the historical list (`CHANGELOG.md`
+and the comments in `src/provider.ts`) G1 = conversation-history digest
+(shipped 1.0.0, now opt-in via `config.digest`) and G9 = the no-patch toolUse
+round-trip (shipped 1.3.0).
 
 ---
 
-### G2. Expose pi's UI primitives [MEDIUM-HIGH IMPACT]
+### G1. Expose pi's UI primitives [MEDIUM-HIGH IMPACT]
 
 **Status:** Open
 **Objective:** Let agy drive pi's native UI: confirm dialogs, toasts,
@@ -80,7 +57,9 @@ notification toast (for "task started" / "save ok"), native file picker
 for agy edits, that path is structurally closed (see G8 in `CHANGELOG.md`).
 
 **Scope:**
-- `docs/PI-INVOKETOOL-PATCH.md`: expose `AgentSession.ui` helpers.
+- pi-side: confirm a public API surface for these primitives. The old plan of
+  patching `AgentSession.ui` into pi's dist is dead; the bridge no longer
+  patches pi.
 - `src/mcp-server.ts`: wrappers for `pi_confirm`, `pi_notify`,
   `pi_select_file`, `pi_select_directory`, `pi_set_status`.
 
@@ -91,29 +70,30 @@ for agy edits, that path is structurally closed (see G8 in `CHANGELOG.md`).
 - [ ] `pi_set_status(text)` updates the footer; clears on empty string.
 - [ ] Tests cover each primitive with a mocked `ui` seam.
 
-**Effort:** Medium-large. Each primitive is a small pi patch plus a wrapper.
+**Effort:** Medium-large, gated on pi exposing the primitives without a patch.
 
-**Blocks:** None. **Blocked by:** None.
+**Blocks:** None. **Blocked by:** pi-side API availability.
 
 ---
 
-### G3. Lifecycle event subscription [MEDIUM IMPACT]
+### G2. Lifecycle event subscription [MEDIUM IMPACT]
 
 **Status:** Open
 **Objective:** Let a long-lived agy session observe pi events: `turn_start`,
 `turn_end`, `tool_call`, `tool_result`, `compaction`.
 
 **Why:** Today the bridge handles only `session_start` and `session_shutdown`.
-agy is fire-and-forget per turn. Event subscription would enable a class of
-"observer" tooling.
+Event subscription would enable a class of "observer" tooling.
 
-**Caveat:** agy is request-response per turn (`-p`), not event-reactive. Before
-building, confirm there is a real consumer that can act on an async event
-stream; otherwise this risks the same "no consumer" failure that sank
-file-watching (see Discarded ideas).
+**Caveat:** agy is still request-response per turn, even though the
+stream-json engine keeps one process alive across turns. Before building,
+confirm there is a real consumer that can act on an async event stream;
+otherwise this risks the same "no consumer" failure that sank file-watching
+(see Discarded ideas).
 
 **Scope:**
-- `docs/PI-INVOKETOOL-PATCH.md`: add an event-emitter seam on `AgentSession`.
+- Provider-side event tap (no pi patch): relay pi event callbacks into the
+  bridge.
 - `src/mcp-server.ts`: `pi_subscribe(event)` returns a stream id; an SSE
   channel pushes events.
 
@@ -124,11 +104,19 @@ file-watching (see Discarded ideas).
 - [ ] At least three event types supported at close.
 - [ ] No perf regression on the event hot path.
 
-**Effort:** Large. Non-trivial pi-side patching.
+**Effort:** Large.
 
 **Blocks:** None. **Blocked by:** Confirm a real event-driven consumer exists.
 
 ---
+
+## Closed by 1.3.0 (moved out of the open set)
+
+- **Stream progress for long tool calls** (the former top open gap): closed by
+  the no-patch round-trip. Bridged tools no longer block inside the MCP
+  server; they execute as real pi tools in pi's own loop, so pi's native
+  card/spinner UX shows progress while the call runs, and the result content
+  is identical to the old blocking path.
 
 ## Discarded ideas (not worth it)
 
@@ -145,10 +133,10 @@ reasoning is in project memory.
   mid-session appears next turn. The heartbeat would only help a long-lived
   client that caches the list, and there is none.
 - **Settings, env, and secrets access** — DECLINED. Tools exposed via
-  the bridge run in pi's process (`pi.invokeTool` -> `tool.execute`) and
-  self-authenticate with pi's own credentials, so agy already uses pi's creds
-  for every tool; a credential never crosses the bridge. A `pi_get_setting`
-  accessor was predicated on credential reuse that does not apply.
+  the bridge run in pi's process and self-authenticate with pi's own
+  credentials, so agy already uses pi's creds for every tool; a credential
+  never crosses the bridge. A `pi_get_setting` accessor was predicated on
+  credential reuse that does not apply.
 - **Image / binary content blocks** — NOT NEEDED. pi shares the
   path to any image it produces (e.g. `/tmp/pi-clipboard-<uuid>.png`), and agy
   reaches and reads those files directly via the bridge's `read` tool, so
@@ -163,24 +151,19 @@ reasoning is in project memory.
 
 For each open gap, the default shape:
 
-1. Identify the pi-side API to expose (or add).
-2. Extend the patch in `docs/PI-INVOKETOOL-PATCH.md` with a read (or write)
-   accessor.
-3. Add a bridge tool wrapper in `src/mcp-server.ts` that calls the patched API.
-4. Register the tool name with the bridge (it appears in agy's tool catalog on
-   the next session).
-5. Add a test under `tests/mcp-server.test.ts` that round-trips a real call.
-6. Tick the gap's acceptance checkboxes.
+1. Identify the pi-side API (must be public; the bridge does not patch pi).
+2. Add a bridge tool wrapper in `src/mcp-server.ts` that parks a call through
+   the provider's round-trip store, or answers bridge-side when no pi tool is
+   needed (see `src/skills.ts` for that pattern).
+3. Register the tool name with the bridge (it appears in agy's tool catalog on
+   the next turn).
+4. Add a test under `tests/mcp-server.test.ts` that round-trips a real call.
+5. Tick the gap's acceptance checkboxes.
 
-Most need no change to agy, only the bridge (and, for some, pi's dist). Note:
-the two shipped gaps were closed without any pi dist patch or new MCP tool, by
-working provider/decode-side (`src/provider.ts`, `src/diff-render.ts`); the
-shape above is a default, not a requirement.
+Most need no change to agy, only the bridge or the provider.
 
 ## Cross-references
 
-- `docs/ARCHITECTURE.md` — bridge design and per-pid config layout.
-- `docs/PI-INVOKETOOL-PATCH.md` — the local patch to pi that this whole
-  feature depends on.
+- `docs/ARCHITECTURE.md` — engine internals, round-trip design, per-pid config layout.
 - `docs/DEVELOPMENT.md` — how to run tests, rebuild, and iterate.
-- `CHANGELOG.md` — shipped work (conversation-history digest, edit diffs).
+- `CHANGELOG.md` — shipped work.

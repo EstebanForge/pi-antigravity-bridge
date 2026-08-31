@@ -2,6 +2,8 @@
 
 Date: 2026-08-21. Sources: the official VSIX `Google.google-antigravity_1.0.0` (marketplace.visualstudio.com/items?itemName=Google.google-antigravity, unpacked at `~/Downloads/Google.google-antigravity_1.0.0`), Zed's external-agents registry cache (`~/Library/Application Support/Zed/external_agents/registry/registry.json`), the ACP release zip from `dl.google.com`, and the binaries installed on this machine. I verified everything below by direct inspection or live execution unless marked otherwise. Section 8 has the reproduction commands.
 
+> **2026-08-31 (1.3.0) update:** the roadmap sections below predate 1.3.0 and assume the `pi.invokeTool` patch (`src/patcher.ts`, `docs/PI-INVOKETOOL-PATCH.md`) stays. 1.3.0 removed the patch entirely: the MCP tool bridge now runs no-patch via the provider's toolUse round-trip, and `AGY_ENGINE=stream-json` (persistent process) is the default turn engine. Treat every patch-dependent step in sections 9.x as needing rework against the round-trip path; the reverse-engineered protocol facts (sections 1-8) are unaffected.
+
 ## 0. Executive summary
 
 Google ships two official mechanisms for driving Antigravity from an editor, plus one hidden one:

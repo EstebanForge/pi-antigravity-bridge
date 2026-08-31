@@ -58,3 +58,16 @@ test("config: invalid bridgeTools value falls back to mcp", () => {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
+
+test("config: digest defaults off and round-trips through load/save", () => {
+	const p = tmpConfig();
+	try {
+		assert.equal(loadConfig(p).digest, false);
+		saveConfig({ digest: true }, p);
+		assert.equal(loadConfig(p).digest, true);
+		saveConfig({ mode: "plan" }, p);
+		assert.equal(loadConfig(p).digest, true);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
