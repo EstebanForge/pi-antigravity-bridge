@@ -144,7 +144,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}),
 		execute: async (_toolCallId, params) => {
 			const key = (params as { key?: string }).key ?? "";
-			const output = replay.get(key) ?? `(no recorded output for ${key})`;
+			const output = replay.take(key) ?? `(no recorded output for ${key})`;
 			return { content: [{ type: "text", text: output }], details: { replay: true } };
 		},
 	});
@@ -185,7 +185,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
 		const SKIP = new Set(["AskAntigravity"]);
-		const skills: SkillLite[] = scanSkills();
+		const skills: SkillLite[] = scanSkills(process.cwd());
 		const getAll = (pi as unknown as {
 			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
 		}).getAllTools.bind(pi);

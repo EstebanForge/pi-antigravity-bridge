@@ -180,7 +180,7 @@ function newBlocks(): BlockState {
 }
 
 function featsWith(rt: ToolRoundTrips, replay: WrapperReplay): ActivityFeatures {
-	return { replay, nativeActive: () => true, roundTrips: rt, seq: { n: 0 } };
+	return { replay, nativeActive: () => true, roundTrips: rt };
 }
 
 test("consumeActivity: read-only agy tool emits a native pi builtin toolUse and parks", async () => {
@@ -280,7 +280,7 @@ test("consumeActivity: without a replay store, tool steps stay label-only", () =
 		{ type: "tool_done", stepId: 1, name: "write_to_file", args: { path: "a", content: "b" }, output: "x" },
 		new TurnDiffContext(createExecGitOps()),
 		"/w",
-		{ seq: { n: 0 } },
+		{},
 	);
 	assert.equal(out, "continue");
 	const types = collected.map((e) => (e as { type: string }).type);

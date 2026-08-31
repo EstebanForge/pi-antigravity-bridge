@@ -343,6 +343,13 @@ export class WrapperReplay {
 	get(key: string): string | undefined {
 		return this.#map.get(key);
 	}
+	/** Single-use consume: wrapper execute() takes the entry so stale outputs
+	 *  cannot be enumerated by later callers and the map cannot grow unbounded. */
+	take(key: string): string | undefined {
+		const v = this.#map.get(key);
+		this.#map.delete(key);
+		return v;
+	}
 	get size(): number {
 		return this.#map.size;
 	}
@@ -369,7 +376,12 @@ export class ToolRoundTrips {
 
 	#fail(callId: string, reason: string): void {
 		const entry = this.#pending.get(callId);
-		if (!entry || entry.kind === "rt") return;
+		if (!entry) return;
+		if (entry.kind === "rt") {
+			// Nothing to reject, but the entry must not leak past turn death.
+			this.#pending.delete(callId);
+			return;
+		}
 		this.#pending.delete(callId);
 		clearTimeout(entry.timer);
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
@@ -462,7 +474,13 @@ export interface ActivityFeatures {
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
 	roundTrips?: ToolRoundTrips;
-	seq: { n: number };
+}
+
+/** Process-wide counter: round-trip ids must never repeat across turns in
+ *  one session transcript. */
+let RT_SEQ = 0;
+function nextRtId(kind: "nat" | "wrap"): string {
+	return `${kind}-${++RT_SEQ}`;
 }
 
 /** Emit a complete toolCall block and end the pi call with toolUse. */
@@ -534,13 +552,13 @@ export function consumeActivity(
 			if (!feats.replay || !feats.roundTrips) return "continue";
 			const mapped = mapAgyToolToNative(activity.name, activity.args);
 			if (mapped && (!feats.nativeActive || feats.nativeActive(mapped.tool))) {
-				const id = `nat-${(feats.seq.n += 1)}`;
+				const id = nextRtId("nat");
 				feats.roundTrips.track(id, mapped.tool);
 				emitToolUse(stream, blocks, id, mapped.tool, mapped.args);
 				return "parked";
 			}
 			{
-				const id = `wrap-${(feats.seq.n += 1)}`;
+				const id = nextRtId("wrap");
 				feats.replay.set(id, activity.output ?? "(agy recorded no output)");
 				feats.roundTrips.track(id, activity.name);
 				emitToolUse(stream, blocks, id, "antigravity", { tool: activity.name, key: id });
@@ -629,7 +647,6 @@ async function runTurnDriver(
 		replay: deps.replay,
 		nativeActive: deps.nativeActive,
 		roundTrips: deps.roundTrips,
-		seq: { n: 0 },
 	};
 
 	for (;;) {
