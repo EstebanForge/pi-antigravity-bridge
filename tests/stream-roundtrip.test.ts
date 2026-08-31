@@ -222,6 +222,8 @@ test("consumeActivity: read-only agy tool emits a native pi builtin toolUse and 
 	};
 	assert.equal(end.toolCall.name, "read");
 	assert.equal(end.toolCall.arguments.path, "/w/some/file.ts");
+	// pi requires a reasoning argument on read/edit-class builtin calls.
+	assert.equal(typeof (end.toolCall.arguments as Record<string, unknown>).reasoning, "string");
 	const done = collected.find((e) => (e as { type: string }).type === "done") as { reason: string };
 	assert.equal(done.reason, "toolUse");
 	// Tracked as a continuation round-trip, not an MCP bridge call.

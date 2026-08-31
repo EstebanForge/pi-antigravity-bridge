@@ -554,7 +554,12 @@ export function consumeActivity(
 			if (mapped && (!feats.nativeActive || feats.nativeActive(mapped.tool))) {
 				const id = nextRtId("nat");
 				feats.roundTrips.track(id, mapped.tool);
-				emitToolUse(stream, blocks, id, mapped.tool, mapped.args);
+				// pi requires a reasoning argument on read/edit-class builtin calls
+				// (validated against the wrapped schema); harmless where absent.
+				emitToolUse(stream, blocks, id, mapped.tool, {
+					reasoning: `re-exec of agy ${activity.name} for display`,
+					...mapped.args,
+				});
 				return "parked";
 			}
 			{
