@@ -76,6 +76,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// toolUse turns and completes them from the next call's toolResult.
 	const driver = new AgyDriver();
 	const roundTrips = new ToolRoundTrips(driver);
+	// A settled turn cannot answer its parked calls; the driver never sees
+	// ToolRoundTrips, so the provider bridges the two here.
+	driver.onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
 	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips });
 
 	pi.registerProvider("antigravity", {

@@ -114,6 +114,10 @@ interface ActiveTurn {
 	sawResult: boolean;
 	/** Text-dedupe guard state (delta vs cumulative response_text). */
 	cumulativeText: boolean | undefined;
+	/** Open bridge parks. Each one suspends the stdout idle timer: agy is
+	 *  blocked waiting on the MCP HTTP response and produces no output, so
+	 *  inactivity is EXPECTED while parked. */
+	parks: number;
 }
 
 function emit(turn: ActiveTurn, activity: DriverActivity): void {
@@ -135,12 +139,28 @@ function makeHandle(turn: ActiveTurn): TurnHandle {
 		id: turn.id,
 		outcome: turn.outcome,
 		next: () => nextActivity(turn),
-		pushExternal: (activity) => emit(turn, activity),
+		pushExternal: (activity) => {
+			if (activity.type === "bridge_call") {
+				turn.parks += 1;
+				if (turn.idleTimer) {
+					clearTimeout(turn.idleTimer);
+					turn.idleTimer = undefined;
+				}
+			}
+			emit(turn, activity);
+		},
 	};
 }
 
 function nowIso(): string {
 	return new Date().toISOString().slice(11, 19);
+}
+
+/** True when `next` is a cumulative resend of `accumulated` (it repeats every
+ *  byte already streamed) rather than a fresh delta. Exported for tests. */
+export function isCumulativeResend(accumulated: string, next: string): boolean {
+	// Nothing accumulated yet: no resend is possible (first chunk).
+	return accumulated.length > 0 && next.length > accumulated.length && next.startsWith(accumulated);
 }
 
 export class AgyDriver {
@@ -154,6 +174,7 @@ export class AgyDriver {
 	#shutdown = false;
 	#stderrTail = "";
 	#lifecycle: string[] = [];
+	#onTurnEnd: ((outcome: TurnOutcome) => void) | undefined;
 	#stats = {
 		spawns: 0,
 		turns: 0,
@@ -171,6 +192,29 @@ export class AgyDriver {
 		return this.#active && !this.#active.closed ? makeHandle(this.#active) : null;
 	}
 
+	/** Called when a parked bridge call resolves or fails. Rearms the idle
+	 *  timer once no parks remain. */
+	kickIdle(): void {
+		const turn = this.#active;
+		if (!turn || turn.closed) return;
+		if (turn.parks > 0) turn.parks -= 1;
+		if (turn.parks === 0 && !turn.idleTimer) {
+			const idleMin = turn.request.inactivityMin ?? 5;
+			turn.idleTimer = setTimeout(() => {
+				if (turn.closed) return;
+				this.#log(`stall:${turn.id}`);
+				this.#killChild();
+				this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
+			}, idleMin * 60_000);
+		}
+	}
+
+	/** Hook: invoked with the outcome whenever a turn settles. The provider
+	 *  uses it to fail round-trips parked against a dead turn. */
+	set onTurnEnd(fn: ((outcome: TurnOutcome) => void) | undefined) {
+		this.#onTurnEnd = fn;
+	}
+
 	snapshot(): DriverSnapshot {
 		return {
 			state: this.#state,
@@ -181,14 +225,25 @@ export class AgyDriver {
 		};
 	}
 
-	/** Run one turn. Serialized; recycles the child when the profile drifts. */
+	/** Run one turn. Turn LIFETIMES are serialized: release fires only when
+	 *  the dispatched turn settles, so a second run() can never overlap an
+	 *  open turn (which would orphan the first). A turn parked on a pi toolUse
+	 *  round-trip stays open; the continuation path uses reentry(), which does
+	 *  not queue, so parking cannot deadlock the queue. */
 	run(request: DriverTurnRequest): Promise<TurnHandle> {
 		let release!: () => void;
 		const prev = this.#queueTail;
 		this.#queueTail = new Promise<void>((r) => (release = r));
 		return prev
 			.then(() => this.#runExclusive(request))
-			.finally(() => release());
+			.then((handle) => {
+				void handle.outcome.catch(() => {}).then(() => release());
+				return handle;
+			})
+			.catch((err) => {
+				release();
+				throw err;
+			});
 	}
 
 	/** Re-attach to the active turn (pi toolUse continuation). */
@@ -242,6 +297,7 @@ export class AgyDriver {
 			response: "",
 			sawResult: false,
 			cumulativeText: undefined,
+			parks: 0,
 		};
 		if (request.signal) {
 			turn.onAbort = () => {
@@ -461,11 +517,11 @@ export class AgyDriver {
 
 	#appendAgentText(turn: ActiveTurn, text: string): void {
 		// response_text is observed as a delta stream; guard against builds that
-		// resend the full text. Detection runs once: a cumulative sender repeats
-		// prior content on its second chunk.
+		// resend the full text. A cumulative sender's second chunk CONTAINS
+		// everything accumulated so far as a prefix.
 		if (turn.cumulativeText === undefined) {
 			turn.cumulativeText = false;
-		} else if (!turn.cumulativeText && turn.response.startsWith(text)) {
+		} else if (!turn.cumulativeText && isCumulativeResend(turn.response, text)) {
 			turn.cumulativeText = true;
 		}
 		if (turn.cumulativeText) {
@@ -493,6 +549,11 @@ export class AgyDriver {
 		for (const wake of turn.wake) wake();
 		turn.wake = [];
 		turn.resolve(outcome);
+		try {
+			this.#onTurnEnd?.(outcome);
+		} catch {
+			/* listener errors must not break settling */
+		}
 	}
 
 	#failTurn(turn: ActiveTurn, message: string): void {

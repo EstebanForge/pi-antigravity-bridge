@@ -345,6 +345,7 @@ export class ToolRoundTrips {
 		clearTimeout(entry.timer);
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
 		entry.reject(new Error(reason));
+		this.#driver.kickIdle();
 		this.#log("round-trip-fail", { callId, name: entry.name, reason });
 	}
 
@@ -384,6 +385,7 @@ export class ToolRoundTrips {
 		clearTimeout(entry.timer);
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
 		entry.resolve({ content: [{ type: "text", text }], isError });
+		this.#driver.kickIdle();
 		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
 		return true;
 	}

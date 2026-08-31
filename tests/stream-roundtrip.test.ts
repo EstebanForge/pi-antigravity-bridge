@@ -138,3 +138,18 @@ test("round-trips: timeout fails closed", async () => {
 		if (origActive) Object.defineProperty(AgyDriver.prototype, "activeHandle", origActive);
 	}
 });
+
+import { isCumulativeResend } from "../src/driver.js";
+
+test("cumulative guard: a cumulative resend repeats the accumulated prefix (regression: check was inverted)", () => {
+	// Delta stream: "AB" then "C" -> not cumulative.
+	assert.equal(isCumulativeResend("AB", "C"), false);
+	// Cumulative stream: "AB" then "ABC" -> cumulative resend.
+	assert.equal(isCumulativeResend("AB", "ABC"), true);
+	// Equal resend with no growth is ambiguous; treated as delta-append guard off.
+	assert.equal(isCumulativeResend("AB", "AB"), false);
+});
+
+test("cumulative guard: first chunk never counts as a resend", () => {
+	assert.equal(isCumulativeResend("", "hello"), false);
+});
