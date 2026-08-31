@@ -36,6 +36,22 @@ The bridge starts a localhost MCP server inside pi's process. `tools/list` retur
 
 **Security.** The MCP server binds to `127.0.0.1` only and requires a per-session shared-secret header (`x-bridge-token`) that agy sends from the bridge config; browsers cannot set custom headers on a simple cross-origin POST, so this blocks web CSRF against the loopback server. Request bodies are size-capped. This is intended for single-user developer machines: any local process running as the same user can read the token from the per-pid config and call the exposed tools, so do not run it on a shared host where you do not trust other same-user processes.
 
+### Native cards, wrapper replay, and skills (stream-json engine)
+
+Read-only agy steps (view_file, list_dir, grep_search, find_by_name) re-run as
+real pi builtins (`read`, `ls`, `grep`, `find`) when those builtins are active,
+so their cards render with pi's own renderers. Mutating and agy-specialty steps
+render through a display-only `antigravity` wrapper tool: its `execute()`
+replays the output agy already recorded, so the transcript gets proper
+toolCall/toolResult pairs without any double execution. Neither path re-runs
+anything with side effects.
+
+When the bridge is on, agy also gets one `activate_skill` tool whose enum is
+your pi Agent Skills catalog; calling it returns the SKILL.md body. The bridge
+answers it directly, no pi round-trip. `/agy doctor` prints engine state,
+driver counters, bridge port, and the last lifecycle events without spending
+tokens.
+
 ## Install
 
 > ⚠️ **Heads-up: this extension patches your `pi` install.** When it loads and

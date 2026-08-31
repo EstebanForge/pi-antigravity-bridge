@@ -153,3 +153,137 @@ test("cumulative guard: a cumulative resend repeats the accumulated prefix (regr
 test("cumulative guard: first chunk never counts as a resend", () => {
 	assert.equal(isCumulativeResend("", "hello"), false);
 });
+
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { BlockState, WrapperReplay, consumeActivity, type ActivityFeatures } from "../src/provider.js";
+import { TurnDiffContext, createExecGitOps } from "../src/diff-render.js";
+
+function newBlocks(): BlockState {
+	return {
+		partial: {
+			role: "assistant",
+			content: [],
+			api: "agy-bridge",
+			provider: "antigravity",
+			model: "gemini-3.7-flash-medium",
+			usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		},
+		textIdx: null,
+		thinkingIdx: null,
+		started: true,
+	};
+}
+
+function featsWith(rt: ToolRoundTrips, replay: WrapperReplay): ActivityFeatures {
+	return { replay, nativeActive: () => true, roundTrips: rt, seq: { n: 0 } };
+}
+
+test("consumeActivity: read-only agy tool emits a native pi builtin toolUse and parks", async () => {
+	const driver = new AgyDriver();
+	const rt = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const events: unknown[] = [];
+	void stream[Symbol.asyncIterator] === undefined; // stream is push-based; collect via for-await below
+	// Collect pushed events synchronously.
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	// push is on the object; wrap it.
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const diffCtx = new TurnDiffContext(createExecGitOps());
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{
+			type: "tool_done",
+			stepId: 7,
+			name: "view_file",
+			args: { path: "/w/some/file.ts", StartLine: 1, EndLine: 4 },
+			output: "file body",
+		},
+		diffCtx,
+		"/w",
+		featsWith(rt, replay),
+	);
+	assert.equal(out, "parked");
+	const types = collected.map((e) => (e as { type: string }).type);
+	assert.ok(types.includes("toolcall_start") && types.includes("toolcall_end"));
+	const end = collected.find((e) => (e as { type: string }).type === "toolcall_end") as {
+		toolCall: { name: string; arguments: { path: string } };
+	};
+	assert.equal(end.toolCall.name, "read");
+	assert.equal(end.toolCall.arguments.path, "/w/some/file.ts");
+	const done = collected.find((e) => (e as { type: string }).type === "done") as { reason: string };
+	assert.equal(done.reason, "toolUse");
+	// Tracked as a continuation round-trip, not an MCP bridge call.
+	assert.equal(rt.pendingIds.length, 1);
+	assert.equal(rt.resolve(rt.pendingIds[0], "result text", false), true);
+});
+
+test("consumeActivity: mutating tool replays through the antigravity wrapper card", async () => {
+	const driver = new AgyDriver();
+	const rt = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{
+			type: "tool_done",
+			stepId: 9,
+			name: "write_to_file",
+			args: { path: "out.txt", content: "hi" },
+			output: "wrote 2 bytes",
+		},
+		new TurnDiffContext(createExecGitOps()),
+		"/w",
+		featsWith(rt, replay),
+	);
+	assert.equal(out, "parked");
+	const end = collected.find((e) => (e as { type: string }).type === "toolcall_end") as {
+		toolCall: { name: string; arguments: { tool: string; key: string } };
+	};
+	assert.equal(end.toolCall.name, "antigravity");
+	// The wrapper's execute() replays this recorded output.
+	assert.equal(replay.get(end.toolCall.arguments.key), "wrote 2 bytes");
+	assert.equal(rt.resolve(end.toolCall.arguments.key, "ignored", false), true);
+});
+
+test("consumeActivity: without a replay store, tool steps stay label-only", () => {
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{ type: "tool_done", stepId: 1, name: "write_to_file", args: { path: "a", content: "b" }, output: "x" },
+		new TurnDiffContext(createExecGitOps()),
+		"/w",
+		{ seq: { n: 0 } },
+	);
+	assert.equal(out, "continue");
+	const types = collected.map((e) => (e as { type: string }).type);
+	assert.ok(types.includes("thinking_delta"));
+	assert.ok(!types.some((ty) => ty.startsWith("toolcall")));
+});

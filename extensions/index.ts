@@ -36,11 +36,22 @@ import {
 	type AgyModelEntry,
 } from "../src/models.js";
 import { SessionStore } from "../src/sessions.js";
-import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
+import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
 import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type ThinkingTier } from "../src/config.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { startMcpServer, type McpServerHandle } from "../src/mcp-server.js";
+import {
+	ACTIVATE_SKILL_TOOL_NAME,
+	activateSkillSchema,
+	catalogSummary,
+	findSkillByName,
+	readSkillBody,
+	scanSkills,
+	type SkillLite,
+} from "../src/skills.js";
+import { mapAgyToolToNative } from "../src/native-tools.js";
+import { Type } from "typebox";
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -76,10 +87,21 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// toolUse turns and completes them from the next call's toolResult.
 	const driver = new AgyDriver();
 	const roundTrips = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	// Native re-exec only emits for builtins actually active in the session;
+	// anything else (or an unknown name) falls back to the wrapper card.
+	const nativeActive = (name: string): boolean => {
+		try {
+			const getAll = (pi as unknown as { getAllTools: () => Array<{ name: string }> }).getAllTools.bind(pi);
+			return getAll().some((t) => t.name === name);
+		} catch {
+			return false;
+		}
+	};
 	// A settled turn cannot answer its parked calls; the driver never sees
 	// ToolRoundTrips, so the provider bridges the two here.
 	driver.onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
-	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips });
+	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips, replay, nativeActive });
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -100,13 +122,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		streamSimple,
 	});
 
-	registerAgyCommand(pi, { entries, store, usingFallback });
+	registerAgyCommand(pi, { entries, store, usingFallback, driver, getMcpPort: () => mcpHandle?.port ?? null });
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
 	// pi-ask-antigravity). When both extensions are installed, the bridge wins
 	// and pi-ask-antigravity registers nothing (its load-time defer guard
 	// detects this package via import.meta.resolve).
 	await registerAskAntigravityTool(pi, toolModels);
+
+	// Display-only wrapper tool: the provider emits mutating agy steps as
+	// toolCalls against it (never re-executed - execute() replays the output
+	// agy already recorded). Empty description on purpose: no model should
+	// call it, it exists so pi renders proper toolCall/toolResult cards.
+	pi.registerTool({
+		name: "antigravity",
+		label: "Antigravity",
+		description: "",
+		parameters: Type.Object({
+			tool: Type.String({ description: "agy tool name that produced this step." }),
+			key: Type.String({ description: "Internal replay key. Do not fabricate." }),
+		}),
+		execute: async (_toolCallId, params) => {
+			const key = (params as { key?: string }).key ?? "";
+			const output = replay.get(key) ?? `(no recorded output for ${key})`;
+			return { content: [{ type: "text", text: output }], details: { replay: true } };
+		},
+	});
 
 	// MCP tool bridge: expose pi's tools to agy over localhost Streamable HTTP.
 	// Calls park in the provider's round-trip store and complete through pi's
@@ -144,6 +185,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
 		const SKIP = new Set(["AskAntigravity"]);
+		const skills: SkillLite[] = scanSkills();
 		const getAll = (pi as unknown as {
 			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
 		}).getAllTools.bind(pi);
@@ -153,7 +195,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				bridgeMode === "mcp"
 					? all.filter((t) => /pi-mcp-adapter/.test(t.sourceInfo?.source ?? ""))
 					: all.filter((t) => t.sourceInfo?.source !== "builtin");
-			return filtered
+			const tools = filtered
 				.filter((t) => !SKIP.has(t.name))
 				.map((t) => {
 					let inputSchema: object = { type: "object", properties: {}, additionalProperties: true };
@@ -164,8 +206,38 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					}
 					return { name: t.name, description: t.description ?? t.name, inputSchema };
 				});
+			if (skills.length > 0) {
+				tools.push({
+					name: ACTIVATE_SKILL_TOOL_NAME,
+					description: `Activate a pi Agent Skill by name. Catalog:\n${catalogSummary(skills)}`,
+					inputSchema: activateSkillSchema(skills) as object,
+				});
+			}
+			return tools;
 		};
-		const r = await startMcpServer({ listTools, onToolCall: roundTrips.onToolCall }, { log: mcpLog });
+		// activate_skill never round-trips through pi: the bridge answers it
+		// directly by reading the SKILL.md (pi has no skill tool to execute).
+		const bridgeOnToolCall = (
+			callId: string,
+			name: string,
+			args: Record<string, unknown>,
+			signal: AbortSignal,
+		) => {
+			if (name !== ACTIVATE_SKILL_TOOL_NAME) return roundTrips.onToolCall(callId, name, args, signal);
+			const wanted = typeof args.name === "string" ? args.name : "";
+			const skill = findSkillByName(skills, wanted);
+			const body = skill ? readSkillBody(skill) : `unknown skill: ${wanted || "(none given)"}`;
+			return Promise.resolve({
+				content: [
+					{
+						type: "text",
+						text: skill ? `${body}\n\n[skill resources dir: ${skill.dir}]` : `Error: ${body}`,
+					},
+				],
+				isError: !skill,
+			});
+		};
+		const r = await startMcpServer({ listTools, onToolCall: bridgeOnToolCall }, { log: mcpLog });
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
 		} else {
@@ -187,6 +259,8 @@ interface AgyCommandCtx {
 	entries: AgyModelEntry[];
 	store: SessionStore;
 	usingFallback: boolean;
+	driver: AgyDriver;
+	getMcpPort: () => number | null;
 }
 
 interface PendingConfig {
@@ -220,7 +294,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, mode picker, clear sessions. Usage: /agy [status|mode [plan|accept-edits]|clear]",
+			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -231,6 +305,27 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "clear") {
 				ctx.store.clear();
 				ui?.notify("Cleared all antigravity session bindings.", "info");
+				return;
+			}
+			if (sub === "doctor") {
+				const config = loadConfig();
+				const snap = ctx.driver.snapshot();
+				const port = ctx.getMcpPort();
+				const lines = [
+					"Antigravity doctor (no tokens spent)",
+					`  engine:        ${config.engine}`,
+					`  bridge:        ${config.bridgeTools}${port ? ` (port ${port})` : " (not running)"}`,
+					`  driver:        ${snap.state}${snap.pid ? ` pid=${snap.pid}` : ""}${snap.conversationId ? ` conv=${snap.conversationId.slice(0, 8)}` : ""}`,
+					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,
+					`  sessions:      ${ctx.store.size} bound`,
+					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
+					`  config:        ${CONFIG_PATH}`,
+				];
+				if (snap.lifecycle.length > 0) {
+					lines.push("  lifecycle (last 5):");
+					for (const entry of snap.lifecycle.slice(-5)) lines.push(`    ${entry}`);
+				}
+				ui?.notify(lines.join("\n"), "info");
 				return;
 			}
 			if (sub === "mode") {
