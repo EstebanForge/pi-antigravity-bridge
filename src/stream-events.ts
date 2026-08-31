@@ -33,6 +33,8 @@ export interface AgyStepUpdate {
 	tool_name?: string;
 	tool_info?: AgyToolInfo;
 	response_text?: string;
+	/** Live agy (1.1.13+): agent_response deltas arrive here, not in response_text. */
+	text_delta?: string;
 	thought_text?: string;
 	thinking_tokens?: number;
 	thinking_signature?: string;

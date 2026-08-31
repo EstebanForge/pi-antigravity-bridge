@@ -454,7 +454,12 @@ export class AgyDriver {
 					emit(turn, { type: "usage", usage: s.usage });
 				}
 				if (s.step_type === "agent_response") {
-					const text = typeof s.response_text === "string" ? s.response_text : "";
+					const text =
+						typeof s.text_delta === "string"
+							? s.text_delta
+							: typeof s.response_text === "string"
+								? s.response_text
+								: "";
 					if (text) this.#appendAgentText(turn, text);
 					if (typeof s.thinking_tokens === "number" && s.thinking_tokens >= THINKING_TOKEN_FLOOR) {
 						emit(turn, { type: "thought", tokens: s.thinking_tokens });
@@ -495,7 +500,9 @@ export class AgyDriver {
 				const r = parsed.result;
 				if (r.conversation_id) turn.conversationId = r.conversation_id;
 				if (r.usage) turn.usage = r.usage;
-				const status = r.status === "OK" ? "OK" : "ERROR";
+				// agy reports SUCCESS on live stream-json runs (OK seen in older builds).
+				const ok = r.status === "OK" || r.status === "SUCCESS";
+				const status = ok ? "OK" : "ERROR";
 				// Prefer the streamed accumulation, fall back to the result body.
 				const response = turn.response || (typeof r.response === "string" ? r.response : "");
 				turn.response = response;

@@ -287,3 +287,16 @@ test("consumeActivity: without a replay store, tool steps stay label-only", () =
 	assert.ok(types.includes("thinking_delta"));
 	assert.ok(!types.some((ty) => ty.startsWith("toolcall")));
 });
+
+test("parser: live stream shapes - text_delta on agent_response and SUCCESS result", () => {
+	// Captured from live `agy --output-format stream-json` (2026-09): the agent
+	// text arrives as text_delta and the terminal status is SUCCESS, not OK.
+	const e = parseAgyLine(
+		'{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"OK\\n","usage":{"input_tokens":17505,"output_tokens":47}}}',
+	);
+	assert.equal(e.kind, "step");
+	if (e.kind === "step") assert.equal(e.step.text_delta, "OK\n");
+	const r = parseAgyLine('{"event":"result","result":{"status":"SUCCESS","response":"OK\\n"}}');
+	assert.equal(r.kind, "result");
+	if (r.kind === "result") assert.equal(r.result.status, "SUCCESS");
+});
