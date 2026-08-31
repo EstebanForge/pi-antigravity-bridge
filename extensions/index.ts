@@ -52,6 +52,7 @@ import {
 } from "../src/skills.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
 import { Type } from "typebox";
+import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -155,6 +156,20 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	let mcpHandle: McpServerHandle | null = null;
 	pi.on("session_start", async (_event, ctx) => {
+		// Legacy cleanup: users who ran the old consent-gated patcher still
+		// carry pi.invokeTool in their installed pi. Inert, but tell them once
+		// and offer /agy patch-cleanup. Never auto-edits the install.
+		try {
+			if (patchStatus().present && !loadConfig().patchCleanupNotified) {
+				saveConfig({ patchCleanupNotified: true });
+				ctx.ui.notify(
+					"Your pi install still carries the old pi.invokeTool patch. It is unused and harmless; a pi update also removes it. To restore the original files from the backup now: /agy patch-cleanup",
+					"info",
+				);
+			}
+		} catch {
+			/* detection is best-effort */
+		}
 		// Bridge lifecycle/error logger. Routes through ctx.ui.notify (an
 		// ephemeral toast that fades) instead of stderr: pi's TUI captures stderr
 		// and pins it above the input for the whole session, which left the
@@ -294,7 +309,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|clear]",
+			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -305,6 +320,26 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "clear") {
 				ctx.store.clear();
 				ui?.notify("Cleared all antigravity session bindings.", "info");
+				return;
+			}
+			if (sub === "patch-cleanup") {
+				const st = patchStatus();
+				if (!st.present) {
+					ui?.notify(
+						st.root
+							? `No invokeTool patch detected on pi ${st.version}. Nothing to clean.`
+							: "Could not locate the installed pi package. Nothing cleaned.",
+						"info",
+					);
+					return;
+				}
+				const r = restorePatch();
+				ui?.notify(
+					r.ok
+						? `Restored ${r.restoredFiles.length} file(s) from ${r.backupDir}. The running session is unaffected; the files on disk are clean again.`
+						: `patch-cleanup failed: ${r.reason}`,
+					r.ok ? "info" : "error",
+				);
 				return;
 			}
 			if (sub === "doctor") {

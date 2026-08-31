@@ -44,6 +44,10 @@ export interface AgyConfig {
 	 *  conversation binding from the init event. "legacy-sqlite": the old
 	 *  spawn-`agy -p`-and-poll-SQLite path, kept as a fallback for one release. */
 	engine: AgyEngine;
+	/** Set after the one-time notice about a leftover legacy invokeTool patch
+	 *  on the installed pi. The notice never repeats; /agy patch-cleanup is
+	 *  always available. */
+	patchCleanupNotified?: boolean;
 	/** Which pi tools the MCP bridge exposes to agy: "none" (bridge off),
 	 *  "mcp" (pi-mcp-adapter tools + skills bridge; default), "all" (every
 	 *  registered non-builtin tool incl. other Ask* delegations). */
@@ -110,7 +114,15 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" ? bridgeRaw : "mcp";
 
-	return { mode, skipPermissions, defaultModel, defaultThinking, engine, bridgeTools };
+	return {
+		mode,
+		skipPermissions,
+		defaultModel,
+		defaultThinking,
+		engine,
+		bridgeTools,
+		patchCleanupNotified: file.patchCleanupNotified === true,
+	};
 }
 
 /** Atomically persist a config patch (temp + rename). */
