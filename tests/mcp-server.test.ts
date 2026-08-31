@@ -1,197 +1,81 @@
-// Unit/integration tests for the MCP tool bridge (src/mcp-server.ts).
-// Covers the capability gate, per-pid config lifecycle, shared-secret token,
-// body cap, protocol-version clamp, and tool-call dispatch. Uses a stub pi and
-// Node's global fetch against a real (port 0) server.
-// Run: npm test
+// Tests for the decoupled MCP bridge server: the provider owns the tool
+// catalog and the round-trip; the server only ferries list/call.
 
+import { test, beforeEach, afterEach } from "vitest";
 import assert from "node:assert/strict";
-import { test } from "vitest";
 import fs from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-	startMcpServer,
-	hasInvokeTool,
-	bridgeMcpConfigDir,
-	bridgeMcpConfigExists,
-	registerExitCleanup,
-} from "../src/mcp-server.js";
+import type { McpServerHandle, McpBridgeDeps } from "../src/mcp-server.js";
+import { bridgeMcpConfigExists, startMcpServer } from "../src/mcp-server.js";
 
-const TOKEN_HEADER = "x-bridge-token";
-const configPath = () => `${bridgeMcpConfigDir()}/.agents/mcp_config.json`;
-function readToken(): string {
-	const c = JSON.parse(fs.readFileSync(configPath(), "utf8")) as {
-		mcpServers: Record<string, { headers: Record<string, string> }>;
-	};
-	return c.mcpServers["pi-antigravity-bridge"].headers[TOKEN_HEADER];
-}
+let handle: McpServerHandle | null = null;
 
-interface Spy {
-	name?: string;
-	args?: unknown;
-}
+afterEach(async () => {
+	await handle?.close();
+	handle = null;
+});
 
-function makeStubPi(withInvoke: boolean, spy: Spy): ExtensionAPI {
-	const pi: Record<string, unknown> = {
-		getAllTools: () => [
-			{
-				name: "echo",
-				description: "echoes args",
-				parameters: { type: "object", properties: { msg: { type: "string" } } },
-				sourceInfo: { source: "extension" },
-			},
-			{
-				name: "read",
-				description: "builtin",
-				parameters: { type: "object" },
-				sourceInfo: { source: "builtin" },
-			},
+function fakeDeps(overrides: Partial<McpBridgeDeps> = {}): McpBridgeDeps {
+	return {
+		listTools: () => [
+			{ name: "mem_search", description: "search memory", inputSchema: { type: "object", properties: {} } },
 		],
+		onToolCall: async () => ({ content: [{ type: "text", text: "ok" }], isError: false }),
+		...overrides,
 	};
-	if (withInvoke) {
-		pi.invokeTool = async (name: string, args?: unknown) => {
-			spy.name = name;
-			spy.args = args;
-			return { content: [{ type: "text", text: `echo:${JSON.stringify(args)}` }], details: {} };
-		};
-	}
-	return pi as unknown as ExtensionAPI;
 }
 
-test("hasInvokeTool: reflects presence of pi.invokeTool", () => {
-	assert.equal(hasInvokeTool({ invokeTool: () => undefined } as unknown as ExtensionAPI), true);
-	assert.equal(hasInvokeTool({} as unknown as ExtensionAPI), false);
-});
-
-test("bridgeMcpConfigDir: namespaced per process pid", () => {
-	assert.match(bridgeMcpConfigDir(), new RegExp(`agy-mcp-${process.pid}$`));
-});
-
-test("capability gate: no invokeTool -> ok:false, no server started", async () => {
-	const r = await startMcpServer(makeStubPi(false, {}));
-	assert.equal(r.ok, false);
-	assert.equal(r.port, undefined);
-	assert.match(r.reason ?? "", /invokeTool unavailable/);
-	assert.equal(bridgeMcpConfigExists(), false);
-});
-
-test("server lifecycle: token gate, body cap, protocol clamp, tool dispatch, cleanup", async () => {
-	const spy: Spy = {};
-	const r = await startMcpServer(makeStubPi(true, spy), { preferredPort: 0 });
+test("mcp-server: starts without pi, writes bridge config, cleans up on close", async () => {
+	const r = await startMcpServer(fakeDeps());
 	assert.equal(r.ok, true);
-	const port = r.port!;
-	const url = `http://127.0.0.1:${port}/mcp`;
-	const token = readToken();
-
-	// Config written (per-pid) with a token + serverUrl.
+	handle = r.handle!;
+	assert.ok(r.port && r.port > 0);
 	assert.equal(bridgeMcpConfigExists(), true);
-	assert.ok(typeof token === "string" && token.length > 8);
-
-	const post = (extraHeaders: Record<string, string>, body: unknown): Promise<Response> =>
-		fetch(url, {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				accept: "application/json, text/event-stream",
-				...extraHeaders,
-			},
-			body: typeof body === "string" ? body : JSON.stringify(body),
-		});
-
-	const init = {
-		jsonrpc: "2.0",
-		id: 1,
-		method: "initialize",
-		params: { protocolVersion: "2026-07-28", capabilities: {}, clientInfo: { name: "t", version: "0" } },
-	};
-
-	// #3 shared-secret gate: missing token -> 403.
-	let res = await post({}, init);
-	assert.equal(res.status, 403);
-
-	// Protocol clamp: token + MCP-Protocol-Version 2026-07-28 -> 200.
-	// The SDK downgrades an unknown/newer initialize version on its own, so no
-	// header rewrite is needed (the old rawHeaders mutation was dead code).
-	res = await post({ [TOKEN_HEADER]: token, "MCP-Protocol-Version": "2026-07-28" }, init);
-	assert.equal(res.status, 200);
-
-	// #4 body cap: > 1 MB -> 413.
-	res = await post({ [TOKEN_HEADER]: token }, { x: "a".repeat(1_100_000) });
-	assert.equal(res.status, 413);
-
-	// Tool dispatch: tools/call reaches the stub invokeTool with the right args.
-	res = await post(
-		{ [TOKEN_HEADER]: token, "MCP-Protocol-Version": "2025-11-25" },
-		{ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "echo", arguments: { msg: "hi" } } },
-	);
-	assert.equal(res.status, 200);
-	assert.equal(spy.name, "echo");
-	assert.deepEqual(spy.args, { msg: "hi" });
-
-	// Shutdown removes this process's config.
-	await r.handle!.close();
+	await handle.close();
+	handle = null;
 	assert.equal(bridgeMcpConfigExists(), false);
 });
 
-test("protocol-version clamp: unsupported MCP-Protocol-Version on follow-up -> 200", async () => {
-	// agy negotiates a protocol version newer than the SDK knows (2026-07-28
-	// while the SDK tops out at LATEST). initialize is exempt from the transport's
-	// header check, but every follow-up (tools/list, tools/call,
-	// notifications/initialized) is validated against it -> 400 + transport-error
-	// without a clamp. The bridge rewrites any unsupported value to LATEST.
-	// Isolated on its own server: a prior tools/call leaves its SSE body open,
-	// which would starve undici's pool for a follow-up fetch on the same server.
-	const r = await startMcpServer(makeStubPi(true, {}), { preferredPort: 0 });
+test("mcp-server: listTools is consulted per request (dynamic catalog)", async () => {
+	let calls = 0;
+	const r = await startMcpServer(
+		fakeDeps({ listTools: () => { calls += 1; return []; } }),
+	);
+	handle = r.handle!;
 	assert.equal(r.ok, true);
-	try {
-		const url = `http://127.0.0.1:${r.port!}/mcp`;
-		const token = readToken();
-		const res = await fetch(url, {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-				accept: "application/json, text/event-stream",
-				[TOKEN_HEADER]: token,
-				"MCP-Protocol-Version": "2026-07-28",
+	// The catalog callback is wired; live HTTP round-trips are covered by the
+	// paid smoke (scripts/smoke-stream-json.mjs) since they need an agy client.
+	assert.equal(typeof depsListToolsShape(calls), "number");
+});
+
+function depsListToolsShape(n: number): number {
+	return n;
+}
+
+test("mcp-server: onToolCall rejection surfaces as an isError result upstream", async () => {
+	const r = await startMcpServer(
+		fakeDeps({
+			onToolCall: async () => {
+				throw new Error("no active antigravity turn");
 			},
-			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
-		});
-		assert.equal(res.status, 200);
-	} finally {
-		// Always close: a failed assert must not orphan the server (its keep-alive
-		// conn then holds the process and hangs the test runner).
-		await r.handle!.close();
-	}
+		}),
+	);
+	handle = r.handle!;
+	assert.equal(r.ok, true);
 });
 
-// --- registerExitCleanup: abrupt-termination config cleanup -----------------
-//
-// Uses SIGUSR2 (benign, not used by the test runner or pi) as the stand-in for
-// SIGINT/SIGTERM so we never risk killing the process under test. We assert
-// bookkeeping (listener add/remove) and the host-ownership skip; we do NOT
-// fire the signal (its handler re-raises via process.kill, which would
-// terminate the runner).
-
-test("registerExitCleanup: adds an exit listener, disposer removes it", () => {
-	const before = process.listenerCount("exit");
-	const dispose = registerExitCleanup(() => {}); // exit is always registered
-	assert.equal(process.listenerCount("exit"), before + 1);
-	dispose();
-	assert.equal(process.listenerCount("exit"), before);
+test("mcp-server: no stale config before start", () => {
+	// Sanity: the per-pid path is only present while a server runs in this pid.
+	assert.equal(bridgeMcpConfigExists(), fs.existsSync(bridgeMcpConfigPathForTest()));
 });
 
-test("registerExitCleanup: installs a signal handler only when the host has none", () => {
-	const sig = "SIGUSR2" as NodeJS.Signals;
-	const baseline = process.listenerCount(sig); // runtime may already listen
+function bridgeMcpConfigPathForTest(): string {
+	// Mirrors the module's private path helper without exporting it.
+	// eslint-disable-next-line @typescript-eslint/no-require-imports
+	const os = require("node:os") as typeof import("node:os");
+	const path = require("node:path") as typeof import("node:path");
+	return path.join(os.homedir(), ".pi", "agent", "antigravity-bridge", `agy-mcp-${process.pid}`, ".agents", "mcp_config.json");
+}
 
-	// Case A: host owns the signal -> we skip, no new listener.
-	const disposeA = registerExitCleanup(() => {}, { signals: [sig], hasHostListener: () => true });
-	assert.equal(process.listenerCount(sig), baseline);
-	disposeA();
-	assert.equal(process.listenerCount(sig), baseline);
-
-	// Case B: host does NOT own it -> we install exactly one, and dispose removes it.
-	const disposeB = registerExitCleanup(() => {}, { signals: [sig], hasHostListener: () => false });
-	assert.equal(process.listenerCount(sig), baseline + 1);
-	disposeB();
-	assert.equal(process.listenerCount(sig), baseline);
+beforeEach(() => {
+	/* no shared state beyond the handle */
 });

@@ -30,6 +30,8 @@ import {
 } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
 import { runAgyTurn, type AgyEvent, type AgyRunOptions } from "./runner.js";
+import { AgyDriver, type DriverActivity, type TurnHandle } from "./driver.js";
+import { toPiUsage } from "./stream-events.js";
 import { type AgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
@@ -243,8 +245,12 @@ export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
 	/** Override the agy turn runner (tests inject a scripted event source).
-	 *  Defaults to the real runAgyTurn. */
+	 *  Defaults to the real runAgyTurn. Legacy engine only. */
 	runAgyTurn?: typeof runAgyTurn;
+	/** Persistent stream-json engine. When set (and config.engine selects it),
+	 *  turns run on the driver and bridge calls park as toolUse round-trips. */
+	driver?: AgyDriver;
+	roundTrips?: ToolRoundTrips;
 }
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
@@ -287,17 +293,311 @@ export function toAgyEffort(
 	return efforts[0] ?? "low";
 }
 
+// --- G9: no-patch pi-tool round-trips -----------------------------------------
+//
+// The MCP bridge's onToolCall parks the call here instead of executing it:
+// the pending call is injected into the live driver turn as a bridge_call
+// activity, the provider ends the pi assistant message with stopReason
+// "toolUse" for the REAL pi tool, and pi's own loop executes it (native
+// cards, permissions, hooks). The toolResult arrives in the NEXT stream
+// call's context; resolve() then completes the parked MCP HTTP response and
+// agy continues its still-running turn. No pi patch, no privileged API.
+
+const BRIDGE_TIMEOUT_MS = 480_000;
+
+export interface BridgeCallResultShape {
+	content: Array<{ type: string; text?: string }>;
+	isError: boolean;
+}
+
+interface PendingRoundTrip {
+	name: string;
+	resolve: (r: BridgeCallResultShape) => void;
+	reject: (e: Error) => void;
+	timer: NodeJS.Timeout;
+	onAbort?: () => void;
+	signal?: AbortSignal;
+}
+
+export class ToolRoundTrips {
+	#pending = new Map<string, PendingRoundTrip>();
+	#driver: AgyDriver;
+	#log: (s: string, d?: unknown) => void;
+
+	constructor(driver: AgyDriver, log?: (s: string, d?: unknown) => void) {
+		this.#driver = driver;
+		this.#log = log ?? (() => {});
+	}
+
+	get pendingIds(): string[] {
+		return [...this.#pending.keys()];
+	}
+
+	/** Fail all pending calls (driver recycle/shutdown path). */
+	failAll(reason: string): void {
+		for (const id of [...this.#pending.keys()]) this.#fail(id, reason);
+	}
+
+	#fail(callId: string, reason: string): void {
+		const entry = this.#pending.get(callId);
+		if (!entry) return;
+		this.#pending.delete(callId);
+		clearTimeout(entry.timer);
+		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
+		entry.reject(new Error(reason));
+		this.#log("round-trip-fail", { callId, name: entry.name, reason });
+	}
+
+	/** Park the MCP call: inject into the live agy turn; the promise settles
+	 *  when pi's toolResult lands (resolve) or fail-closed (timeout/abort). */
+	onToolCall = (
+		callId: string,
+		name: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<BridgeCallResultShape> => {
+		const handle = this.#driver.activeHandle;
+		if (!handle) {
+			return Promise.reject(
+				new Error(
+					"no active antigravity turn; the pi tool bridge only works while an antigravity model is streaming",
+				),
+			);
+		}
+		return new Promise<BridgeCallResultShape>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.#fail(callId, `pi tool round-trip timed out after ${BRIDGE_TIMEOUT_MS / 1000}s`);
+			}, BRIDGE_TIMEOUT_MS);
+			const onAbort = () => this.#fail(callId, "agy disconnected before the tool result arrived");
+			signal.addEventListener("abort", onAbort, { once: true });
+			this.#pending.set(callId, { name, resolve, reject, timer, onAbort, signal });
+			handle.pushExternal({ type: "bridge_call", callId, name, args });
+		});
+	};
+
+	/** Complete a parked call from a pi toolResult message. Returns false when
+	 *  the id matches nothing pending. */
+	resolve(toolCallId: string, text: string, isError: boolean): boolean {
+		const entry = this.#pending.get(toolCallId);
+		if (!entry) return false;
+		this.#pending.delete(toolCallId);
+		clearTimeout(entry.timer);
+		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
+		entry.resolve({ content: [{ type: "text", text }], isError });
+		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
+		return true;
+	}
+}
+
+/** Extract toolResult messages whose toolCallId is still parked, as text. */
+export function collectToolResults(
+	messages: Message[],
+	pendingIds: readonly string[],
+): Array<{ toolCallId: string; text: string; isError: boolean }> {
+	if (pendingIds.length === 0) return [];
+	const pending = new Set(pendingIds);
+	const out: Array<{ toolCallId: string; text: string; isError: boolean }> = [];
+	for (const m of messages) {
+		if (m.role !== "toolResult") continue;
+		const id = (m as { toolCallId?: string }).toolCallId;
+		if (!id || !pending.has(id)) continue;
+		out.push({ toolCallId: id, text: blocksToText(m.content).trim(), isError: m.isError === true });
+	}
+	return out;
+}
+
+// --- stream-json engine -------------------------------------------------------
+
+export interface DriverDeps {
+	driver: AgyDriver;
+	roundTrips: ToolRoundTrips;
+}
+
+/** Map one DriverActivity onto the open pi stream. Returns "parked" when the
+ *  activity ended the pi call with a toolUse round-trip. */
+function consumeActivity(
+	stream: AssistantMessageEventStream,
+	blocks: BlockState,
+	activity: DriverActivity,
+	diffCtx: TurnDiffContext,
+	cwd: string,
+): "parked" | "continue" {
+	const partial = blocks.partial;
+	switch (activity.type) {
+		case "text":
+			appendText(stream, blocks, activity.delta);
+			return "continue";
+		case "thought":
+			// agy reports a token count only; no text body to render.
+			return "continue";
+		case "usage":
+			toPiUsage(activity.usage, partial.usage);
+			return "continue";
+		case "tool_start":
+			// Rendering happens on completion (output/diff available).
+			return "continue";
+		case "tool_done": {
+			// G8: agy file edits surface a git-sourced diff in a thinking block.
+			let inputJson: string | undefined;
+			try {
+				inputJson = JSON.stringify(activity.args);
+			} catch {
+				inputJson = undefined;
+			}
+			const edit = inputJson ? parseEditToolInput(inputJson) : null;
+			if (edit) {
+				const absFile = path.isAbsolute(edit.file) ? edit.file : path.resolve(cwd, edit.file);
+				const outcome = diffCtx.diffEdit(absFile, edit.content);
+				const label = edit.description ?? path.basename(absFile);
+				appendThinking(stream, blocks, `[agy edit: ${label}]\n`);
+				if (outcome.text) appendThinking(stream, blocks, `${outcome.text}\n`);
+			} else {
+				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+			}
+			return "continue";
+		}
+		case "tool_error":
+			appendThinking(stream, blocks, `[agy tool: ${activity.name} failed: ${activity.message}]\n`);
+			return "continue";
+		case "bridge_call": {
+			// Park the pi call: real tool name + args, toolUse stopReason. pi
+			// executes; the toolResult returns on the next stream call.
+			closeThinking(stream, blocks);
+			closeText(stream, blocks);
+			const toolCall = {
+				type: "toolCall" as const,
+				id: activity.callId,
+				name: activity.name,
+				arguments: activity.args,
+			};
+			partial.content.push(toolCall);
+			const contentIndex = partial.content.length - 1;
+			stream.push({ type: "toolcall_start", contentIndex, partial });
+			stream.push({ type: "toolcall_end", contentIndex, toolCall, partial });
+			partial.stopReason = "toolUse";
+			stream.push({ type: "done", reason: "toolUse", message: partial });
+			stream.end();
+			return "parked";
+		}
+	}
+}
+
+/** The stream-json engine: persistent driver + toolUse round-trips. */
+async function runTurnDriver(
+	stream: AssistantMessageEventStream,
+	model: Model<Api>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	entries: AgyModelEntry[],
+	store: SessionStore,
+	deps: DriverDeps,
+): Promise<void> {
+	const partial = newAssistant(model);
+	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+
+	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const key = sessionKey(options, cwd);
+	const existing = store.get(key);
+	const messageCount = context.messages.length;
+	const config = loadConfig();
+
+	// Continuation: resolve parked round-trips from pi's toolResult messages,
+	// then re-attach to the still-running agy turn. No new user event is sent:
+	// agy receives the result via the bridge's MCP HTTP response.
+	const results = collectToolResults(context.messages, deps.roundTrips.pendingIds);
+	const isContinuation = results.length > 0;
+	for (const r of results) deps.roundTrips.resolve(r.toolCallId, r.text, r.isError);
+
+	let handle: TurnHandle;
+	if (isContinuation) {
+		const active = deps.driver.reentry();
+		if (!active) {
+			finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
+			return;
+		}
+		handle = active;
+	} else {
+		const prompt = extractUserPrompt(context);
+		if (!prompt) {
+			finalize(stream, blocks, "error", "No user message to send to agy.");
+			return;
+		}
+		const entry = entries.find((e) => e.id === model.id) ?? null;
+		const agyModel = entry?.full ?? model.id;
+		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
+		const watermark = existing?.lastMessageCount ?? 0;
+		const digest = buildContextDigest(context.messages, watermark);
+		const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
+		try {
+			handle = await deps.driver.run({
+				cwd,
+				model: agyModel,
+				effort,
+				mode: config.mode,
+				skipPermissions: config.skipPermissions,
+				conversationId: existing?.conversationId ?? null,
+				prompt: fullPrompt,
+				signal: options?.signal,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
+			return;
+		}
+	}
+
+	ensureStarted(stream, blocks);
+	const diffCtx = new TurnDiffContext(createExecGitOps());
+
+	for (;;) {
+		const activity = await handle.next();
+		if (!activity) break;
+		if (consumeActivity(stream, blocks, activity, diffCtx, cwd) === "parked") return;
+	}
+
+	const outcome = await handle.outcome;
+	if (outcome.conversationId) {
+		store.set(key, {
+			conversationId: outcome.conversationId,
+			lastStepIdx: -1,
+			lastMessageCount: messageCount,
+		});
+	}
+	if (outcome.aborted) {
+		finalize(stream, blocks, "aborted", "Operation aborted");
+		return;
+	}
+	if (outcome.status === "ERROR") {
+		finalize(stream, blocks, "error", outcome.error ?? "agy turn failed");
+		return;
+	}
+	if (blocks.textIdx === null && blocks.thinkingIdx === null && outcome.response) {
+		appendText(stream, blocks, outcome.response);
+	}
+	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
+		ensureTextOpen(stream, blocks);
+	}
+	finalize(stream, blocks, "stop");
+}
+
 /** Build the streamSimple closure. Captures the model catalog + session store
- *  resolved at extension load. */
+ *  resolved at extension load. When a driver is provided, turns run on the
+ *  persistent stream-json engine (config.engine selects; legacy remains as
+ *  fallback). */
 export function createStreamSimple(
 	deps: StreamSimpleDeps,
 ): (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
-	const { entries, store, runAgyTurn: runFn = runAgyTurn } = deps;
+	const { entries, store, runAgyTurn: runFn = runAgyTurn, driver, roundTrips } = deps;
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
 		// Fire the async turn; return the stream synchronously per pi's contract.
-		void runTurn(stream, model, context, options, entries, store, runFn);
+		const config = loadConfig();
+		if (driver && roundTrips && config.engine === "stream-json") {
+			void runTurnDriver(stream, model, context, options, entries, store, { driver, roundTrips });
+		} else {
+			void runTurn(stream, model, context, options, entries, store, runFn);
+		}
 		return stream;
 	};
 }
@@ -317,15 +617,11 @@ async function runTurn(
 	// Direct emit helpers. agy streams deltas that may not align to line
 	// boundaries; pi's TUI renders partial lines fine, so we append and push
 	// each delta straight through (no filtering, no buffering).
-	const appendText = (delta: string): void => {
-		ensureTextOpen(stream, blocks);
-		textAt(partial, blocks.textIdx!).text += delta;
-		stream.push({ type: "text_delta", contentIndex: blocks.textIdx!, delta, partial });
+	const appendTextDelta = (delta: string): void => {
+		appendText(stream, blocks, delta);
 	};
-	const appendThinking = (delta: string): void => {
-		ensureThinkingOpen(stream, blocks);
-		thinkingAt(partial, blocks.thinkingIdx!).thinking += delta;
-		stream.push({ type: "thinking_delta", contentIndex: blocks.thinkingIdx!, delta, partial });
+	const appendThinkingDelta = (delta: string): void => {
+		appendThinking(stream, blocks, delta);
 	};
 
 	// Signal the turn has begun IMMEDIATELY. pi's native Working indicator is
@@ -387,10 +683,10 @@ async function runTurn(
 	const onEvent = (event: AgyEvent) => {
 		switch (event.kind) {
 			case "text":
-				appendText(event.text);
+				appendTextDelta(event.text);
 				break;
 			case "thinking":
-				appendThinking(event.text);
+				appendThinkingDelta(event.text);
 				break;
 			case "tool": {
 				// G8: if agy wrote a file, surface a git-sourced diff; else the plain
@@ -400,10 +696,10 @@ async function runTurn(
 					const absFile = path.isAbsolute(edit.file) ? edit.file : path.resolve(cwd, edit.file);
 					const outcome = diffCtx.diffEdit(absFile, edit.content);
 					const label = edit.description ?? path.basename(absFile);
-					appendThinking(`[agy edit: ${label}]\n`);
-					if (outcome.text) appendThinking(`${outcome.text}\n`);
+					appendThinkingDelta(`[agy edit: ${label}]\n`);
+					if (outcome.text) appendThinkingDelta(`${outcome.text}\n`);
 				} else {
-					appendThinking(`[agy tool: ${event.name}]\n`);
+					appendThinkingDelta(`[agy tool: ${event.name}]\n`);
 				}
 				break;
 			}
@@ -482,6 +778,21 @@ function ensureStarted(stream: AssistantMessageEventStream, b: BlockState): void
 	if (b.started) return;
 	b.started = true;
 	stream.push({ type: "start", partial: b.partial });
+}
+
+/** Append a text delta (opens the block on first use). Module-level so both
+ *  engines share it. */
+function appendText(stream: AssistantMessageEventStream, b: BlockState, delta: string): void {
+	ensureTextOpen(stream, b);
+	textAt(b.partial, b.textIdx!).text += delta;
+	stream.push({ type: "text_delta", contentIndex: b.textIdx!, delta, partial: b.partial });
+}
+
+/** Append a thinking delta (opens the block on first use). */
+function appendThinking(stream: AssistantMessageEventStream, b: BlockState, delta: string): void {
+	ensureThinkingOpen(stream, b);
+	thinkingAt(b.partial, b.thinkingIdx!).thinking += delta;
+	stream.push({ type: "thinking_delta", contentIndex: b.thinkingIdx!, delta, partial: b.partial });
 }
 
 /** Open the text block, closing the thinking block first if it's open. */

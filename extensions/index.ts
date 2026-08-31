@@ -36,11 +36,11 @@ import {
 	type AgyModelEntry,
 } from "../src/models.js";
 import { SessionStore } from "../src/sessions.js";
-import { createStreamSimple } from "../src/provider.js";
-import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type ThinkingTier } from "../src/config.js";
+import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
+import { AgyDriver } from "../src/driver.js";
+import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type ThinkingTier } from "../src/config.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
-import { hasInvokeTool, startMcpServer, type McpServerHandle } from "../src/mcp-server.js";
-import { applyInvokeToolPatch, decidePatchAction, patchStatus, restorePatch } from "../src/patcher.js";
+import { startMcpServer, type McpServerHandle } from "../src/mcp-server.js";
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -71,7 +71,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const models = entries.map(toPiModel);
 
 	const store = new SessionStore();
-	const streamSimple = createStreamSimple({ entries, store });
+	// Persistent stream-json engine + the no-patch pi-tool round-trip store.
+	// The MCP bridge parks calls here; the provider emits them as real pi
+	// toolUse turns and completes them from the next call's toolResult.
+	const driver = new AgyDriver();
+	const roundTrips = new ToolRoundTrips(driver);
+	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips });
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -100,11 +105,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// detects this package via import.meta.resolve).
 	await registerAskAntigravityTool(pi, toolModels);
 
-	// MCP tool bridge: expose pi's tools to agy over localhost Streamable HTTP,
-	// backed by pi.invokeTool (local patch). Capability-gated: if the running pi
-	// lacks invokeTool, startMcpServer returns { ok: false } and the bridge runs
-	// unchanged (other instances do not break). Started on session_start so it is
-	// live before the provider's first turn; torn down on session_shutdown.
+	// MCP tool bridge: expose pi's tools to agy over localhost Streamable HTTP.
+	// Calls park in the provider's round-trip store and complete through pi's
+	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
+	// privileged API. Started on session_start, torn down on session_shutdown.
 	let mcpHandle: McpServerHandle | null = null;
 	pi.on("session_start", async (_event, ctx) => {
 		// Bridge lifecycle/error logger. Routes through ctx.ui.notify (an
@@ -131,79 +135,34 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				console.error(msg);
 			}
 		};
-		// Decide the pi.invokeTool patch + MCP tool bridge path. The patch is only
-		// needed for the bridge; the provider and AskAntigravity tool always work.
-		// The bridge can only start when the patch is LIVE in this process; a
-		// just-applied patch needs a full pi restart (not /reload) to go live.
-		const live = hasInvokeTool(pi);
-		const action = live
-			? ({ kind: "proceed" } as const)
-			: decidePatchAction(live, patchStatus().present, !!loadConfig().invokeToolPatchDeclined, !!ctx.hasUI);
-
-		try {
-			switch (action.kind) {
-				case "proceed": {
-					if (loadConfig().invokeToolPatchDeclined) {
-						saveConfig({ invokeToolPatchDeclined: false });
-					}
-					break;
-				}
-				case "notify-restart": {
-					ctx.ui.notify(
-						"The pi.invokeTool patch is present on disk but not loaded in this pi session. Fully RESTART pi (quit + relaunch) to start the MCP tool bridge.",
-						"warning",
-					);
-					break;
-				}
-				case "silent": {
-					// Previously declined. Stay quiet; bridge stays off until the user
-					// runs /agy patch apply or the patch becomes live.
-					mcpLog("patch-declined");
-					break;
-				}
-				case "ask": {
-					const apply = await ctx.ui.confirm(
-						"Apply the pi.invokeTool patch?",
-						"Enables the MCP tool bridge. Edits one method into your installed @earendil-works/pi-coding-agent/dist/ (reversible via /agy patch restore), and takes effect after a full pi restart.",
-						// Bound the wait so a non-confirm-capable RPC client (hasUI is always
-						// true in RPC) can't hang session_start. Timeout resolves like "no"
-						// (declined persists); reversible via /agy patch apply.
-						{ timeout: 60_000 },
-					);
-					if (apply) {
-						const res = applyInvokeToolPatch({ log: mcpLog });
-						if (res.patched) {
-							saveConfig({ invokeToolPatchDeclined: false });
-							ctx.ui.notify(
-								`Applied the pi.invokeTool patch to ${res.root} (pi ${res.version}). Fully RESTART pi (quit + relaunch) to start the MCP tool bridge.`,
-								"warning",
-							);
-						} else if (res.errors.length > 0) {
-							ctx.ui.notify(`pi.invokeTool patch failed: ${res.errors[0]}`, "error");
-						}
-					} else {
-						saveConfig({ invokeToolPatchDeclined: true });
-						ctx.ui.notify(
-							"Skipped. The MCP tool bridge stays off. To enable it later, run /agy patch apply. Then restart pi.",
-							"info",
-						);
-					}
-					break;
-				}
-				case "headless-skip": {
-					console.error(
-						"[antigravity-bridge] pi.invokeTool patch missing; MCP tool bridge off. Apply interactively (/agy patch apply) or re-run pi in a TUI.",
-					);
-					break;
-				}
-			}
-		} catch (e) {
-			mcpLog("self-patch-error", e instanceof Error ? e.message : String(e));
-		}
-
-		if (action.kind !== "proceed") return; // bridge can't start without a live patch
+		// Start the bridge unless the user turned it off. No patch gate, no
+		// consent flow: calls route through pi's normal toolUse loop.
+		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
+		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
-		const r = await startMcpServer(pi, { log: mcpLog });
+		const SKIP = new Set(["AskAntigravity"]);
+		const getAll = (pi as unknown as {
+			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
+		}).getAllTools.bind(pi);
+		const listTools = () => {
+			const all = getAll();
+			const filtered =
+				bridgeMode === "mcp"
+					? all.filter((t) => /pi-mcp-adapter/.test(t.sourceInfo?.source ?? ""))
+					: all.filter((t) => t.sourceInfo?.source !== "builtin");
+			return filtered
+				.filter((t) => !SKIP.has(t.name))
+				.map((t) => {
+					let inputSchema: object = { type: "object", properties: {}, additionalProperties: true };
+					try {
+						if (t.parameters) inputSchema = JSON.parse(JSON.stringify(t.parameters)) as object;
+					} catch {
+						/* keep default schema */
+					}
+					return { name: t.name, description: t.description ?? t.name, inputSchema };
+				});
+		};
+		const r = await startMcpServer({ listTools, onToolCall: roundTrips.onToolCall }, { log: mcpLog });
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
 		} else {
@@ -214,6 +173,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const h = mcpHandle;
 		mcpHandle = null;
 		await h?.close();
+		roundTrips.failAll("antigravity session shut down");
+		await driver.close("shutdown");
 	});
 }
 
@@ -245,24 +206,18 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  tool thinking: ${config.defaultThinking}`,
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
-		`  invokeTool:    ${patchStateLabel()}`,
+		`  engine:        ${config.engine}`,
+		`  bridge tools:  ${config.bridgeTools}`,
 		"",
-		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy patch status|apply|restore, /agy clear",
+		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy clear",
 	].join("\n");
 }
 
-function patchStateLabel(): string {
-	const s = patchStatus();
-	if (s.present) return "patched";
-	if (!s.root) return "MISSING (pi root not found)";
-	if (loadConfig().invokeToolPatchDeclined) return `declined (pi ${s.version}). Resume: /agy patch apply`;
-	return `MISSING (pi ${s.version}). Apply it: /agy patch apply`;
-}
 
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, mode picker, patch, clear sessions. Usage: /agy [status|mode [plan|accept-edits]|patch [status|apply|restore]|clear]",
+			"Antigravity provider: status, mode picker, clear sessions. Usage: /agy [status|mode [plan|accept-edits]|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -313,53 +268,6 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				return;
 			}
 
-			if (sub === "patch") {
-				if (val === "restore") {
-					const r = restorePatch();
-					ui?.notify(
-						r.ok
-							? `Restored ${r.restoredFiles.length} file(s) from ${r.backupDir}. Restart pi to take effect.`
-							: `restore failed: ${r.reason}`,
-						r.ok ? "info" : "error",
-					);
-					return;
-				}
-				if (val === "apply") {
-					const r = applyInvokeToolPatch();
-					if (r.patched || r.alreadyPresent) {
-						saveConfig({ invokeToolPatchDeclined: false });
-					}
-					const msg = r.patched
-						? `Applied patch to ${r.changedFiles.length} file(s) in ${r.root} (pi ${r.version}). Restart pi to activate.`
-						: r.alreadyPresent
-							? `Patch already present in ${r.root} (pi ${r.version}).`
-							: `apply failed: ${r.errors[0] ?? "unknown error"}`;
-					ui?.notify(msg, r.patched || r.alreadyPresent ? "info" : "error");
-					return;
-				}
-				// status (default)
-				const s = patchStatus();
-				if (!s.root) {
-					ui?.notify("patch status: could not locate the pi package root.", "warning");
-				} else {
-					ui?.notify(
-						[
-							`pi.invokeTool patch: ${s.present ? "PRESENT" : "MISSING"}`,
-							`  root:    ${s.root}`,
-							`  version: ${s.version}`,
-							s.missing.length ? `  missing: ${s.missing.length} site(s)` : null,
-							loadConfig().invokeToolPatchDeclined ? "  consent: declined. Resume: /agy patch apply" : null,
-						s.backupDir ? `  backup:  ${s.backupDir} (v${s.backupVersion})` : "  backup:  none",
-							"",
-							"Usage: /agy patch [status|apply|restore]",
-						]
-							.filter(Boolean)
-							.join("\n"),
-						"info",
-					);
-				}
-				return;
-			}
 
 			// No subcommand (or "status"): print status, or open the picker in TUI.
 			if (sub && sub !== "status") {

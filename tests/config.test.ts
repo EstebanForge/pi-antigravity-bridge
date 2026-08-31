@@ -1,10 +1,5 @@
-// Regression tests for the config persistence of invokeToolPatchDeclined.
-//
-// The silent "do nothing if declined" behavior depends on loadConfig()
-// returning the flag. An earlier version wrote the flag to disk but dropped it
-// on read-back, making the whole declined path dead code in production (the
-// pure decidePatchAction tests still passed because they never touched the
-// file). These tests pin the round-trip and the no-clobber guarantee.
+// Config tests: engine + bridgeTools knobs round-trip through load/save and
+// unrelated saves never clobber them (the merge regression class).
 
 import { test } from "vitest";
 import assert from "node:assert/strict";
@@ -17,32 +12,48 @@ function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
 }
 
-test("config: invokeToolPatchDeclined round-trips through load/save", () => {
+test("config: defaults select stream-json engine and mcp bridge surface", () => {
 	const p = tmpConfig();
 	try {
-		// Fresh file: undefined (never asked / not declined).
-		assert.equal(loadConfig(p).invokeToolPatchDeclined, undefined);
-		// Decline persists and is readable back.
-		saveConfig({ invokeToolPatchDeclined: true }, p);
-		assert.equal(loadConfig(p).invokeToolPatchDeclined, true);
-		// Clearing works too.
-		saveConfig({ invokeToolPatchDeclined: false }, p);
-		assert.equal(loadConfig(p).invokeToolPatchDeclined, false);
+		const c = loadConfig(p);
+		assert.equal(c.engine, "stream-json");
+		assert.equal(c.bridgeTools, "mcp");
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
 
-test("config: an unrelated save does not clobber invokeToolPatchDeclined", () => {
+test("config: engine and bridgeTools round-trip through load/save", () => {
 	const p = tmpConfig();
 	try {
-		saveConfig({ invokeToolPatchDeclined: true }, p);
-		// A later write for a different key must preserve the declined flag
-		// (this is what broke when loadConfig dropped the field: saveConfig's
-		// `current` lacked it, so the merge erased it).
+		saveConfig({ engine: "legacy-sqlite", bridgeTools: "all" }, p);
+		const c = loadConfig(p);
+		assert.equal(c.engine, "legacy-sqlite");
+		assert.equal(c.bridgeTools, "all");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: unrelated save does not clobber engine/bridgeTools", () => {
+	const p = tmpConfig();
+	try {
+		saveConfig({ engine: "legacy-sqlite", bridgeTools: "none" }, p);
 		saveConfig({ mode: "plan" }, p);
-		assert.equal(loadConfig(p).invokeToolPatchDeclined, true);
-		assert.equal(loadConfig(p).mode, "plan");
+		const c = loadConfig(p);
+		assert.equal(c.engine, "legacy-sqlite");
+		assert.equal(c.bridgeTools, "none");
+		assert.equal(c.mode, "plan");
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: invalid bridgeTools value falls back to mcp", () => {
+	const p = tmpConfig();
+	try {
+		saveConfig({ bridgeTools: "bogus" as never }, p);
+		assert.equal(loadConfig(p).bridgeTools, "mcp");
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}

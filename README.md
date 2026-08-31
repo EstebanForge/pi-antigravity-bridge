@@ -26,9 +26,9 @@ Residual limits (with or without the bridge):
 
 While agy is the active model it normally cannot see pi's universe of extensions: agentmemory, codegraph, web search, slack/asana, the `Ask*` delegations, and any other installed pi tool. This extension optionally bridges that gap.
 
-When the capability is present the bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and `tools/call` executes them via `pi.invokeTool()`. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
+The bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and `tools/call` executes them via `pi.invokeTool()`. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
 
-**Capability requirement.** `pi.invokeTool()` is not (yet) part of upstream pi. On first load with the patch missing, the extension **asks you once** whether to apply it (see [Install](#install)); once applied it activates after a full `pi` restart. Without it the bridge detects the missing capability at load time, skips the MCP server, and everything else works unchanged. See [docs/PI-INVOKETOOL-PATCH.md](docs/PI-INVOKETOOL-PATCH.md) for what the patch is, and `/agy patch status|apply|restore` to inspect, force, or undo it.
+**No patch required.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call. This is the same mechanism tianzuo/pi-antigravity uses; upstream pi APIs only.
 
 **Recursion safety.** Only the provider's agy receives the extra `--add-dir`. The `AskAntigravity` tool spawns its own agy with just the workspace, so that inner agy starts plain (no pi tools) and cannot re-enter. `AskAntigravity` is also filtered from the exposed tool list. Standalone agy is unaffected because nothing is written to its global config.
 
@@ -91,6 +91,17 @@ Or specify a model directly:
 Model ids are slugified from the `agy models` output (`Gemini 3.6 Flash (Medium)` becomes `gemini-3-6-flash-medium`). Discovery runs once at extension load. Run `/reload` after an `agy update` to refresh the list.
 
 If `agy models` fails at load (binary missing, auth not done, network stall), a fallback catalog still populates the picker so you get a clear runtime error instead of an empty list.
+
+### Engine and bridge surface
+
+`config.json` selects the turn engine and the bridge surface:
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `engine` | `stream-json` (persistent agy process, toolUse round-trips, live usage) or `legacy-sqlite` (spawn `agy -p`, poll its SQLite) | `stream-json` |
+| `bridgeTools` | `none` (bridge off), `mcp` (pi-mcp-adapter tools), `all` (every non-builtin tool, incl. other `Ask*` delegations) | `mcp` |
+
+Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`. The `legacy-sqlite` engine is kept as a fallback and is scheduled for removal once the stream-json engine has burned in.
 
 ### The /agy command
 

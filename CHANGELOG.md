@@ -253,3 +253,14 @@ dependency.
   the correct downgrade. Hono's Node->Web conversion reads `req.rawHeaders`,
   not the parsed `req.headers` object, so the value is rewritten in the raw
   array (and mirrored on `req.headers` for other readers).
+
+## 1.3.0 - unreleased
+
+### Changed
+
+- Stream-json engine: one persistent `agy --input-format stream-json` process per provider; conversation binding from the `init` event (no more SQLite snapshot diffing), native tool-step events (no protobuf decoding), and token usage mapped onto pi's usage when agy reports it. `AGY_ENGINE=legacy-sqlite` keeps the old engine for one release.
+- MCP tool bridge no longer patches pi. Bridge calls park in a round-trip store; the provider emits them as real pi `toolUse` turns, pi executes with native cards/permissions/hooks, and the toolResult completes the parked MCP response on the next stream call (mechanism credit: tianzuo/pi-antigravity). `bridgeTools` config selects the surface: `none` / `mcp` (default) / `all`.
+
+### Removed
+
+- `pi.invokeTool` patch: `src/patcher.ts`, the load-time consent prompt, `/agy patch` subcommands, `docs/PI-INVOKETOOL-PATCH.md`, and the `invokeToolPatchDeclined` config flag.

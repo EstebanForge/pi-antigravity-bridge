@@ -24,7 +24,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
@@ -54,9 +53,20 @@ export interface McpStartResult {
 	reason?: string;
 }
 
-/** True only if the running pi exposes the local invokeTool patch. */
-export function hasInvokeTool(pi: ExtensionAPI): boolean {
-	return typeof (pi as unknown as { invokeTool?: unknown }).invokeTool === "function";
+/** Provider-owned bridge surface. The provider builds the tool catalog
+ *  (config-filtered: none|mcp|all + skills) and owns the toolUse round-trip:
+ *  onToolCall parks the call, ends the pi assistant message with stopReason
+ *  "toolUse" for the REAL pi tool, and resolves when pi hands back the
+ *  toolResult on the next stream call. Fail-closed: the provider enforces a
+ *  480s timeout and rejects when no agy turn is active. */
+export interface McpBridgeDeps {
+	listTools(): Array<{ name: string; description: string; inputSchema: object }>;
+	onToolCall(
+		callId: string,
+		name: string,
+		args: Record<string, unknown>,
+		signal: AbortSignal,
+	): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }>;
 }
 
 /** Clamp an unsupported MCP-Protocol-Version header down to the SDK's LATEST.
@@ -81,18 +91,6 @@ function clampProtocolVersionHeader(req: http.IncomingMessage): void {
 	for (let i = 0; i < raw.length - 1; i += 2) {
 		if (raw[i].toLowerCase() === "mcp-protocol-version") raw[i + 1] = LATEST_PROTOCOL_VERSION;
 	}
-}
-
-interface PiToolMeta {
-	name: string;
-	description?: string;
-	parameters?: object;
-	sourceInfo?: { source?: string };
-}
-
-interface InvokeResult {
-	content?: Array<{ type: string; text?: string }>;
-	isError?: boolean;
 }
 
 const BRIDGE_BASE = path.join(os.homedir(), ".pi", "agent", "antigravity-bridge");
@@ -240,52 +238,35 @@ export function registerExitCleanup(
 }
 
 export async function startMcpServer(
-	pi: ExtensionAPI,
+	deps: McpBridgeDeps,
 	opts: { preferredPort?: number; log?: (s: string, d?: unknown) => void } = {},
 ): Promise<McpStartResult> {
 	const log = opts.log ?? (() => {});
 
-	if (!hasInvokeTool(pi)) {
-		const reason =
-			"pi.invokeTool unavailable (needs the local pi patch). MCP tool bridge disabled; provider and AskAntigravity tool run unchanged.";
-		log("capability-missing", reason);
-		return { ok: false, reason };
-	}
-
-	const getAll = (pi as unknown as { getAllTools: () => PiToolMeta[] }).getAllTools.bind(pi);
-	const invoke =
-		(pi as unknown as { invokeTool: (n: string, a?: unknown, o?: { signal?: AbortSignal }) => Promise<InvokeResult> }).invokeTool.bind(pi);
-
 	const listHandler = async () => {
-		const all = getAll();
-		const tools = all
-			.filter((t) => t.sourceInfo?.source !== "builtin")
-			.filter((t) => !SKIP_CIRCULAR.has(t.name))
-			.map((t) => {
-				let inputSchema: object | undefined;
-				try {
-					inputSchema = t.parameters ? JSON.parse(JSON.stringify(t.parameters)) : undefined;
-				} catch {
-					inputSchema = { type: "object", properties: {}, additionalProperties: true };
-				}
-				return { name: t.name, description: t.description ?? t.name, inputSchema };
-			});
+		const tools = deps.listTools();
 		log("list-tools", { count: tools.length });
 		return { tools };
 	};
 
 	const callHandler = async (request: { params: { name: string; arguments?: unknown } }, signal?: AbortSignal) => {
 		const { name, arguments: args } = request.params;
-		log("call-tool", { name });
+		const callId = crypto.randomUUID();
+		log("call-tool", { name, callId });
 		try {
-			const r = await invoke(name, args ?? {}, { signal });
+			const r = await deps.onToolCall(
+				callId,
+				name,
+				(args && typeof args === "object" ? args : {}) as Record<string, unknown>,
+				signal ?? new AbortController().signal,
+			);
 			const content =
 				r.content && r.content.length > 0 ? r.content : [{ type: "text", text: JSON.stringify(r) }];
-			log("call-tool-ok", { name });
+			log("call-tool-ok", { name, callId });
 			return { content, isError: r.isError ?? false };
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			log("call-tool-fail", { name, msg });
+			log("call-tool-fail", { name, callId, msg });
 			return { content: [{ type: "text", text: `Error: ${msg}` }], isError: true };
 		}
 	};

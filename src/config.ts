@@ -24,6 +24,8 @@ const CONFIG_PATH = path.join(
 
 export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
+export type AgyEngine = "stream-json" | "legacy-sqlite";
+export type BridgeTools = "none" | "mcp" | "all";
 
 export interface AgyConfig {
 	mode: AgyMode;
@@ -37,10 +39,15 @@ export interface AgyConfig {
 	defaultModel: string;
 	/** AskAntigravity tool: default thinking tier when the alias names none. */
 	defaultThinking: ThinkingTier;
-	/** User declined the pi.invokeTool auto-patch consent prompt. When true,
-	 *  session_start silently skips the patch + MCP tool bridge until cleared
-	 *  (by /agy patch apply succeeding, or the patch otherwise becoming live). */
-	invokeToolPatchDeclined?: boolean;
+	/** Turn engine. "stream-json" (default): one persistent agy process fed
+	 *  NDJSON user events; enables live toolUse round-trips, native usage, and
+	 *  conversation binding from the init event. "legacy-sqlite": the old
+	 *  spawn-`agy -p`-and-poll-SQLite path, kept as a fallback for one release. */
+	engine: AgyEngine;
+	/** Which pi tools the MCP bridge exposes to agy: "none" (bridge off),
+	 *  "mcp" (pi-mcp-adapter tools + skills bridge; default), "all" (every
+	 *  registered non-builtin tool incl. other Ask* delegations). */
+	bridgeTools: BridgeTools;
 }
 
 const DEFAULTS: AgyConfig = {
@@ -48,6 +55,8 @@ const DEFAULTS: AgyConfig = {
 	skipPermissions: true,
 	defaultModel: "flash",
 	defaultThinking: "medium",
+	engine: "stream-json",
+	bridgeTools: "mcp",
 };
 
 /** Load config merged over defaults. Env vars override the file when set. */
@@ -92,7 +101,16 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const defaultThinking: ThinkingTier =
 		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
 
-	return { mode, skipPermissions, defaultModel, defaultThinking, invokeToolPatchDeclined: file.invokeToolPatchDeclined };
+	const engine: AgyEngine =
+		process.env.AGY_ENGINE === "legacy-sqlite" || file.engine === "legacy-sqlite"
+			? "legacy-sqlite"
+			: "stream-json";
+
+	const bridgeRaw = (process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
+	const bridgeTools: BridgeTools =
+		bridgeRaw === "none" || bridgeRaw === "all" ? bridgeRaw : "mcp";
+
+	return { mode, skipPermissions, defaultModel, defaultThinking, engine, bridgeTools };
 }
 
 /** Atomically persist a config patch (temp + rename). */
