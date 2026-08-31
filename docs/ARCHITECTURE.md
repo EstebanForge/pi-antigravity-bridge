@@ -16,7 +16,6 @@ src/sessions.ts       atomic JSON store: pi session -> agy conversation + last s
 src/config.ts         persisted runtime config (mode, permissions, model/thinking defaults)
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge: exposes pi's tools to agy over Streamable HTTP
-src/patcher.ts        Auto-applies the pi.invokeTool local patch to enable the MCP tool bridge
 src/diff-render.ts    render agy's file edits as git diffs in pi's thinking stream
 ```
 

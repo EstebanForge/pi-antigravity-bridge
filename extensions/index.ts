@@ -160,12 +160,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
 		// and offer /agy patch-cleanup. Never auto-edits the install.
 		try {
-			if (patchStatus().present && !loadConfig().patchCleanupNotified) {
+			if (!loadConfig().patchCleanupNotified && patchStatus().present) {
+				// Flag after surfacing, not before: headless sessions log to
+				// stderr (ctx.ui.notify is a no-op without a UI), so the notice
+				// is never silently dropped.
+				const msg =
+					"Your pi install still carries the old pi.invokeTool patch. It is unused and harmless; a pi update also removes it. To restore the original files from the backup now: /agy patch-cleanup";
+				if (ctx.hasUI) ctx.ui.notify(msg, "info");
+				else console.error(`[antigravity-bridge] ${msg}`);
 				saveConfig({ patchCleanupNotified: true });
-				ctx.ui.notify(
-					"Your pi install still carries the old pi.invokeTool patch. It is unused and harmless; a pi update also removes it. To restore the original files from the backup now: /agy patch-cleanup",
-					"info",
-				);
 			}
 		} catch {
 			/* detection is best-effort */

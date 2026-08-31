@@ -376,8 +376,14 @@ function describeWriteError(err: unknown, root: string): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-/** Find the newest backup dir (by VERSION file mtime), if any. */
-function findNewestBackup(base: string): { dir: string; version: string } | null {
+/** Find the best backup dir: an exact version match when `preferVersion` is
+ *  given, else the newest by VERSION mtime. Multi-version backup dirs are
+ *  normal (the old patcher re-applied across pi upgrades), so newest-by-mtime
+ *  alone could pick a backup that cannot legally restore. */
+function findNewestBackup(
+	base: string,
+	preferVersion?: string,
+): { dir: string; version: string } | null {
 	let entries: string[];
 	try {
 		entries = fs.readdirSync(base);
@@ -392,6 +398,9 @@ function findNewestBackup(base: string): { dir: string; version: string } | null
 			const stat = fs.statSync(verFile);
 			const manifest = JSON.parse(fs.readFileSync(verFile, "utf8"));
 			if (typeof manifest.version !== "string") continue;
+			if (preferVersion && manifest.version === preferVersion) {
+				return { dir, version: manifest.version };
+			}
 			if (!best || stat.mtimeMs > best.mtime) {
 				best = { dir, version: manifest.version, mtime: stat.mtimeMs };
 			}
@@ -444,7 +453,7 @@ export function patchStatus(opts: { root?: string; backupBase?: string } = {}): 
 		if (!txt.includes(ENTRY_REDIRECT.sentinel)) missing.push(ENTRY_REDIRECT.file);
 	}
 	// Absent file = pre-bundle pi: the bin already points at the modular entry.
-	const backup = findNewestBackup(backupBaseOf(opts));
+	const backup = findNewestBackup(backupBaseOf(opts), root.version);
 	return {
 		present: missing.length === 0,
 		root: root.root,
@@ -473,7 +482,7 @@ export function restorePatch(opts: PatchOpts = {}): RestoreResult {
 		return { ok: false, restoredFiles: [], reason: "could not locate the running pi package root to restore into." };
 	}
 	const { root, version } = found;
-	const backup = findNewestBackup(backupBaseOf(opts));
+	const backup = findNewestBackup(backupBaseOf(opts), found.version);
 	if (!backup) {
 		return { ok: false, restoredFiles: [], reason: "no backup found; nothing to restore." };
 	}

@@ -15,9 +15,8 @@
 //     the loopback server. Combined with 127.0.0.1 binding.
 //   - Request body size cap.
 //
-// CAPABILITY GATE: pi.invokeTool is NOT upstream pi (local patch, see
-// docs/PI-INVOKETOOL-PATCH.md). If absent, startMcpServer returns { ok:false }
-// and the bridge runs unchanged.
+// The bridge routes calls through the provider's toolUse round-trip; it
+// needs no privileged pi API.
 
 import http from "node:http";
 import fs from "node:fs";
