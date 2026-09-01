@@ -24,7 +24,6 @@ const CONFIG_PATH = path.join(
 
 export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
-export type AgyEngine = "stream-json" | "legacy-sqlite";
 export type BridgeTools = "none" | "mcp" | "all";
 
 export interface AgyConfig {
@@ -39,11 +38,6 @@ export interface AgyConfig {
 	defaultModel: string;
 	/** AskAntigravity tool: default thinking tier when the alias names none. */
 	defaultThinking: ThinkingTier;
-	/** Turn engine. "stream-json" (default): one persistent agy process fed
-	 *  NDJSON user events; enables live toolUse round-trips, native usage, and
-	 *  conversation binding from the init event. "legacy-sqlite": the old
-	 *  spawn-`agy -p`-and-poll-SQLite path, kept as a fallback for one release. */
-	engine: AgyEngine;
 	/** Set after the one-time notice about a leftover legacy invokeTool patch
 	 *  on the installed pi. The notice never repeats; /agy patch-cleanup is
 	 *  always available. */
@@ -73,7 +67,6 @@ const DEFAULTS: AgyConfig = {
 	skipPermissions: true,
 	defaultModel: "flash",
 	defaultThinking: "medium",
-	engine: "stream-json",
 	bridgeTools: "mcp",
 	digest: false,
 };
@@ -120,11 +113,6 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const defaultThinking: ThinkingTier =
 		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
 
-	const engine: AgyEngine =
-		process.env.AGY_ENGINE === "legacy-sqlite" || file.engine === "legacy-sqlite"
-			? "legacy-sqlite"
-			: "stream-json";
-
 	const bridgeRaw = (process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" ? bridgeRaw : "mcp";
@@ -138,7 +126,6 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		skipPermissions,
 		defaultModel,
 		defaultThinking,
-		engine,
 		bridgeTools,
 		digest,
 		patchCleanupNotified: file.patchCleanupNotified === true,

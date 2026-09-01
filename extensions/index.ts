@@ -2,9 +2,8 @@
 //
 // Registers Gemini (via the agy CLI) as a pi model provider so it shows up in
 // the /model picker as antigravity/gemini-*. When selected, pi routes each turn
-// through streamSimple, which spawns `agy -p`, polls the conversation SQLite DB
-// agy writes, decodes the protobuf step payloads, and streams the agent text
-// back into pi's TUI.
+// through streamSimple, which feeds the persistent stream-json driver process
+// and streams the agent text back into pi's TUI.
 //
 // Architectural wall (cannot be worked around - see PLAN.md):
 //   agy runs its OWN closed tool loop against --add-dir. pi's read/write/edit/
@@ -301,7 +300,6 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  tool thinking: ${config.defaultThinking}`,
 		`  sessions:      ${ctx.store.size} bound`,
 		`  config:        ${CONFIG_PATH}`,
-		`  engine:        ${config.engine}`,
 		`  bridge tools:  ${config.bridgeTools}`,
 		`  digest:        ${config.digest ? "on" : "off"}`,
 		"",
@@ -352,7 +350,6 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				const port = ctx.getMcpPort();
 				const lines = [
 					"Antigravity doctor (no tokens spent)",
-					`  engine:        ${config.engine}`,
 					`  bridge:        ${config.bridgeTools}${port ? ` (port ${port})` : " (not running)"}`,
 					`  driver:        ${snap.state}${snap.pid ? ` pid=${snap.pid}` : ""}${snap.conversationId ? ` conv=${snap.conversationId.slice(0, 8)}` : ""}`,
 					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,

@@ -8,7 +8,7 @@ If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/Esteban
 
 ## What it does
 
-You pick a Gemini model in pi's `/model` picker. pi routes each turn through this provider. The default `stream-json` engine runs one persistent agy process in your workspace, feeds it each turn, parses its stream-json events, and streams the agent text back into pi token by token. Token usage is live. A `legacy-sqlite` fallback engine (spawn `agy -p`, poll its SQLite conversation DB, decode its protobuf steps) still exists; see [Engine and bridge surface](#engine-and-bridge-surface).
+You pick a Gemini model in pi's `/model` picker. pi routes each turn through this provider. A single persistent `agy` process runs in your workspace; pi feeds it each turn, parses its stream-json events, and streams the agent text back into pi token by token. Token usage is live.
 
 Multi-turn works. The provider binds a pi session to an agy conversation id (persisted under `~/.pi/agent/antigravity-bridge/sessions.json`) and resumes it on the next turn via `--conversation <id>`. agy keeps its own history, so only the latest user message is sent each turn.
 
@@ -20,7 +20,7 @@ Residual limits (with or without the bridge):
 
 - agy's own edits still land directly on disk; pi's inline diff review does not engage for them.
 - agy commands run without per-action approval, same as every other tool in pi. See [Permissions](#permissions) below.
-- No cost accounting: cost stays zero because agy runs on your subscription quota. Token usage is live on the `stream-json` engine; the `legacy-sqlite` fallback reports usage as zero.
+- No cost accounting: cost stays zero because agy runs on your subscription quota. Token usage is live.
 
 ## MCP tool bridge (agy uses pi's tools)
 
@@ -36,7 +36,7 @@ The bridge starts a localhost MCP server inside pi's process. `tools/list` retur
 
 **Security.** The MCP server binds to `127.0.0.1` only and requires a per-session shared-secret header (`x-bridge-token`) that agy sends from the bridge config; browsers cannot set custom headers on a simple cross-origin POST, so this blocks web CSRF against the loopback server. Request bodies are size-capped. This is intended for single-user developer machines: any local process running as the same user can read the token from the per-pid config and call the exposed tools, so do not run it on a shared host where you do not trust other same-user processes.
 
-### Native cards, wrapper replay, and skills (stream-json engine)
+### Native cards, wrapper replay, and skills
 
 Read-only agy steps (view_file, list_dir, grep_search, find_by_name) re-run as
 real pi builtins (`read`, `ls`, `grep`, `find`) when those builtins are active,
@@ -48,9 +48,8 @@ anything with side effects.
 
 When the bridge is on, agy also gets one `activate_skill` tool whose enum is
 your pi Agent Skills catalog; calling it returns the SKILL.md body. The bridge
-answers it directly, no pi round-trip. `/agy doctor` prints engine state,
-driver counters, bridge port, and the last lifecycle events without spending
-tokens.
+answers it directly, no pi round-trip. `/agy doctor` prints driver counters,
+bridge port, and the last lifecycle events without spending tokens.
 
 ## Install
 
@@ -63,8 +62,6 @@ pi install npm:@estebanforge/pi-antigravity-bridge
 ```
 
 Requires the **`agy` CLI** installed and authenticated. If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable.
-
-Also requires Node 22.5 or newer (uses the built-in `node:sqlite`).
 
 ## Usage
 
@@ -86,17 +83,16 @@ Model ids are slugified from the `agy models` output (`Gemini 3.6 Flash (Medium)
 
 If `agy models` fails at load (binary missing, auth not done, network stall), a fallback catalog still populates the picker so you get a clear runtime error instead of an empty list.
 
-### Engine and bridge surface
+### Bridge surface
 
-`config.json` selects the turn engine and the bridge surface:
+`config.json` selects the bridge surface:
 
 | Key | Values | Default |
 | --- | --- | --- |
-| `engine` | `stream-json` (persistent agy process, toolUse round-trips, live usage) or `legacy-sqlite` (spawn `agy -p`, poll its SQLite) | `stream-json` |
 | `bridgeTools` | `none` (bridge off), `mcp` (pi-mcp-adapter tools), `all` (every non-builtin tool, incl. other `Ask*` delegations) | `mcp` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 
-Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`. The `legacy-sqlite` engine is kept as a fallback and is scheduled for removal once the stream-json engine has burned in.
+Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`.
 
 ### The /agy command
 
@@ -105,13 +101,13 @@ Env overrides: `AGY_ENGINE`, `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`. The `legacy-sqlit
 ```
 /agy                      status, or open the mode/permissions/model/thinking picker (TUI)
 /agy status               print current mode, permissions, model + session counts
-/agy doctor               engine state, driver counters, bridge port, last lifecycle events
+/agy doctor               bridge state, driver counters, bridge port, last lifecycle events
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
 /agy model flash|pro|gemini   default model alias for the AskAntigravity tool
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
-/agy digest on|off        inject pi-side context into agy prompts (default off; see engine table)
+/agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
 /agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)
 ```
@@ -148,7 +144,7 @@ Build, test, and debug instructions live in [docs/DEVELOPMENT.md](docs/DEVELOPME
 
 Google's [Antigravity ToS](https://antigravity.google/terms) (Section 6) prohibits accessing the service "in connection with products not provided by us", and names as its example using tools like Hermes/OpenClaw with Antigravity OAuth. That targets reusing your credentials in a non-Google harness that calls Google's backend directly.
 
-This extension does not do that. It spawns the official, unmodified `agy` binary as a subprocess; `agy` performs its own OAuth and makes its own calls to Google. This code never sees, extracts, or reuses your token, and never contacts Antigravity's backend. It only reads what `agy` itself produces locally: its stream-json output on the default engine, its SQLite conversation DB on the fallback engine. From Google's server-side view there is no signal that distinguishes "agy launched by pi" from "agy launched by a terminal, an IDE task runner, or cron": same signed binary, same authenticated calls.
+This extension does not do that. It spawns the official, unmodified `agy` binary as a subprocess; `agy` performs its own OAuth and makes its own calls to Google. This code never sees, extracts, or reuses your token, and never contacts Antigravity's backend. It only reads what `agy` itself produces locally: its stream-json output. From Google's server-side view there is no signal that distinguishes "agy launched by pi" from "agy launched by a terminal, an IDE task runner, or cron": same signed binary, same authenticated calls.
 
 Google's reported enforcement to date (the February 2026 suspensions) targeted token-reuse tools, not spawning the official CLI.
 

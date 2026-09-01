@@ -1,7 +1,6 @@
 // Provider integration test: drive createStreamSimple directly (no pi TUI),
 // iterate the AssistantMessageEventStream, and assert the event sequence +
-// streamed text. Exercises the full pipeline: provider -> runner -> poller ->
-// protobuf -> discovery, against a REAL agy run.
+// streamed text. Exercises the full pipeline against a REAL agy run.
 //
 // Usage: npx tsx scripts/test-provider.ts
 
@@ -14,7 +13,8 @@ import {
 	type Api,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { createStreamSimple } from "../src/provider.js";
+import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
+import { AgyDriver } from "../src/driver.js";
 import { SessionStore } from "../src/sessions.js";
 import type { AgyModelEntry } from "../src/models.js";
 
@@ -49,9 +49,16 @@ const context: Context = {
 
 // Use a throwaway session store so this test never clobbers real state.
 const tmpStore = new SessionStore(`/tmp/antigravity-test-${process.pid}-sessions.json`);
+const driver = new AgyDriver();
+const roundTrips = new ToolRoundTrips(driver);
+// A settled turn cannot answer its parked calls; the driver never sees the
+// toolResult. Fail them loudly (mirrors extensions/index.ts).
+driver.onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
 const streamSimple = createStreamSimple({
 	entries,
 	store: tmpStore,
+	driver,
+	roundTrips,
 });
 
 const events: AssistantMessageEvent[] = [];

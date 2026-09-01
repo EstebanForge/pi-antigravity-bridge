@@ -4,7 +4,7 @@
 
 ## OVERVIEW
 Project: **@estebanforge/pi-antigravity-bridge**
-Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 22+, built as a streaming Gemini provider extension for `pi` (`@earendil-works/pi-coding-agent`) interfacing with the Google Antigravity CLI (`agy`) over its stream-json protocol (persistent process), with a legacy SQLite-polling fallback engine.
+Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 22+, built as a streaming Gemini provider extension for `pi` (`@earendil-works/pi-coding-agent`) interfacing with the Google Antigravity CLI (`agy`) over its stream-json protocol (persistent process).
 
 ## STRUCTURE
 *   `src/`: Core implementation modules
@@ -14,15 +14,15 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
     *   `native-tools.ts`: Maps agy read-only tool steps onto real pi builtins (`read`/`ls`/`grep`/`find`) for native re-execution.
     *   `skills.ts`: `activate_skill` bridge exposing the pi Agent Skills catalog to agy, answered by the bridge directly.
     *   `patch-cleanup.ts`: Detects a leftover invokeTool patch from pre-1.3.0 installs; `/agy patch-cleanup` restores the original files from backup.
-    *   `runner.ts`, `poller.ts`, `protobuf.ts`, `discovery.ts`: Legacy-sqlite engine (spawn `agy -p`, SQLite polling, protobuf decode, conversation discovery). Fallback only; scheduled for removal.
+    *   `discovery.ts`: Conversation-id binding for the AskAntigravity one-shot tool (snapshot/diff + pid fd-scan; `agy -p` never prints the id).
     *   `ask-tool.ts`: The `AskAntigravity` one-shot delegation tool (model/thinking defaults).
-    *   `config.ts`: Configuration defaults (engine, bridgeTools, digest), directory resolution, and environment parsing.
+    *   `config.ts`: Configuration defaults (bridgeTools, digest), directory resolution, and environment parsing.
     *   `diff-render.ts`: Git diff rendering and edit tracking for tool output summaries.
     *   `mcp-server.ts`: Internal bridge HTTP/MCP server lifecycle and capability gating; `tools/call` parks into the provider round-trip.
     *   `models.ts`: Antigravity model catalog loading and background cache refreshing.
     *   `sessions.ts`: Persisted mapping of `pi` session IDs to `agy` conversation IDs and step watermarks.
 *   `extensions/`: `pi` extension entry point (`index.ts`): provider registration, `/agy` command, bridge lifecycle notices.
-*   `scripts/`: Utility scripts for development (`run-agy.ts`, `decode-db.ts`, `smoke-in-pi.sh`, `smoke-stream-json.mjs`, `test-provider.ts`, `test-extension.ts`).
+*   `scripts/`: Utility scripts for development (`smoke-in-pi.sh`, `smoke-stream-json.mjs`, `test-provider.ts`, `test-extension.ts`).
 *   `tests/`: Test suite run by Vitest.
 
 ## COMMANDS
@@ -31,8 +31,6 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
 | Install| `npm install` |
 | Test   | `npm test` |
 | Build  | `npm run build` |
-| Run    | `npm run run-agy` |
-| Decode | `npm run decode-db` |
 | Smoke  | `npm run smoke:pi` |
 | Live stream-json smoke | `AGY_LIVE=1 node --experimental-strip-types scripts/smoke-stream-json.mjs` (spends quota) |
 
@@ -48,5 +46,5 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
 *   **Docs**: [README.md](README.md) & [docs/](docs)
 
 ## NOTES
-*   **Architecture**: Intercepts `pi` model requests under `antigravity/*` and drives a persistent `agy` process over its stream-json protocol. The MCP tool bridge runs with no pi patch: bridge calls park in the provider's round-trip store and re-enter pi as real `toolUse` turns (native cards, permissions, hooks). `AGY_ENGINE=legacy-sqlite` keeps the pre-1.3.0 spawn-and-poll engine as a fallback, scheduled for removal once stream-json has burned in.
+*   **Architecture**: Intercepts `pi` model requests under `antigravity/*` and drives a persistent `agy` process over its stream-json protocol. The MCP tool bridge runs with no pi patch: bridge calls park in the provider's round-trip store and re-enter pi as real `toolUse` turns (native cards, permissions, hooks). The pre-1.3.0 spawn-and-poll SQLite engine was removed in 1.3.2 (its protobuf/DB decoding broke silently on agy 1.1.18+ two-phase writes; issue #1).
 *   **Context Continuity**: The G1 context digest (compaction summaries, other-provider turns) is opt-in (`config.digest` / `AGY_DIGEST` / `/agy digest on`, default off): it changes every turn and defeats agy's server-side prompt cache.

@@ -30,8 +30,6 @@
     "build": "tsc --noEmit",
     "test": "vitest run",
     "prepublishOnly": "npm run build && npm test",
-    "run-agy": "tsx scripts/run-agy.ts",
-    "decode-db": "tsx scripts/decode-db.ts",
     "smoke:pi": "bash scripts/smoke-in-pi.sh"
   },
   "files": [

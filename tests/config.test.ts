@@ -12,36 +12,33 @@ function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
 }
 
-test("config: defaults select stream-json engine and mcp bridge surface", () => {
+test("config: defaults select the mcp bridge surface", () => {
 	const p = tmpConfig();
 	try {
 		const c = loadConfig(p);
-		assert.equal(c.engine, "stream-json");
 		assert.equal(c.bridgeTools, "mcp");
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
 
-test("config: engine and bridgeTools round-trip through load/save", () => {
+test("config: bridgeTools round-trips through load/save", () => {
 	const p = tmpConfig();
 	try {
-		saveConfig({ engine: "legacy-sqlite", bridgeTools: "all" }, p);
+		saveConfig({ bridgeTools: "all" }, p);
 		const c = loadConfig(p);
-		assert.equal(c.engine, "legacy-sqlite");
 		assert.equal(c.bridgeTools, "all");
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
 
-test("config: unrelated save does not clobber engine/bridgeTools", () => {
+test("config: unrelated save does not clobber bridgeTools", () => {
 	const p = tmpConfig();
 	try {
-		saveConfig({ engine: "legacy-sqlite", bridgeTools: "none" }, p);
+		saveConfig({ bridgeTools: "none" }, p);
 		saveConfig({ mode: "plan" }, p);
 		const c = loadConfig(p);
-		assert.equal(c.engine, "legacy-sqlite");
 		assert.equal(c.bridgeTools, "none");
 		assert.equal(c.mode, "plan");
 	} finally {

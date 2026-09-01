@@ -29,7 +29,6 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
-import { runAgyTurn, type AgyEvent, type AgyRunOptions } from "./runner.js";
 import { AgyDriver, type DriverActivity, type TurnHandle } from "./driver.js";
 import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
@@ -245,11 +244,8 @@ export interface BlockState {
 export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
-	/** Override the agy turn runner (tests inject a scripted event source).
-	 *  Defaults to the real runAgyTurn. Legacy engine only. */
-	runAgyTurn?: typeof runAgyTurn;
-	/** Persistent stream-json engine. When set (and config.engine selects it),
-	 *  turns run on the driver and bridge calls park as toolUse round-trips. */
+	/** Persistent stream-json driver. Turns run on the driver and bridge
+	 *  calls park as toolUse round-trips. Required with roundTrips. */
 	driver?: AgyDriver;
 	roundTrips?: ToolRoundTrips;
 	/** Replay store for the display-only antigravity wrapper tool. Required
@@ -692,13 +688,12 @@ async function runTurnDriver(
 export function createStreamSimple(
 	deps: StreamSimpleDeps,
 ): (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
-	const { entries, store, runAgyTurn: runFn = runAgyTurn, driver, roundTrips } = deps;
+	const { entries, store, driver, roundTrips } = deps;
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
 		// Fire the async turn; return the stream synchronously per pi's contract.
-		const config = loadConfig();
-		if (driver && roundTrips && config.engine === "stream-json") {
+		if (driver && roundTrips) {
 			void runTurnDriver(stream, model, context, options, entries, store, {
 				driver,
 				roundTrips,
@@ -706,181 +701,14 @@ export function createStreamSimple(
 				nativeActive: deps.nativeActive,
 			});
 		} else {
-			void runTurn(stream, model, context, options, entries, store, runFn);
+			// Miswired extension: no driver means no engine. Fail the turn visibly
+			// instead of silently producing an empty assistant message.
+			const partial = newAssistant(model);
+			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			finalize(stream, blocks, "error", "antigravity driver not configured");
 		}
 		return stream;
 	};
-}
-
-async function runTurn(
-	stream: AssistantMessageEventStream,
-	model: Model<Api>,
-	context: Context,
-	options: SimpleStreamOptions | undefined,
-	entries: AgyModelEntry[],
-	store: SessionStore,
-	runFn: typeof runAgyTurn,
-): Promise<void> {
-	const partial = newAssistant(model);
-	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
-
-	// Direct emit helpers. agy streams deltas that may not align to line
-	// boundaries; pi's TUI renders partial lines fine, so we append and push
-	// each delta straight through (no filtering, no buffering).
-	const appendTextDelta = (delta: string): void => {
-		appendText(stream, blocks, delta);
-	};
-	const appendThinkingDelta = (delta: string): void => {
-		appendThinking(stream, blocks, delta);
-	};
-
-	// Signal the turn has begun IMMEDIATELY. pi's native Working indicator is
-	// driven by the stream's start event (isStreaming). Without this, agy's
-	// initial thinking seconds (before it emits any step) show nothing and the
-	// UI looks frozen. Lazy start (on first content) was the old behavior.
-	ensureStarted(stream, blocks);
-
-	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const key = sessionKey(options, cwd);
-	const existing = store.get(key);
-	const messageCount = context.messages.length;
-
-	const prompt = extractUserPrompt(context);
-	if (!prompt) {
-		finalize(stream, blocks, "error", "No user message to send to agy.");
-		return;
-	}
-
-	// Runtime config (mode, permissions, digest). Loaded fresh each turn so
-	// /agy toggles take effect immediately without a reload.
-	const config = loadConfig();
-
-	// G1: inject a delta digest of pi-side context agy was not spawned for
-	// (compaction summaries, other-provider turns), gated on config.digest:
-	// the digest changes every turn and defeats agy's prompt cache. agy keeps
-	// its own history; see docs/PI-BRIDGE-GAPS.md (G1).
-	const watermark = existing?.lastMessageCount ?? 0;
-	const digest = config.digest ? buildContextDigest(context.messages, watermark) : "";
-	const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
-
-	// Resolve the pi model id to its catalog entry. On a miss, fall through to
-	// the id itself  -  agy will likely reject, but the error reaches the user
-	// instead of a silent no-op.
-	const entry = entries.find((e) => e.id === model.id) ?? null;
-	const agyModel = entry?.full ?? model.id;
-
-
-	// Effort-driven bases always need --effort (a base slug is invalid on its
-	// own); fixed models never get it (agy rejects --effort for them). For an
-	// effort-driven base we clamp pi's level to the tiers agy offers it.
-	const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
-
-	const runOpts: AgyRunOptions = {
-		cwd,
-		model: agyModel,
-		mode: config.mode,
-		skipPermissions: config.skipPermissions,
-		effort,
-		prompt: fullPrompt,
-		conversationId: existing?.conversationId ?? null,
-		baseStepIdx: existing?.lastStepIdx ?? -1,
-		timeoutMin: DEFAULT_TIMEOUT_MIN,
-		signal: options?.signal,
-	};
-
-	// G8: per-turn diff context for agy's file edits (write_to_file et al.).
-	// Turn-scoped so concurrent turns never share OLD-content caches.
-	const diffCtx = new TurnDiffContext(createExecGitOps());
-
-	const onEvent = (event: AgyEvent) => {
-		switch (event.kind) {
-			case "text":
-				appendTextDelta(event.text);
-				break;
-			case "thinking":
-				appendThinkingDelta(event.text);
-				break;
-			case "tool": {
-				// G8: if agy wrote a file, surface a git-sourced diff; else the plain
-				// tool label. Always shown (agy's own tool loop, surfaced for visibility).
-				const edit = parseEditToolInput(event.inputJson ?? "");
-				if (edit) {
-					const absFile = path.isAbsolute(edit.file) ? edit.file : path.resolve(cwd, edit.file);
-					const outcome = diffCtx.diffEdit(absFile, edit.content);
-					const label = edit.description ?? path.basename(absFile);
-					appendThinkingDelta(`[agy edit: ${label}]\n`);
-					if (outcome.text) appendThinkingDelta(`${outcome.text}\n`);
-				} else {
-					appendThinkingDelta(`[agy tool: ${event.name}]\n`);
-				}
-				break;
-			}
-			case "title":
-				// Conversation title metadata  -  not streamed to the user.
-				break;
-		}
-	};
-
-	let result;
-	try {
-		result = await runFn(runOpts, onEvent);
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
-		return;
-	}
-
-	// Persist for the next turn (resume). Only bind when we actually discovered
-	// an id  -  a discovery miss shouldn't clobber a prior good binding.
-	// Persist for the next turn (resume). Only bind when we actually discovered
-	// an id  -  a discovery miss shouldn't clobber a prior good binding. The
-	// lastMessageCount watermark advances on a successful bind even if the turn
-	// later aborted or timed out: the prompt (digest included) was handed to
-	// agy at spawn, so its DB has seen that context. Guarding this on
-	// exitCode===0 would re-inject stale deltas after retryable failures.
-	if (result.conversationId) {
-		store.set(key, {
-			conversationId: result.conversationId,
-			lastStepIdx: result.lastIdx,
-			lastMessageCount: messageCount,
-		});
-	}
-
-	if (result.aborted) {
-		finalize(stream, blocks, "aborted", "Operation aborted");
-		return;
-	}
-	if (result.timedOut) {
-		const note = `agy exceeded the ${runOpts.timeoutMin}m timeout`;
-		finalize(stream, blocks, "error", note);
-		return;
-	}
-	if (result.exitCode !== 0) {
-		const detail = result.stderr.trim() || `agy exited with status ${result.exitCode}`;
-		finalize(stream, blocks, "error", detail);
-		return;
-	}
-
-	// Discovery miss: agy exited cleanly but we never bound a conversation id
-	// this turn (ambiguous snapshot, DB not created in time, or a prior session
-	// whose id failed CONV_ID_RE and silently fell through to fresh discovery).
-	// Guard on whether we bound THIS turn, not on whether a prior session
-	// existed - otherwise a corrupt existing entry re-opens the silent-empty-
-	// success hole the first review closed.
-	if (!result.conversationId) {
-		const detail =
-			"agy exited cleanly but its conversation database could not be bound. " +
-			"The run may have partially applied edits with no visible output.";
-		finalize(stream, blocks, "error", detail);
-		return;
-	}
-
-	// Success. If no text ever streamed (agy did only tool work, or returned
-	// empty), emit an empty text block so pi has a well-formed assistant turn.
-	if (blocks.textIdx === null && blocks.thinkingIdx === null) {
-		ensureTextOpen(stream, blocks);
-	}
-	finalize(stream, blocks, "stop");
 }
 
 /** Signal the start of the assistant turn exactly once. `start` is
