@@ -302,8 +302,9 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  config:        ${CONFIG_PATH}`,
 		`  bridge tools:  ${config.bridgeTools}`,
 		`  digest:        ${config.digest ? "on" : "off"}`,
+		`  system prompt: ${config.systemPrompt ? "on" : "off"}`,
 		"",
-		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy clear",
+		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy clear",
 	].join("\n");
 }
 
@@ -311,7 +312,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|digest on|off|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|digest on|off|system-prompt on|off|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -403,6 +404,20 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					);
 				} else {
 					ui?.notify(`digest: ${loadConfig().digest ? "on" : "off"}\nusage: /agy digest on|off`, "info");
+				}
+				return;
+			}
+			if (sub === "system-prompt") {
+				if (val === "on" || val === "off") {
+					const next = saveConfig({ systemPrompt: val === "on" });
+					ui?.notify(
+						next.systemPrompt
+							? "system-prompt on. pi's system prompt (incl. global and project AGENTS.md) is prepended to the first prompt of each new agy conversation. Existing conversations keep the version they started with."
+							: "system-prompt off. agy runs on its own system prompt; pi instructions and AGENTS.md files are not sent.",
+						"info",
+					);
+				} else {
+					ui?.notify(`system-prompt: ${loadConfig().systemPrompt ? "on" : "off"}\nusage: /agy system-prompt on|off`, "info");
 				}
 				return;
 			}

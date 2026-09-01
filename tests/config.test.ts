@@ -68,3 +68,33 @@ test("config: digest defaults off and round-trips through load/save", () => {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
 });
+
+test("config: systemPrompt defaults on and round-trips through load/save", () => {
+	const p = tmpConfig();
+	try {
+		assert.equal(loadConfig(p).systemPrompt, true);
+		saveConfig({ systemPrompt: false }, p);
+		assert.equal(loadConfig(p).systemPrompt, false);
+		saveConfig({ mode: "plan" }, p);
+		assert.equal(loadConfig(p).systemPrompt, false);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
+test("config: AGY_SYSTEM_PROMPT env overrides the file in both directions", () => {
+	const p = tmpConfig();
+	const prev = process.env.AGY_SYSTEM_PROMPT;
+	try {
+		saveConfig({ systemPrompt: true }, p);
+		process.env.AGY_SYSTEM_PROMPT = "off";
+		assert.equal(loadConfig(p).systemPrompt, false);
+		saveConfig({ systemPrompt: false }, p);
+		process.env.AGY_SYSTEM_PROMPT = "on";
+		assert.equal(loadConfig(p).systemPrompt, true);
+	} finally {
+		if (prev === undefined) delete process.env.AGY_SYSTEM_PROMPT;
+		else process.env.AGY_SYSTEM_PROMPT = prev;
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});

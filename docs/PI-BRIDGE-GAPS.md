@@ -27,7 +27,13 @@ credentials, so a secret never crosses the bridge, and a long call renders in
 pi's native UI while it runs. agy's file edits surface as git-sourced diffs in
 pi's thinking stream. A delta digest of pi-side context (compaction summaries,
 other-provider turns) is available but OFF by default (`/agy digest on`): the
-digest changes every turn and defeats agy's server-side prompt cache.
+digest changes every turn and defeats agy's server-side prompt cache. The
+reverse direction is on by default (`/agy system-prompt off` to disable):
+pi's composed system prompt - its operating instructions plus the global
+agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` files - is
+prepended as a delimited block to the first prompt of each new agy
+conversation, once, so the prompt cache keeps hitting (G10 in
+`CHANGELOG.md`).
 
 ## Open gaps
 

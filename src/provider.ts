@@ -84,6 +84,43 @@ const COMPACTION_MARKER = "compacted into the following summary";
 const DIGEST_PREAMBLE =
 	"[The following is context from the broader pi session that this Antigravity turn was not directly spawned for: compaction summaries and turns handled by other providers or pi's own tools. Your own prior turns are already in your conversation history. Use this for continuity only.]";
 
+// --- pi system prompt (G10) ----------------------------------------------------
+//
+// pi composes context.systemPrompt every turn: its own operating instructions
+// plus every AGENTS.md/CLAUDE.md it loaded (global agent dir first, then
+// ancestors). The provider used to drop it, so agy models never saw the user's
+// machine-level or project-level instructions. agy has no system-prompt flag
+// (verified against `agy --help`), so the only delivery path is the prompt
+// text. We prepend it as a delimited block on the FIRST prompt of a fresh
+// conversation only: agy keeps its own history, the block stays byte-identical
+// afterwards, and agy's server-side prompt cache keeps hitting.
+
+export const SYSTEM_PROMPT_PREAMBLE =
+	"[The following is the system prompt of the pi session that spawned this conversation: operating instructions plus project context (AGENTS.md files). Apply it for this whole conversation. Tool guidance may reference pi-side tools; use your own tools or the pi tool bridge for those actions.]";
+
+export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
+
+/** Assemble the full agy prompt: system prompt block, pi-side digest, user
+ *  prompt. Empty parts are dropped. Pure; exported for unit testing.
+ *  Pass systemPrompt only on a fresh conversation (see runTurnDriver). */
+export function buildFullPrompt(
+	systemPrompt: string | undefined,
+	digest: string,
+	prompt: string,
+): string {
+	const parts: string[] = [];
+	if (systemPrompt) {
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${SYSTEM_PROMPT_END}`);
+	}
+	if (digest) {
+		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);
+	}
+	if (prompt) {
+		parts.push(prompt);
+	}
+	return parts.join("\n\n---\n\n");
+}
+
 /** Flatten any message content shape (string or content-block array) to text.
  *  Drops images, thinking, and tool-call blocks. */
 function blocksToText(content: unknown): string {
@@ -623,7 +660,11 @@ async function runTurnDriver(
 		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 		const watermark = existing?.lastMessageCount ?? 0;
 		const digest = config.digest ? buildContextDigest(context.messages, watermark) : "";
-		const fullPrompt = digest ? `${DIGEST_PREAMBLE}\n\n${digest}\n\n---\n\n${prompt}` : prompt;
+		// Fresh conversation only: agy stores the block in its own history, so
+		// re-sending it every turn would bloat each prompt and bust the cache.
+		const sysPrompt =
+			config.systemPrompt && !existing?.conversationId ? context.systemPrompt : undefined;
+		const fullPrompt = buildFullPrompt(sysPrompt, digest, prompt);
 		try {
 			handle = await deps.driver.run({
 				cwd,

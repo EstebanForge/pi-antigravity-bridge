@@ -91,8 +91,9 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 | --- | --- | --- |
 | `bridgeTools` | `none` (bridge off), `mcp` (pi-mcp-adapter tools), `all` (every non-builtin tool, incl. other `Ask*` delegations) | `mcp` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
+| `systemPrompt` | `on` (prepend pi's system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` - to the first prompt of each new agy conversation) or `off` (agy-native behavior) | `on` |
 
-Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`.
+Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins over the file, so while `AGY_DIGEST` or `AGY_SYSTEM_PROMPT` is set, the matching `/agy digest` or `/agy system-prompt` toggle persists a value that never takes effect.
 
 ### The /agy command
 
@@ -108,6 +109,7 @@ Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`.
 /agy model flash|pro|gemini   default model alias for the AskAntigravity tool
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
+/agy system-prompt on|off send pi's system prompt + AGENTS.md to new agy conversations (default on)
 /agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)
 ```

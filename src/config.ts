@@ -60,6 +60,16 @@ export interface AgyConfig {
 	 *  sessions gain nothing: agy already keeps its own history, and bridge
 	 *  round-trips deliver tool results through the bridge, not the digest. */
 	digest: boolean;
+	/** Prepend pi's composed system prompt (pi tool guidance + the global
+	 *  agent-dir AGENTS.md and ancestor AGENTS.md/CLAUDE.md) to the FIRST
+	 *  prompt of each fresh agy conversation.
+	 *
+	 *  Default ON: agy keeps its own history, so the prefix is sent once per
+	 *  conversation and stays byte-identical afterwards - agy's server-side
+	 *  prompt cache keeps hitting. This is why it is safe here while the G1
+	 *  digest (per-turn) is not. Turn off for agy-native behavior (agy's own
+	 *  system prompt only). */
+	systemPrompt: boolean;
 }
 
 const DEFAULTS: AgyConfig = {
@@ -69,6 +79,7 @@ const DEFAULTS: AgyConfig = {
 	defaultThinking: "medium",
 	bridgeTools: "mcp",
 	digest: false,
+	systemPrompt: true,
 };
 
 /** Load config merged over defaults. Env vars override the file when set. */
@@ -121,6 +132,11 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())
 		: file.digest ?? false;
 
+	const envSys = process.env.AGY_SYSTEM_PROMPT;
+	const systemPrompt = envSys !== undefined
+		? ["1", "true", "on"].includes(envSys.toLowerCase())
+		: file.systemPrompt ?? DEFAULTS.systemPrompt;
+
 	return {
 		mode,
 		skipPermissions,
@@ -128,6 +144,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		defaultThinking,
 		bridgeTools,
 		digest,
+		systemPrompt,
 		patchCleanupNotified: file.patchCleanupNotified === true,
 	};
 }
