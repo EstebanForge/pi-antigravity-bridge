@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-08-31
+
+### Changed
+
+- Docs-only release. README and package description now describe the 1.3.0 reality: `stream-json` engine as default, no-patch tool bridge, `/agy doctor` + `/agy patch-cleanup`, live token usage. The 1.3.0 tarball shipped the pre-rewrite README, so npm and the pi.dev package gallery still showed the patch-era docs; this republish refreshes the registry metadata.
+
+
 ## [1.3.0] - 2026-08-31
 
 ### Added

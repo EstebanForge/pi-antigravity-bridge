@@ -1,6 +1,6 @@
 {
   "name": "@estebanforge/pi-antigravity-bridge",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Streaming Gemini provider for pi, built on the agy CLI. Registers antigravity/* models in pi's /model picker; drives agy through its stream-json protocol (persistent process, tool round-trips, live usage).",
   "keywords": [
     "pi-package",
