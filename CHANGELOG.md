@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-09-01
+
+### Removed
+
+- The `legacy-sqlite` fallback engine: `src/runner.ts`, `src/poller.ts`, `src/protobuf.ts`, the `run-agy` and `decode-db` scripts, and the `engine` config key / `AGY_ENGINE` env var. agy 1.1.18 changed step-row storage to a two-phase write (a placeholder row first, grown in place later); the polling engine read each row once as an empty placeholder and never re-read it, so turns completed with the full reply in the database and zero text in pi (issue #1). The engine decoded an undocumented storage format, so every agy storage change risked repeating that failure silently. The stream-json engine shares none of that code path; verified live against agy 1.1.18-era storage (1.1.23 installed). A stale `engine` value in an existing `config.json` is ignored.
+  Reported by @imatimba in #1. Thanks for the exact repro and the root-cause analysis; the report drove this removal.
+
+### Changed
+
+- `scripts/test-provider.ts` wires the stream-json driver explicitly (it exercised the legacy path implicitly before).
+- `tests/provider-streaming.test.ts` covers effort mapping against a fake driver. The legacy event-mapping tests died with the engine; stream-json event coverage lives in `tests/stream-roundtrip.test.ts`.
+
 ## [1.3.1] - 2026-08-31
 
 ### Changed
