@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.3] - 2026-09-01
+
+### Added
+
+- pi system prompt injection (G10): pi's composed system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` files - is prepended as a delimited block to the first prompt of each NEW agy conversation. agy has no system-prompt flag, so the prompt text is the only delivery path; the block is sent once per conversation and stays byte-identical afterwards, so agy's server-side prompt cache keeps hitting (unlike the per-turn G1 digest, which stays off by default for that reason). On by default (`config.systemPrompt`, `AGY_SYSTEM_PROMPT`, `/agy system-prompt on|off`); existing conversations keep the version they started with.
+
 ## [1.3.2] - 2026-09-01
 
 ### Removed
