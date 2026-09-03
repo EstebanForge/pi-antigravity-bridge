@@ -1,12 +1,12 @@
 # ACP Adoption Plan: Official Google `antigravity-acp` Server
 
-Status: PROPOSED. Phase 0 COMPLETE + Phase 1 BUILT (2026-09-03): ACP engine
-implemented behind `config.engine` (default off), 154/154 tests, live smoke
+Status: PROPOSED. Phase 0 COMPLETE + Phase 1 COMPLETE (2026-09-03): ACP engine
+implemented behind `config.engine` (default off), full suite green, live smoke
 PASS through the full stack. Gate F VERIFIED live (`scripts/smoke-acp-bridge.mjs`):
 the real server lists bridge tools and completes a tool call through the
 registered mcpServers entry. §6 parity run LIVE on both engines: 14/14
-(`scripts/parity-live.mjs`). Phase-1 acceptance OPEN: README/DEVELOPMENT/
-CHANGELOG only. Gates: A PASS, B ABSENT (managed — legacy engine retained
+(`scripts/parity-live.mjs`). Phase-1 acceptance: ALL `[x]` (docs included).
+Gates: A PASS, B ABSENT (managed — legacy engine retained
 until upstream ships usage), C PASS, D FAIL on RC01 (kill+reload fallback
 VERIFIED live, incl. the stale-exit race fix), E PASS, F PASS (verified
 live 2026-09-03). Verdicts in section 8.1; full captured protocol data in
@@ -24,6 +24,23 @@ design was shown to erase legacy bindings on rollback, parked-timer pause
 changed to remaining-budget semantics, acp-permission plumbing specified
 through a TurnDriver interface, session/cancel + session/close pulled into
 phase 1, AskAntigravity migration moved from phase 3 to phase 4.
+Peer reviews 3-4 (plan-stage second rounds, Claude and agy): findings folded
+into the two entries above and the section 8/9 design; no separate deltas.
+Peer review 5 (implementation): Antigravity (agy), 2026-09-03. Verdict
+PROCEED WITH CHANGES. 7 findings, all valid, all fixed: P0 jsonrpc line
+buffering (stdio chunks are not newline-aligned; partial frames were dropped),
+P1 tool args preserved through tool_done, P1 typed protocol errors survive
+translation (cancelSupported stuck null), P1 parked-deadline nulled on pause,
+P2 tilde expansion, P2 per-turn config read dedup, P2 coverage gaps filled.
+Peer review 6 (post-build): Claude, 2026-09-03, isolated and read-only.
+Verdict PROCEED WITH CHANGES. 6 findings, 5 valid, all fixed: P1 bridge 403
+gate had no vitest coverage (HTTP-level test added: no header / wrong-length /
+same-length wrong token → 403, correct → 200), P1 sessionKey recorded the
+config engine instead of the selected driver's (fixed), P2 arm-time park
+left a stale deadline (fixed: paused-from-birth invariant), P2 duplicated
+timeout body (extracted), P2 abort-before-prompt probed cancel (now guarded
+by promptStarted). Sixth finding (untracked parity script) resolved by
+commit.
 
 Adopt the official Google ACP server (`agy_acp_server.par`, registry id
 `antigravity-acp`) as a second turn engine for the bridge, behind a config
@@ -646,7 +663,7 @@ provider change).
       (9.3), covered by tests (park/kickIdle deadline test).
 - [x] Fake-server suites: jsonrpc framing (incl. partial-line buffer), events
       mapping, driver flows (happy, load-replay suppression, permission auto,
-      Gate D abort, auth error), engine config narrowing — 153/153 green.
+      Gate D abort, auth error), engine config narrowing — suite green.
 - [x] `/agy engine acp|stream-json` command + `/agy doctor` shows engine,
       server version, session counts, cancel support.
 - [x] Live smoke through the full stack (`scripts/smoke-acp.mjs`, quota-
@@ -678,7 +695,11 @@ Open acceptance (blocking "phase 1 done"):
       Fixed: exit handling is connection-scoped (`stale-connection-exited`
       logged and ignored); regression test reproduces the race
       deterministically via `ACP_FAKE_SLOW_DEATH_MS`.
-- [ ] README / DEVELOPMENT / CHANGELOG updates.
+- [x] README / DEVELOPMENT / CHANGELOG updates — README (two engines,
+      `/agy engine`, `/agy acp-auth`, `AGY_ENGINE`/`AGY_ACP_BIN`, ToS
+      wording covers both official binaries), DEVELOPMENT (ACP suites +
+      3 live scripts), CHANGELOG `[Unreleased]` (engine, token fix,
+      stale-exit fix, RC01 limitations).
 
 Acceptance gate: every section 6 box `[x]` on the ACP engine, or explicitly
 marked with its gate fallback.
