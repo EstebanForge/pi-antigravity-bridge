@@ -22,11 +22,27 @@ const CONFIG_PATH = path.join(
 	"config.json",
 );
 
+/** Which turn engine drives turns. "stream-json" is the tested default;
+ *  "acp" is the official-server engine, opt-in (plan §9.5). */
+export type Engine = "stream-json" | "acp";
 export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
 export type BridgeTools = "none" | "mcp" | "all";
 
+export interface AcpConfig {
+	/** Path to agy_acp_server.par. Empty = env AGY_ACP_BIN > PATH. */
+	bin: string;
+	/** Single policy today: auto-approve request_permission in-connection
+	 *  (parity with skipPermissions). Kept as a key so future policies do not
+	 *  change the config shape. */
+	permissions: "auto";
+}
+
 export interface AgyConfig {
+	/** Turn engine. Switching requires a pi restart (drivers wire at load). */
+	engine: Engine;
+	/** Official-server ACP engine options (used when engine = "acp"). */
+	acp: AcpConfig;
 	mode: AgyMode;
 	/** Auto-approve all agy tool permission requests (--dangerously-skip-permissions).
 	 *  Required for non-interactive use: without it, any `run_command` triggers an
@@ -73,6 +89,7 @@ export interface AgyConfig {
 }
 
 const DEFAULTS: AgyConfig = {
+	engine: "stream-json",
 	mode: "accept-edits",
 	skipPermissions: true,
 	defaultModel: "flash",
@@ -80,6 +97,7 @@ const DEFAULTS: AgyConfig = {
 	bridgeTools: "mcp",
 	digest: false,
 	systemPrompt: true,
+	acp: { bin: "", permissions: "auto" },
 };
 
 /** Load config merged over defaults. Env vars override the file when set. */
@@ -99,6 +117,11 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	// The naive OR `env === "plan" || file.mode === "plan"` would ignore an
 	// explicit AGY_MODE=accept-edits when the file says plan, violating the
 	// documented precedence. Check env first.
+	// Engine: narrow to the known set; anything else (incl. the pre-1.3.2
+	// "sqlite" value) falls back to the tested default.
+	const engineRaw = String(process.env.AGY_ENGINE ?? file.engine ?? DEFAULTS.engine).toLowerCase();
+	const engine: Engine = engineRaw === "acp" ? "acp" : "stream-json";
+
 	const mode: AgyMode =
 		process.env.AGY_MODE !== undefined
 			? process.env.AGY_MODE === "plan"
@@ -137,7 +160,17 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		? ["1", "true", "on"].includes(envSys.toLowerCase())
 		: file.systemPrompt ?? DEFAULTS.systemPrompt;
 
+	const fileAcp = (typeof file.acp === "object" && file.acp !== null ? file.acp : {}) as Partial<AcpConfig>;
+	const acp: AcpConfig = {
+		bin:
+			process.env.AGY_ACP_BIN ??
+			(typeof fileAcp.bin === "string" ? fileAcp.bin : DEFAULTS.acp.bin),
+		permissions: "auto",
+	};
+
 	return {
+		engine,
+		acp,
 		mode,
 		skipPermissions,
 		defaultModel,

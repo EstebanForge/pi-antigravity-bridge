@@ -29,7 +29,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
-import { AgyDriver, type DriverActivity, type TurnHandle } from "./driver.js";
+import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
 import { toPiUsage } from "./stream-events.js";
 import { mapAgyToolToNative } from "./native-tools.js";
 import { type AgyEffort, type AgyModelEntry } from "./models.js";
@@ -264,9 +264,17 @@ function newAssistant(model: Model<Api>): AssistantMessage {
 
 /** Session key: prefer pi's sessionId (stable per conversation), fall back to
  *  cwd so a single pi process still resumes correctly when sessionId is absent. */
-function sessionKey(options: SimpleStreamOptions | undefined, cwd: string): string {
+function sessionKey(
+	options: SimpleStreamOptions | undefined,
+	cwd: string,
+	engine: "stream-json" | "acp",
+): string {
 	const sid = (options as { sessionId?: string } | undefined)?.sessionId;
-	return sid && sid.length > 0 ? `sid:${sid}` : `cwd:${cwd}`;
+	const base = sid && sid.length > 0 ? `sid:${sid}` : `cwd:${cwd}`;
+	// Engine-scoped keys (plan 9.4): one ACP turn must never touch the legacy
+	// binding and vice versa. Un-suffixed keys = legacy, byte-compatible with
+	// every store that predates the ACP engine.
+	return base + (engine === "acp" ? "@acp" : "");
 }
 
 /** Track which content block is currently open so we close-on-switch.
@@ -281,9 +289,13 @@ export interface BlockState {
 export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
-	/** Persistent stream-json driver. Turns run on the driver and bridge
-	 *  calls park as toolUse round-trips. Required with roundTrips. */
-	driver?: AgyDriver;
+	/** Legacy stream-json driver (the tested default engine). Turns run on the
+	 *  driver and bridge calls park as toolUse round-trips. Required with
+	 *  roundTrips. */
+	driver?: TurnDriver;
+	/** Official-server ACP engine. Opt-in via config.engine = "acp"; when
+	 *  absent the config switch falls back to the legacy driver. */
+	acpDriver?: TurnDriver;
 	roundTrips?: ToolRoundTrips;
 	/** Replay store for the display-only antigravity wrapper tool. Required
 	 *  for native re-exec and wrapper cards; without it tool steps render as
@@ -390,11 +402,13 @@ export class WrapperReplay {
 
 export class ToolRoundTrips {
 	#pending = new Map<string, PendingRoundTrip>();
-	#driver: AgyDriver;
+	#getDriver: () => TurnDriver;
 	#log: (s: string, d?: unknown) => void;
 
-	constructor(driver: AgyDriver, log?: (s: string, d?: unknown) => void) {
-		this.#driver = driver;
+	/** Accepts a driver or a getter: with two engines wired, the ACTIVE driver
+	 *  is resolved at call time from config (plan §9.5). */
+	constructor(driver: TurnDriver | (() => TurnDriver), log?: (s: string, d?: unknown) => void) {
+		this.#getDriver = typeof driver === "function" ? driver : () => driver;
 		this.#log = log ?? (() => {});
 	}
 
@@ -419,7 +433,7 @@ export class ToolRoundTrips {
 		clearTimeout(entry.timer);
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
 		entry.reject!(new Error(reason));
-		this.#driver.kickIdle();
+		this.#getDriver().kickIdle();
 		this.#log("round-trip-fail", { callId, name: entry.name, reason });
 	}
 
@@ -431,7 +445,7 @@ export class ToolRoundTrips {
 		args: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<BridgeCallResultShape> => {
-		const handle = this.#driver.activeHandle;
+		const handle = this.#getDriver().activeHandle;
 		if (!handle) {
 			return Promise.reject(
 				new Error(
@@ -469,7 +483,7 @@ export class ToolRoundTrips {
 			return true;
 		}
 		entry.resolve!({ content: [{ type: "text", text }], isError });
-		this.#driver.kickIdle();
+		this.#getDriver().kickIdle();
 		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
 		return true;
 	}
@@ -495,10 +509,12 @@ export function collectToolResults(
 // --- stream-json engine -------------------------------------------------------
 
 export interface DriverDeps {
-	driver: AgyDriver;
+	driver: TurnDriver;
 	roundTrips: ToolRoundTrips;
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
+	/** Active engine (config), for engine-scoped session keys. */
+	engine: "stream-json" | "acp";
 }
 
 /** Map one DriverActivity onto the open pi stream. Returns "parked" when the
@@ -551,7 +567,11 @@ export function consumeActivity(
 			appendText(stream, blocks, activity.delta);
 			return "continue";
 		case "thought":
-			// agy reports a token count only; no text body to render.
+			// Legacy: token count only (no body). ACP: thought TEXT deltas —
+			// rendered through the same thinking block pipeline (9.2).
+			if (typeof activity.delta === "string" && activity.delta.length > 0) {
+				appendThinking(stream, blocks, activity.delta);
+			}
 			return "continue";
 		case "usage":
 			toPiUsage(activity.usage, partial.usage);
@@ -629,7 +649,7 @@ async function runTurnDriver(
 	const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
 
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
-	const key = sessionKey(options, cwd);
+	const key = sessionKey(options, cwd, deps.engine);
 	const existing = store.get(key);
 	const messageCount = context.messages.length;
 	const config = loadConfig();
@@ -729,17 +749,23 @@ async function runTurnDriver(
 export function createStreamSimple(
 	deps: StreamSimpleDeps,
 ): (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream {
-	const { entries, store, driver, roundTrips } = deps;
+	const { entries, store, roundTrips } = deps;
 
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
 		// Fire the async turn; return the stream synchronously per pi's contract.
-		if (driver && roundTrips) {
+		// Engine selection is per-call: the config switch flips engines without
+		// touching this closure (both drivers wire at extension load). One
+		// loadConfig() read per turn, shared with the session key below.
+		const config = loadConfig();
+		const selected = config.engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
+		if (selected && roundTrips) {
 			void runTurnDriver(stream, model, context, options, entries, store, {
-				driver,
+				driver: selected,
 				roundTrips,
 				replay: deps.replay,
 				nativeActive: deps.nativeActive,
+				engine: config.engine,
 			});
 		} else {
 			// Miswired extension: no driver means no engine. Fail the turn visibly

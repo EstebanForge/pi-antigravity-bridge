@@ -37,11 +37,17 @@ import {
 const SKIP_CIRCULAR = new Set(["AskAntigravity"]);
 
 const BRIDGE_MCP_KEY = "pi-antigravity-bridge";
-const TOKEN_HEADER = "x-bridge-token";
+/** Shared-secret header every bridge request must carry. Exported: the ACP
+ *  engine's mcpServers registration needs the same header name (the legacy
+ *  engine gets it via .agents/mcp_config.json; ACP gets it via headers[]). */
+export const TOKEN_HEADER = "x-bridge-token";
 const MAX_BODY_BYTES = 1_000_000;
 
 export interface McpServerHandle {
 	port: number;
+	/** Shared secret for TOKEN_HEADER. Callers that register the bridge with
+	 *  an engine other than the legacy stream-json discovery file need it. */
+	token: string;
 	close: () => Promise<void>;
 }
 
@@ -409,6 +415,7 @@ export async function startMcpServer(
 				port,
 				handle: {
 					port,
+					token,
 					close: async () => {
 						await new Promise<void>((r) => httpServer.close(() => r()));
 						removeBridgeMcpConfig();

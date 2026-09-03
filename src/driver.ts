@@ -16,81 +16,29 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { parseAgyLine, type AgyUsage } from "./stream-events.js";
+import { parseAgyLine } from "./stream-events.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
+import type {
+	AgyUsage,
+	DriverActivity,
+	DriverProfile,
+	DriverSnapshot,
+	DriverState,
+	DriverTurnRequest,
+	TurnDriver,
+	TurnHandle,
+	TurnOutcome,
+} from "./driver-types.js";
 
-export type DriverState = "idle" | "starting" | "ready" | "running" | "dead";
-
-export interface DriverProfile {
-	cwd: string;
-	model: string;
-	effort?: string;
-	mode: string;
-	skipPermissions: boolean;
-}
-
-export interface DriverTurnRequest extends DriverProfile {
-	/** Existing agy conversation to resume (`--conversation`). */
-	conversationId?: string | null;
-	prompt: string;
-	signal?: AbortSignal;
-	/** Overall turn cap in minutes (default 10). */
-	timeoutMin?: number;
-	/** Stdout inactivity cap in minutes (default 5). */
-	inactivityMin?: number;
-}
-
-export type DriverActivity =
-	| { type: "text"; delta: string }
-	| { type: "thought"; tokens: number }
-	| { type: "tool_start"; stepId?: number; name: string; args: Record<string, unknown> }
-	| {
-			type: "tool_done";
-			stepId?: number;
-			name: string;
-			args: Record<string, unknown>;
-			output?: string;
-			durationSeconds?: number;
-	  }
-	| { type: "tool_error"; stepId?: number; name: string; message: string }
-	| { type: "usage"; usage: AgyUsage }
-	/** Synthetic: injected by the provider when the MCP bridge receives a call. */
-	| { type: "bridge_call"; callId: string; name: string; args: Record<string, unknown> };
-
-export interface TurnOutcome {
-	conversationId?: string;
-	status: "OK" | "ERROR" | "UNKNOWN";
-	response: string;
-	error?: string;
-	usage?: AgyUsage;
-	finished: boolean;
-	aborted: boolean;
-}
-
-export interface TurnHandle {
-	id: string;
-	/** Resolves when the turn settles (result event, exit, abort, recycle). */
-	outcome: Promise<TurnOutcome>;
-	/** Pull the next activity. Resolves null once the activity stream closes. */
-	next(): Promise<DriverActivity | null>;
-	/** Inject a synthetic activity (bridge inbox). No-op after settle. */
-	pushExternal(activity: DriverActivity): void;
-}
-
-export interface DriverSnapshot {
-	state: DriverState;
-	pid?: number;
-	conversationId?: string;
-	stats: {
-		spawns: number;
-		turns: number;
-		reused: number;
-		recycles: number;
-		lastRecycleReason?: string;
-		recycleReasons: Record<string, number>;
-	};
-	lifecycle: string[];
-}
+export type {
+	DriverActivity,
+	DriverProfile,
+	DriverSnapshot,
+	DriverState,
+	DriverTurnRequest,
+	TurnHandle,
+	TurnOutcome,
+} from "./driver-types.js";
 
 const LIFECYCLE_LIMIT = 24;
 const THINKING_TOKEN_FLOOR = 64;
@@ -163,7 +111,7 @@ export function isCumulativeResend(accumulated: string, next: string): boolean {
 	return accumulated.length > 0 && next.length > accumulated.length && next.startsWith(accumulated);
 }
 
-export class AgyDriver {
+export class AgyDriver implements TurnDriver {
 	#state: DriverState = "idle";
 	#child: ChildProcess | undefined;
 	#generation = 0;

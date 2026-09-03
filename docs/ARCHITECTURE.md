@@ -4,7 +4,9 @@ How the provider works internally. For build/test/debug workflow see [DEVELOPMEN
 
 ## Turn engine
 
-The provider runs one turn engine: a long-lived `agy --input-format stream-json --output-format stream-json` process per provider. Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
+The provider ships two turn engines behind one contract (`TurnDriver`,
+`src/driver-types.ts`): the default **stream-json engine** (below) and the
+opt-in **ACP engine** (bottom of this doc). Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
 
 Shared infrastructure: session binding (`sessions.json`), runtime config, the `AskAntigravity` tool, the MCP tool bridge surface, and the G1 context digest (off by default - see below).
 
@@ -58,3 +60,26 @@ By default the prompt agy receives is only the latest user message: agy keeps it
 ### Removed: the legacy-sqlite engine (1.3.2)
 
 The pre-1.3.0 engine (spawn `agy -p`, poll the SQLite conversation DB, decode protobuf step payloads) was removed in 1.3.2. agy 1.1.18 changed the step-row storage to a two-phase write (a metadata-only placeholder row that grows in place), which the polling decoder read once as an empty placeholder and never re-read: turns completed with the full reply in the database and zero text streamed to pi (issue #1, reported by @imatimba). The engine reverse-engineered an undocumented storage format, so every agy storage change risked repeating that silent failure. The stream-json engine shares none of that code path and is unaffected by storage-format changes. `AGY_ENGINE` and the `engine` config key are gone; a stale value in an existing `config.json` is ignored.
+
+## ACP engine (opt-in, official server)
+
+`config.engine: "acp"` (or `/agy engine acp`) routes turns through Google's
+official ACP server (`agy_acp_server.par`, registry id `antigravity-acp`)
+over JSON-RPC stdio. Off by default; stream-json remains the default and a
+supported secondary — phase-4 deletion is conditioned on upstream shipping
+usage fields (Gate B), per docs/ACP-ADOPTION-PLAN.md.
+
+Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/connection.ts`
+(process + protocol methods + in-connection `auto` permission answering),
+`src/acp/events.ts` (update mapping, pure), `src/acp/driver.ts`
+(`AcpDriver`). Both engines implement `TurnDriver`; `provider.ts` depends on
+the interface only and is otherwise unchanged.
+
+Engine-specific behavior: session ids are scoped per engine
+(`sid:<x>@acp`); model/effort ship as one full slug via
+`session/set_config_option` and are RE-APPLIED after every server restart
+(config does not persist); `session/load` history replay is swallowed (never
+live text); abort is teardown+kill+reload while `session/cancel` is
+unimplemented (RC01); usage tokens are absent (zero-usage fallback).
+Verified protocol shapes and the auth flow:
+docs/ACP-PROTOCOL-REFERENCE.md. Raw captures: `probe-logs/` (gitignored).

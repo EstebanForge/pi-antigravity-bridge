@@ -37,9 +37,12 @@ import {
 import { SessionStore } from "../src/sessions.js";
 import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
+import { AcpDriver } from "../src/acp/driver.js";
+import { resolveAcpBinary } from "../src/acp/connection.js";
+import type { TurnDriver } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type ThinkingTier } from "../src/config.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
-import { startMcpServer, type McpServerHandle } from "../src/mcp-server.js";
+import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
 	ACTIVATE_SKILL_TOOL_NAME,
 	activateSkillSchema,
@@ -82,11 +85,40 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const models = entries.map(toPiModel);
 
 	const store = new SessionStore();
-	// Persistent stream-json engine + the no-patch pi-tool round-trip store.
-	// The MCP bridge parks calls here; the provider emits them as real pi
-	// toolUse turns and completes them from the next call's toolResult.
-	const driver = new AgyDriver();
-	const roundTrips = new ToolRoundTrips(driver);
+	// MCP bridge handle, declared early: the ACP engine reads the bridge port
+	// at session/new / session/load time.
+	let mcpHandle: McpServerHandle | null = null;
+	// Two turn engines behind one contract (plan §9): stream-json (tested
+	// default) and the official ACP server (opt-in via config.engine, off by
+	// default). Neither spawns anything until its first turn.
+	const legacyDriver = new AgyDriver();
+	const acpDriver = new AcpDriver({
+		bin: resolveAcpBinary(loadConfig().acp.bin),
+		log: (msg, data) =>
+			console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),
+		mcpServers: () => {
+			const handle = mcpHandle;
+			if (!handle) return [];
+			// The bridge 403s any request without the shared-secret header; the
+			// legacy engine carries it via mcp_config.json, ACP via headers[].
+			return [
+				{
+					name: "pi-bridge",
+					type: "http",
+					url: `http://127.0.0.1:${handle.port}/mcp`,
+					headers: [{ name: TOKEN_HEADER, value: handle.token }],
+				},
+			];
+		},
+	});
+	// The active engine is resolved per call from config (engine switches take
+	// effect on restart, when drivers re-wire).
+	const activeDriver = (): TurnDriver => (loadConfig().engine === "acp" ? acpDriver : legacyDriver);
+	const driver = activeDriver();
+	// The no-patch pi-tool round-trip store: the MCP bridge parks calls here;
+	// the provider emits them as real pi toolUse turns and completes them from
+	// the next call's toolResult.
+	const roundTrips = new ToolRoundTrips(activeDriver);
 	const replay = new WrapperReplay();
 	// Native re-exec only emits for builtins actually active in the session;
 	// anything else (or an unknown name) falls back to the wrapper card.
@@ -99,9 +131,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	};
 	// A settled turn cannot answer its parked calls; the driver never sees
-	// ToolRoundTrips, so the provider bridges the two here.
-	driver.onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
-	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips, replay, nativeActive });
+	// ToolRoundTrips, so the provider bridges the two here (both engines).
+	const onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
+	driver.onTurnEnd = onTurnEnd;
+	acpDriver.onTurnEnd = onTurnEnd;
+	const streamSimple = createStreamSimple({ entries, store, driver, acpDriver, roundTrips, replay, nativeActive });
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -122,7 +156,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		streamSimple,
 	});
 
-	registerAgyCommand(pi, { entries, store, usingFallback, driver, getMcpPort: () => mcpHandle?.port ?? null });
+	registerAgyCommand(pi, {
+		entries,
+		store,
+		usingFallback,
+		driver,
+		acpDriver,
+		getMcpPort: () => mcpHandle?.port ?? null,
+	});
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
 	// pi-ask-antigravity). When both extensions are installed, the bridge wins
@@ -153,7 +194,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Calls park in the provider's round-trip store and complete through pi's
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
-	let mcpHandle: McpServerHandle | null = null;
 	pi.on("session_start", async (_event, ctx) => {
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
@@ -266,7 +306,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		mcpHandle = null;
 		await h?.close();
 		roundTrips.failAll("antigravity session shut down");
-		await driver.close("shutdown");
+		await legacyDriver.close("shutdown");
+		await acpDriver.close("shutdown");
 	});
 }
 
@@ -276,7 +317,8 @@ interface AgyCommandCtx {
 	entries: AgyModelEntry[];
 	store: SessionStore;
 	usingFallback: boolean;
-	driver: AgyDriver;
+	driver: TurnDriver;
+	acpDriver: AcpDriver;
 	getMcpPort: () => number | null;
 }
 
@@ -293,6 +335,7 @@ function statusText(ctx: AgyCommandCtx): string {
 	const perm = config.skipPermissions ? "auto-approved (DANGEROUS)" : "prompt (hangs in -p)";
 	return [
 		"Antigravity bridge",
+		`  engine:        ${config.engine}${config.engine === "acp" ? " (official server, opt-in)" : ""}`,
 		`  models:        ${ctx.entries.length} ${source}`,
 		`  mode:          ${config.mode}`,
 		`  permissions:   ${perm}`,
@@ -304,7 +347,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  digest:        ${config.digest ? "on" : "off"}`,
 		`  system prompt: ${config.systemPrompt ? "on" : "off"}`,
 		"",
-		"Subcommands: /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy clear",
+		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy acp-auth, /agy patch-cleanup, /agy clear",
 	].join("\n");
 }
 
@@ -312,7 +355,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, mode picker, clear sessions. Usage: /agy [status|doctor|mode [plan|accept-edits]|digest on|off|system-prompt on|off|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, engine picker, mode picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode [plan|accept-edits]|permissions on|off|digest on|off|system-prompt on|off|acp-auth|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -345,19 +388,60 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				);
 				return;
 			}
+			if (sub === "engine") {
+				if (val === "acp" || val === "stream-json") {
+					const next = saveConfig({ engine: val });
+					ui?.notify(
+						`engine set to ${next.engine}. Takes effect on the next pi start (or /reload).${next.engine === "acp" ? "\nRequires the official ACP server binary (AGY_ACP_BIN or acp.bin) and a one-time auth: /agy acp-auth" : ""}`,
+						"info",
+					);
+				} else {
+					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
+				}
+				return;
+			}
+			if (sub === "acp-auth") {
+				ui?.notify(
+					[
+						"ACP engine authentication (one-time):",
+						"1. Install the server binary (agy_acp_server.par from the ACP registry",
+						"   build URL) and point acp.bin or AGY_ACP_BIN at it.",
+						"2. Pick one credential path:",
+						'   - oauth-personal: put {"auth":{"type":"oauth-personal"}} in',
+						"     ~/.gemini/antigravity-acp/settings.json, run one turn, and open the",
+						"     login URL the server produces (headless: tunnel 127.0.0.1:<port>",
+						"     over ssh, then open the URL on your machine).",
+						'   - gemini-api-key: export GEMINI_API_KEY and set',
+						'     {"auth":{"type":"gemini-api-key"}} (headless-friendly; metered).',
+						"   The agent never reads or writes your credentials.",
+						"3. Run one turn; /agy doctor shows the server version when auth is OK.",
+					].join("\n"),
+					"info",
+				);
+				return;
+			}
 			if (sub === "doctor") {
 				const config = loadConfig();
-				const snap = ctx.driver.snapshot();
+				const engine = config.engine;
+				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
 				const port = ctx.getMcpPort();
 				const lines = [
 					"Antigravity doctor (no tokens spent)",
+					`  engine:        ${engine}`,
 					`  bridge:        ${config.bridgeTools}${port ? ` (port ${port})` : " (not running)"}`,
-					`  driver:        ${snap.state}${snap.pid ? ` pid=${snap.pid}` : ""}${snap.conversationId ? ` conv=${snap.conversationId.slice(0, 8)}` : ""}`,
+					`  driver:        ${snap.state}${snap.pid ? ` pid=${snap.pid}` : ""}${snap.conversationId ? ` session=${snap.conversationId.slice(0, 8)}` : ""}`,
 					`  driver stats:  spawns=${snap.stats.spawns} turns=${snap.stats.turns} reused=${snap.stats.reused} recycles=${snap.stats.recycles}${snap.stats.lastRecycleReason ? ` (last: ${snap.stats.lastRecycleReason})` : ""}`,
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  config:        ${CONFIG_PATH}`,
 				];
+				if (snap.engine === "acp" && snap.acp) {
+					lines.push(
+						`  acp session:   ${snap.acp.sessionId ?? "(none)"}`,
+						`  acp server:    ${snap.acp.serverVersion ?? "unknown"}`,
+						`  acp stats:     prompts=${snap.acp.prompts} created=${snap.acp.sessionsCreated} loaded=${snap.acp.sessionsLoaded} kills=${snap.acp.kills} cancel=${snap.acp.cancelSupported === null ? "unprobed" : snap.acp.cancelSupported ? "supported" : "unsupported (kill+reload)"}`,
+					);
+				}
 				if (snap.lifecycle.length > 0) {
 					lines.push("  lifecycle (last 5):");
 					for (const entry of snap.lifecycle.slice(-5)) lines.push(`    ${entry}`);

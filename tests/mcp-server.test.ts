@@ -29,6 +29,10 @@ test("mcp-server: starts without pi, writes bridge config, cleans up on close", 
 	assert.equal(r.ok, true);
 	handle = r.handle!;
 	assert.ok(r.port && r.port > 0);
+	// ACP engines read the token off the handle to build mcpServers headers[];
+	// the server rejects any request without it (403 path, tested below).
+	assert.equal(typeof handle.token, "string");
+	assert.ok(handle.token.length > 0);
 	assert.equal(bridgeMcpConfigExists(), true);
 	await handle.close();
 	handle = null;
