@@ -34,6 +34,24 @@ npm run smoke:pi
 # quota. Proves the persistent process: init binds a conversation, text deltas
 # arrive, the result settles, and a second turn reuses the process.
 AGY_LIVE=1 node --experimental-strip-types scripts/smoke-stream-json.mjs
+
+# Live smoke for the ACP engine through OUR driver stack. OPT-IN: spends a
+# little quota. Needs AGY_ACP_BIN (or acp on PATH) and a one-time
+# /agy acp-auth credential setup.
+AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+  npx tsx scripts/smoke-acp.mjs
+
+# Live smoke for the Gate F bridge e2e: the real ACP server lists the bridge
+# catalog and completes a tool call through the registered mcpServers entry.
+AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+  npx tsx scripts/smoke-acp-bridge.mjs
+
+# Live parity run: the SAME scenario set (streaming, continuity, bridge
+# round-trip, effort switch, serialization, abort+recover, usage) through
+# BOTH engines. Needs the agy CLI AND the ACP binary. Spends ~13 flash-low
+# turns; prints a per-scenario matrix and exits non-zero on any mismatch.
+AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+  npx tsx scripts/parity-live.mjs
 ```
 
 ## Debugging a hang or "stuck" turn
@@ -52,6 +70,10 @@ Most "stuck" reports trace to one of:
 - `tests/provider-digest.test.ts` - the G1 context digest builder: injects pi-side context without replaying agy's own history.
 - `tests/patch-cleanup.test.ts` - legacy-patch detection and restore, real fs via tmpdirs, no mocks.
 - `tests/mcp-server.test.ts` - the MCP tool bridge end-to-end against a real (port 0) server: capability gate, per-pid config lifecycle, shared-secret token gate, 1 MB body cap, protocol-version clamp. The provider owns the tool catalog and the round-trip; the server only ferries list/call.
+- `tests/acp-jsonrpc.test.ts` - the JSON-RPC stdio session: id correlation, typed error results, server-to-client requests, notifications, line framing (partial frames buffered across chunk boundaries, garbage lines counted not fatal).
+- `tests/acp-events.test.ts` - ACP session/update mapping onto pi activities (text, thought, tool cards) and the session/load replay suppression.
+- `tests/acp-driver.test.ts` - the ACP driver over the fake server (`tests/helpers/fake-acp-server.mjs`, scenario-selected): happy flow, load-replay, permission auto-answer, Gate D abort (cancel probe, teardown, `cancelSupported` memory), the stale-exit race (a killed connection's late exit must not fail its replacement - `ACP_FAKE_SLOW_DEATH_MS`), auth errors, park/kickIdle timer pause with remaining budget.
+- `tests/acp-config.test.ts` - engine selection narrowing (`AGY_ENGINE`/`config.engine`), acp block parsing.
 
 ## Module map
 

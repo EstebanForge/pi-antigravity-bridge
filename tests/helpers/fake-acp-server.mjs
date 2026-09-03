@@ -26,6 +26,17 @@ let pendingPromptId = null;
 let streaming = false;
 const timers = [];
 
+// Mimic RC01's signal handler: intercept SIGTERM and linger before dying, so
+// driver tests can exercise a replacement connection spawning while the old
+// one is still alive (stale-exit race).
+if (process.env.ACP_FAKE_SLOW_DEATH_MS) {
+	const ms = Number(process.env.ACP_FAKE_SLOW_DEATH_MS) || 1500;
+	process.on("SIGTERM", () => {
+		process.stderr.write(`fake: slow death ${ms}ms\n`);
+		setTimeout(() => process.exit(0), ms);
+	});
+}
+
 function send(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
@@ -163,7 +174,7 @@ async function handle(msg) {
     }
 
     case "session/cancel":
-      if (scenario === "cancel-unsupported") {
+      if (scenario === "cancel-unsupported" || process.env.ACP_FAKE_CANCEL_UNSUPPORTED === "1") {
         error(id, -32601, "Method not found", { method: "session/cancel" });
         return;
       }

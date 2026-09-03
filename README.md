@@ -1,6 +1,6 @@
 # pi-antigravity-bridge
 
-A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), both built on Google's `agy` CLI. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
+A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), built on Google's official Antigravity binaries: the `agy` CLI by default, or Google's official ACP server (opt-in). It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
 <img width="2566" height="1723" alt="SCR-20260903-sefo" src="https://github.com/user-attachments/assets/20f0c04c-d622-4b11-962a-3478f64570c2" align="center"/>
 
@@ -15,6 +15,15 @@ If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/Esteban
 You pick a Gemini model in pi's `/model` picker. pi routes each turn through this provider. A single persistent `agy` process runs in your workspace; pi feeds it each turn, parses its stream-json events, and streams the agent text back into pi token by token. Token usage is live.
 
 Multi-turn works. The provider binds a pi session to an agy conversation id (persisted under `~/.pi/agent/antigravity-bridge/sessions.json`) and resumes it on the next turn via `--conversation <id>`. agy keeps its own history, so only the latest user message is sent each turn.
+
+### Two engines
+
+Turns run through one of two engines behind the same provider surface (`config.engine`, default `stream-json`):
+
+- **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
+- **acp**: Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Opt-in while it matures: the current build (RC01) ships no usage fields (token display shows zero) and no cancel (abort tears the server down and reloads it next turn). Everything else is parity-verified live - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery - see `scripts/parity-live.mjs`.
+
+Switch with `/agy engine acp|stream-json` (takes effect on restart). ACP needs the server binary installed locally (`AGY_ACP_BIN` or `config.acp.bin`; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)), and its own one-time credential setup: run `/agy acp-auth` for the steps. The ACP server keeps its own auth state; the token never touches this code. Sessions are engine-scoped, so switching engines never crosses conversations.
 
 ## What it cannot do
 
@@ -114,6 +123,8 @@ Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins o
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
 /agy system-prompt on|off send pi's system prompt + AGENTS.md to new agy conversations (default on)
+/agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json)
+/agy acp-auth                 one-time credential setup for the ACP engine
 /agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)
 ```
@@ -135,6 +146,8 @@ For isolation when running any agent that executes commands without a confirmati
 | Variable | Purpose |
 | --- | --- |
 | `AGY_BIN` | Path to the agy binary. Defaults to `agy` on PATH. |
+| `AGY_ENGINE` | Turn engine: `stream-json` (default) or `acp`. Wins over the config file. |
+| `AGY_ACP_BIN` | Path to the ACP server binary (`agy_acp_server.par`). Defaults to `agy_acp_server.par` on PATH. Wins over `config.acp.bin`. |
 | `AGY_EXTRA_ARGS` | Extra args appended to every invocation. Whitespace-split. |
 | `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
 | `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
@@ -150,7 +163,7 @@ Build, test, and debug instructions live in [docs/DEVELOPMENT.md](docs/DEVELOPME
 
 Google's [Antigravity ToS](https://antigravity.google/terms) (Section 6) prohibits accessing the service "in connection with products not provided by us", and names as its example using tools like Hermes/OpenClaw with Antigravity OAuth. That targets reusing your credentials in a non-Google harness that calls Google's backend directly.
 
-This extension does not do that. It spawns the official, unmodified `agy` binary as a subprocess; `agy` performs its own OAuth and makes its own calls to Google. This code never sees, extracts, or reuses your token, and never contacts Antigravity's backend. It only reads what `agy` itself produces locally: its stream-json output. From Google's server-side view there is no signal that distinguishes "agy launched by pi" from "agy launched by a terminal, an IDE task runner, or cron": same signed binary, same authenticated calls.
+This extension does not do that. It spawns official, unmodified Google binaries as subprocesses - the `agy` CLI, or the official ACP server when enabled - which perform their own OAuth and make their own calls to Google. This code never sees, extracts, or reuses your token, and never contacts Antigravity's backend. It only reads what the binary itself produces locally: its stream-json output, or its ACP JSON-RPC messages. From Google's server-side view there is no signal that distinguishes "agy launched by pi" from "agy launched by a terminal, an IDE task runner, or cron": same signed binaries, same authenticated calls.
 
 Google's reported enforcement to date (the February 2026 suspensions) targeted token-reuse tools, not spawning the official CLI.
 

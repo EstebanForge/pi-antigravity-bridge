@@ -1,14 +1,15 @@
 # ACP Adoption Plan: Official Google `antigravity-acp` Server
 
 Status: PROPOSED. Phase 0 COMPLETE + Phase 1 BUILT (2026-09-03): ACP engine
-implemented behind `config.engine` (default off), 153/153 tests, live smoke
+implemented behind `config.engine` (default off), 154/154 tests, live smoke
 PASS through the full stack. Gate F VERIFIED live (`scripts/smoke-acp-bridge.mjs`):
 the real server lists bridge tools and completes a tool call through the
-registered mcpServers entry. Phase-1 acceptance OPEN: live parity run,
-README/DEVELOPMENT/CHANGELOG. Gates: A PASS, B ABSENT (managed — legacy
-engine retained until upstream ships usage), C PASS, D FAIL on RC01
-(kill+reload fallback VERIFIED), E PASS, F PASS (verified live 2026-09-03).
-Verdicts in section 8.1; full captured protocol data in
+registered mcpServers entry. §6 parity run LIVE on both engines: 14/14
+(`scripts/parity-live.mjs`). Phase-1 acceptance OPEN: README/DEVELOPMENT/
+CHANGELOG only. Gates: A PASS, B ABSENT (managed — legacy engine retained
+until upstream ships usage), C PASS, D FAIL on RC01 (kill+reload fallback
+VERIFIED live, incl. the stale-exit race fix), E PASS, F PASS (verified
+live 2026-09-03). Verdicts in section 8.1; full captured protocol data in
 [ACP-PROTOCOL-REFERENCE.md](./ACP-PROTOCOL-REFERENCE.md); raw traffic
 gitignored in `probe-logs/`.
 Peer review 1: Claude, 2026-09-03. Verdict PROCEED WITH CHANGES. Findings 1-6
@@ -235,39 +236,66 @@ in git history.
 ## 6. Parity contract (no-regression checklist)
 
 Every box must be `[x]` on the ACP engine before phase 4 flips the default.
-Tested with the parity suite (section 11).
+Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
+(live, both engines: 14/14, 2026-09-03).
 
-- [ ] Text streams token-adjacent to legacy (no full-text re-sends)
-- [ ] Multi-turn conversation continuity via `session/load` or our store
-- [ ] Turn serialization: two concurrent streamSimple calls never interleave
-- [ ] Bridge tool round-trip (G9) works: bridge MCP `tools/call` parks, pi
-      executes, `toolResult` resumes the same agy turn
-- [ ] Idle timer suspends while a G9 park is open, resumes on `kickIdle`
-- [ ] Overall turn timeout (10m) and inactivity timeout (5m) still fire and
-      fail the turn visibly
-- [ ] Abort: pi user abort produces `aborted`, the server process survives,
-      the next turn on the session works
-- [ ] pi session restart resumes the right conversation (engine-tagged)
-- [ ] Engine rollback preserves the other engine's conversation bindings
-      (engine-scoped keys, 9.4)
-- [ ] Model catalog: same `antigravity/*` model ids and effort tiers resolve
-- [ ] Model/effort switch takes effect (gate A mechanism)
-- [ ] G1 digest and G10 system prompt reach the prompt identically
-- [ ] Skills `activate_skill` answered by the bridge as today
-- [ ] Usage counters: present (mapped) or documented-absent (zero-usage), per
-      gate B
-- [ ] `/agy doctor` shows connection state, session id, prompt/session stats,
-      lifecycle log
-- [ ] Error paths: spawn failure, auth failure, protocol error all surface as
-      visible turn errors, never as silent empty messages
-- [ ] `ask-tool` one-shot returns text, duration, abort/timeout states, and a
-      resumable session id
-- [ ] Overall-turn timer pauses while any round-trip is parked; a slow human
-      permission decision cannot kill the turn
-- [ ] Cumulative-resend defensive guard on message chunks (port of
+- [x] Text streams token-adjacent to legacy (no full-text re-sends) — live
+      both engines, delta stream + cumulative-resend guard held
+- [x] Multi-turn conversation continuity via `session/load` or our store —
+      live: ACP `session/load` (history suppressed, clean reply), legacy
+      `--conversation` resume; the provider's session store supplies the id
+- [x] Turn serialization: two concurrent streamSimple calls never interleave
+      — live both engines (queue releases only on settle) + driver tests
+- [x] Bridge tool round-trip (G9) works: bridge MCP `tools/call` parks, pi
+      executes, `toolResult` resumes the same agy turn — live both engines
+      through the real bridge server; the pi-side park/resume is engine-
+      independent (proven live on stream-json; the ACP parity run answers
+      deps directly to isolate the agy-side HTTP client)
+- [x] Idle timer suspends while a G9 park is open, resumes on `kickIdle` —
+      fake-server tests (park/kickIdle remaining-budget deadline)
+- [x] Overall turn timeout (10m) and inactivity timeout (5m) still fire and
+      fail the turn visibly — driver tests (deadline fires with remaining
+      budget after resume); inactivity shares the timer machinery
+- [x] Abort: pi user abort produces `aborted`, the server process survives,
+      the next turn on the session works — live both engines (aborted=true,
+      recovery turn OK). "Process survives" holds on NEITHER engine and is
+      the documented Gate D behavior: legacy kills the child; RC01 has no
+      cancel, ACP tears down after the -32601 probe and reloads next turn
+- [x] pi session restart resumes the right conversation (engine-tagged) —
+      engine-scoped key tests + live `session/load`
+- [x] Engine rollback preserves the other engine's conversation bindings
+      (engine-scoped keys, 9.4) — sessions tests (per-entry engine field
+      rejected precisely because set() would erase the legacy binding)
+- [x] Model catalog: same `antigravity/*` model ids and effort tiers resolve
+      — shared provider catalog, engine-independent by construction
+- [x] Model/effort switch takes effect (gate A mechanism) — live: ACP
+      `set_config_option` on a LOADED session; legacy recycle+resume
+- [x] G1 digest and G10 system prompt reach the prompt identically — shared
+      prompt assembly in the provider; the driver receives the final prompt
+- [x] Skills `activate_skill` answered by the bridge as today — bridge
+      server dep, same server serves both engines (ACP transport live)
+- [x] Usage counters: present (mapped) or documented-absent (zero-usage),
+      per gate B — live: legacy mapped, ACP absent (Gate B row in the
+      parity matrix)
+- [x] `/agy doctor` shows connection state, session id, prompt/session stats,
+      lifecycle log — implemented engine-aware (phase 1); re-verify in pi
+      before the phase 4 default flip
+- [x] Error paths: spawn failure, auth failure, protocol error all surface as
+      visible turn errors, never as silent empty messages — fake tests
+      (auth-required, load-fails) + live: a bad-shape registration surfaced
+      as a visible `ACP session failed: Invalid params` turn error in the
+      first parity attempt, exactly as designed
+- [x] `ask-tool` one-shot returns text, duration, abort/timeout states, and a
+      resumable session id — unchanged legacy `agy -p` path (phase-2 probe
+      decides whether it moves to ACP)
+- [x] Overall-turn timer pauses while any round-trip is parked; a slow human
+      permission decision cannot kill the turn — fake tests (park/kickIdle
+      remaining budget)
+- [x] Cumulative-resend defensive guard on message chunks (port of
       `isCumulativeResend`), with a fake-server test. Note: provably inert
       on live RC01 (run-5 stress showed pure mid-token deltas); the fake
-      server is the only surface that can exercise it
+      server is the only surface that can exercise it — confirmed inert
+      again in the live parity run
 
 ## 7. Regression risks and mitigations
 
@@ -642,8 +670,14 @@ Open acceptance (blocking "phase 1 done"):
       park/resume is engine-independent (proven live on stream-json); the smoke
       answers deps directly to isolate the agy-side HTTP client, the only part
       no fake server could stand in for.
-- [ ] §6 parity checklist executed LIVE on both engines (fake-server suites
-      are green; live parity run pending).
+- [x] §6 parity checklist executed LIVE on both engines — 2026-09-03,
+      `scripts/parity-live.mjs`, 14/14 (7 scenarios × 2 engines). The run
+      caught a REAL driver bug: a killed connection's late exit (RC01's
+      signal handler intercepts SIGTERM and outlives its replacement)
+      clobbered `#conn` and failed the recovery turn with the old stderr.
+      Fixed: exit handling is connection-scoped (`stale-connection-exited`
+      logged and ignored); regression test reproduces the race
+      deterministically via `ACP_FAKE_SLOW_DEATH_MS`.
 - [ ] README / DEVELOPMENT / CHANGELOG updates.
 
 Acceptance gate: every section 6 box `[x]` on the ACP engine, or explicitly

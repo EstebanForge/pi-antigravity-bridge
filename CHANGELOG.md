@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- The official-server ACP engine as a second turn engine behind `config.engine` (env `AGY_ENGINE`, `/agy engine acp|stream-json`), default off: the tested stream-json engine stays default until upstream ships usage fields. New modules: `src/acp/jsonrpc.ts` (NDJSON JSON-RPC session with line buffering - stdio chunks are not newline-aligned), `src/acp/connection.ts` (initialize, session/new and load, config options, in-connection auto permissions, cancel probing), `src/acp/events.ts` (update mapping), `src/acp/driver.ts` (AcpDriver over the shared `TurnDriver` contract in `src/driver-types.ts`). Sessions are engine-scoped (`sid:<id>@acp`) so switching engines never crosses conversations.
+- `/agy engine acp|stream-json` command and `/agy acp-auth` (one-time credential setup for the ACP server, which keeps its own auth state). `/agy doctor` is engine-aware.
+- `scripts/smoke-acp.mjs` (live ACP smoke), `scripts/smoke-acp-bridge.mjs` (live Gate F bridge e2e), `scripts/parity-live.mjs` (live parity run: 7 scenarios through BOTH engines). All quota-gated via `AGY_ACP_LIVE=1`.
+- `docs/ACP-ADOPTION-PLAN.md` (adoption plan, gates, progress tracking) and `docs/ACP-PROTOCOL-REFERENCE.md` (captured wire shapes of the ACP server).
+
+### Changed
+
+- `McpServerHandle` exposes the shared-secret token (`token`), and `TOKEN_HEADER` is exported: engines other than the stream-json discovery file need the header to reach the bridge (the ACP registration was silently sending no header and would have been 403'd).
+- Driver exit handling is connection-scoped in `AcpDriver`: a killed connection's late exit (the current ACP build intercepts SIGTERM and can outlive its replacement) no longer clobbers the live connection or fails the recovery turn.
+
+### Known limitations of the ACP engine (current build, RC01)
+
+- No usage fields anywhere: token display shows zero (Gate B; the stream-json engine stays default until upstream ships usage).
+- No `session/cancel` (-32601): abort tears the connection down and reloads on the next turn; `cancelSupported` is probed once and shown in `/agy doctor`.
+- `tool_done` activity output carries agy's tool title rather than the result content (the model receives the result; only the activity display lacks it).
+
 ## [1.3.3] - 2026-09-01
 
 ### Added

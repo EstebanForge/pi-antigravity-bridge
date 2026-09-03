@@ -213,6 +213,59 @@ describe("acp/driver timers", () => {
 		assert.equal(run.driver.state, "dead");
 	});
 
+	test("stale connection's late exit never fails the replacement turn", async () => {
+		// Live race, hit during the parity run: RC01's signal handler intercepts
+		// SIGTERM and the killed server outlives its replacement by seconds.
+		// The old connection's exit used to clobber #conn and fail the recovery
+		// turn with the old stderr. Deterministic version: the fake lingers
+		// 1.5s on SIGTERM while turn 2 runs in a fresh process.
+		const dir = tmpDir();
+		const driver = new AcpDriver({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			extraEnv: {
+				ACP_FAKE_SCENARIO: "park",
+				ACP_FAKE_CANCEL_UNSUPPORTED: "1",
+				ACP_FAKE_SLOW_DEATH_MS: "1500",
+				ACP_FAKE_LOG: path.join(dir, "log.jsonl"),
+			},
+			log: () => {},
+		});
+		cleanups.push(() => {
+			void driver.close("shutdown");
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+		// Turn 1: parks open, abort tears the connection down (prompt RPC
+		// rejection settles it aborted immediately, the process lingers).
+		const controller = new AbortController();
+		const h1 = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "park me",
+			signal: controller.signal,
+		});
+		await new Promise((r) => setTimeout(r, 400));
+		controller.abort();
+		const o1 = await h1.outcome;
+		assert.equal(o1.aborted, true);
+		// Turn 2 spawns while the old process is still dying. Its late exit
+		// must be ignored; turn 2 runs to completion.
+		const h2 = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "say hi",
+		});
+		const o2 = await h2.outcome;
+		assert.equal(o2.status, "OK");
+		assert.match(o2.response, /P2/);
+	});
+
 	test("park pauses the overall deadline; kickIdle resumes it (remaining budget)", async () => {
 		// Scenario "slow": the fake never responds. Budget 1.2s: park at ~0.1s
 		// (deadline freezes), then unpark (deadline resumes with the remaining

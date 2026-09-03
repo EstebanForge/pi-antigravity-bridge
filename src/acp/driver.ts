@@ -55,6 +55,11 @@ interface ActiveTurn {
 	outcome: Promise<TurnOutcome>;
 	response: TextAccumulator;
 	sawResult: boolean;
+	/** True once the prompt RPC was issued. Abort before this point has
+	 *  nothing to cancel: probing would risk a success-as-noop answer from a
+	 *  future cancel-capable server stranding the turn in the safety-net
+	 *  wait, so the driver tears down instead. */
+	promptStarted: boolean;
 	aborted: boolean;
 	abortedBy: "signal" | "timer" | null;
 	parks: number;
@@ -271,6 +276,8 @@ export class AcpDriver implements TurnDriver {
 
 		// Prompt. Updates stream through the connection's onUpdate callback.
 		try {
+			// Nothing to cancel before the prompt RPC exists; see promptStarted.
+			turn.promptStarted = true;
 			const result = await conn.prompt(turn.sessionId, request.prompt);
 			if (turn.closed) return;
 			turn.sawResult = true;
@@ -360,7 +367,15 @@ export class AcpDriver implements TurnDriver {
 		}
 	}
 
-	#onConnectionExit(info: { stderrTail: string }): void {
+	#onConnectionExit(conn: AcpConnection, info: { stderrTail: string }): void {
+		if (this.#conn !== conn) {
+			// A replaced connection reporting its death late (RC01's signal
+			// handler intercepts SIGTERM and can outlive its replacement by
+			// seconds): its turn is long gone and the new connection owns the
+			// driver state. Clobbering #conn here would orphan the live one.
+			this.#log("stale-connection-exited", { tail: info.stderrTail.slice(-200) });
+			return;
+		}
 		const turn = this.#active;
 		this.#conn = undefined;
 		this.#state = "dead";
@@ -392,7 +407,7 @@ export class AcpDriver implements TurnDriver {
 			mcpServers: this.#opts.mcpServers,
 			log: (msg, data) => this.#log(msg, data),
 			onUpdate: (sessionId, update) => this.#onConnectionUpdate(sessionId, update),
-			onExit: (info) => this.#onConnectionExit(info),
+			onExit: (info) => this.#onConnectionExit(conn, info),
 		});
 		this.#conn = conn;
 		this.#log("spawn", { bin: resolveAcpBinary(this.#opts.bin) });
@@ -420,7 +435,7 @@ export class AcpDriver implements TurnDriver {
 		const conn = this.#conn;
 		// No session yet (killed during setup), no live connection, or a server
 		// already known not to implement cancel: teardown directly.
-		if (!conn?.alive || turn.sessionId === "" || this.#cancelUnsupported()) {
+		if (!conn?.alive || turn.sessionId === "" || !turn.promptStarted || this.#cancelUnsupported()) {
 			this.#teardownAbort(turn);
 			return;
 		}
@@ -481,6 +496,7 @@ export class AcpDriver implements TurnDriver {
 			outcome,
 			response: new TextAccumulator(),
 			sawResult: false,
+		promptStarted: false,
 			aborted: false,
 			abortedBy: null,
 			parks: 0,
@@ -507,15 +523,22 @@ export class AcpDriver implements TurnDriver {
 
 	#armOverall(turn: ActiveTurn): void {
 		const budget = this.#overallBudgetMs(turn);
-		turn.overallDeadline = this.#nowMs() + budget;
-		// Parked before timers armed (setup-time park): store the budget and let
-		// kickIdle() resume the timer on unpark.
+		if (turn.overallTimer) clearTimeout(turn.overallTimer);
+		// Parked before timers armed (setup-time park): the turn is PAUSED from
+		// birth. Keep the pause invariant (deadline === null) and store the full
+		// budget; kickIdle() resumes the timer on unpark. A stale non-null
+		// deadline here would make the next #pauseOverall recompute the
+		// remaining budget against a wall-clock instant that never ran.
 		if (turn.parks > 0) {
+			turn.overallDeadline = null;
 			turn.overallRemainingMs = budget;
 			return;
 		}
 		turn.overallRemainingMs = null;
-		if (turn.overallTimer) clearTimeout(turn.overallTimer);
+		this.#startOverallTimer(turn, budget);
+	}
+
+	#startOverallTimer(turn: ActiveTurn, ms: number): void {
 		turn.overallTimer = setTimeout(() => {
 			if (turn.closed) return;
 			turn.abortedBy = "timer";
@@ -523,7 +546,7 @@ export class AcpDriver implements TurnDriver {
 			this.#conn?.abortAll("turn deadline");
 			this.#conn?.kill();
 			this.#failTurn(turn, `ACP turn exceeded the ${(this.#overallBudgetMs(turn) / 60_000) | 0}m deadline`);
-		}, budget);
+		}, ms);
 	}
 
 	/** Pause WITHOUT resetting the deadline (remaining-budget semantics: the
@@ -544,15 +567,7 @@ export class AcpDriver implements TurnDriver {
 		const remaining = turn.overallRemainingMs;
 		turn.overallDeadline = this.#nowMs() + remaining;
 		turn.overallRemainingMs = null;
-		if (turn.overallTimer) clearTimeout(turn.overallTimer);
-		turn.overallTimer = setTimeout(() => {
-			if (turn.closed) return;
-			turn.abortedBy = "timer";
-			this.#log("timeout", { sessionId: turn.sessionId });
-			this.#conn?.abortAll("turn deadline");
-			this.#conn?.kill();
-			this.#failTurn(turn, `ACP turn exceeded the ${(this.#overallBudgetMs(turn) / 60_000) | 0}m deadline`);
-		}, remaining);
+		this.#startOverallTimer(turn, remaining);
 	}
 
 	#armIdle(turn: ActiveTurn): void {

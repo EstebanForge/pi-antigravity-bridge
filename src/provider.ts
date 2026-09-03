@@ -765,7 +765,11 @@ export function createStreamSimple(
 				roundTrips,
 				replay: deps.replay,
 				nativeActive: deps.nativeActive,
-				engine: config.engine,
+				// Record the engine of the driver that will ACTUALLY run: if the
+				// ACP driver is absent, the config switch falls back to legacy,
+				// and keying the session as @acp would store a legacy
+				// conversationId under the wrong engine scope.
+				engine: selected === deps.acpDriver ? "acp" : "stream-json",
 			});
 		} else {
 			// Miswired extension: no driver means no engine. Fail the turn visibly
