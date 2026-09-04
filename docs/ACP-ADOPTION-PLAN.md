@@ -750,7 +750,7 @@ ACP-PROTOCOL-REFERENCE.md "Phase-2 probe findings".
 Hard rule: Keep both engines in the extension. Default engine remains `stream-json`. All items below are non-breaking opt-in enhancements for the ACP engine that do NOT alter default behavior or touch legacy paths.
 
 Queue:
-1. Gate C evaluation: if `tool_call` content suffices, retire `native-tools.ts` + `WrapperReplay` on the ACP engine (keep for legacy engine until phase 4).
+1. [x] Gate C evaluation: `native-tools.ts` + `WrapperReplay` retired on the ACP engine (retained for legacy `stream-json` engine). ACP turns emit thinking labels for tool executions without parking turns for synthetic re-execution or wrapper cards; bridge MCP tools (`bridge_call`) continue parking natively. Verified: 162/162 vitest tests pass, live parity 14/14 held.
 2. Retire `diff-render.ts` on the ACP engine if ACP surfaces edit diffs equivalently; otherwise keep and note.
 3. `/agy doctor` diagnostics expansion on connection events: state, session ids, prompt count, reconnects, lifecycle log, server version from `agentInfo`.
 4. Optional: G1 digest via `embeddedContext` resource blocks instead of inline text on ACP (keep inline default for stream-json; digest churns cache either way).

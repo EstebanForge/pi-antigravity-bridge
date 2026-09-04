@@ -534,6 +534,7 @@ export interface ActivityFeatures {
 	replay?: WrapperReplay;
 	nativeActive?: (name: string) => boolean;
 	roundTrips?: ToolRoundTrips;
+	engine?: "stream-json" | "acp";
 }
 
 /** Process-wide counter: round-trip ids must never repeat across turns in
@@ -608,6 +609,11 @@ export function consumeActivity(
 			} else {
 				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
 			}
+			// Gate C: On the ACP engine, native re-exec and wrapper replay are
+			// retired. Tools execute inside the ACP server and report via updates;
+			// bridge MCP tools arrive via bridge_call. Only stream-json uses
+			// synthetic round-trips for display cards.
+			if (feats.engine === "acp") return "continue";
 			// Native re-exec: read-only agy tools re-run as REAL pi builtins so
 			// their cards render natively. Everything else replays through the
 			// display-only wrapper tool. Both end the pi call with toolUse and
@@ -724,6 +730,7 @@ async function runTurnDriver(
 		replay: deps.replay,
 		nativeActive: deps.nativeActive,
 		roundTrips: deps.roundTrips,
+		engine: deps.engine,
 	};
 
 	for (;;) {

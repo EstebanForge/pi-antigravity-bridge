@@ -15,8 +15,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
-import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import { ToolRoundTrips, createStreamSimple, toAgyEffort } from "../src/provider.js";
+import type { Api, Context, Model, SimpleStreamOptions, AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple, toAgyEffort } from "../src/provider.js";
+import { TurnDiffContext } from "../src/diff-render.js";
 import { SessionStore } from "../src/sessions.js";
 import type { AgyDriver, DriverTurnRequest } from "../src/driver.js";
 
@@ -162,4 +164,65 @@ test("streamSimple omits effort for a fixed (non-effort) model", async () => {
 	const opts = await captureTurn({ full: "claude-sonnet-4-6", id: "claude-sonnet" }, "high");
 	assert.equal(opts?.model, "claude-sonnet-4-6");
 	assert.equal(opts?.effort, undefined);
+});
+
+test("Gate C: consumeActivity parks for native-tools on stream-json engine", () => {
+	const stream = createAssistantMessageEventStream();
+	const partial: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "agy-bridge" as Api,
+		provider: "antigravity",
+		model: "gemini-flash",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	const blocks = { partial, textIdx: null, thinkingIdx: null, started: false };
+	const diffCtx = new TurnDiffContext({ toplevel: () => null, showHead: () => null });
+	const driver = capturingDriver({});
+	const roundTrips = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+
+	const res = consumeActivity(
+		stream,
+		blocks,
+		{ type: "tool_done", name: "view_file", args: { path: "/test.ts" } },
+		diffCtx,
+		process.cwd(),
+		{ replay, roundTrips, nativeActive: () => true, engine: "stream-json" },
+	);
+	assert.equal(res, "parked");
+	assert.equal(partial.stopReason, "toolUse");
+});
+
+test("Gate C: consumeActivity skips native re-exec and wrapper replay on ACP engine", () => {
+	const stream = createAssistantMessageEventStream();
+	const partial: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "agy-bridge" as Api,
+		provider: "antigravity",
+		model: "gemini-flash",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	const blocks = { partial, textIdx: null, thinkingIdx: null, started: false };
+	const diffCtx = new TurnDiffContext({ toplevel: () => null, showHead: () => null });
+	const driver = capturingDriver({});
+	const roundTrips = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+
+	const res = consumeActivity(
+		stream,
+		blocks,
+		{ type: "tool_done", name: "view_file", args: { path: "/test.ts" } },
+		diffCtx,
+		process.cwd(),
+		{ replay, roundTrips, nativeActive: () => true, engine: "acp" },
+	);
+	assert.equal(res, "continue");
+	assert.equal(partial.stopReason, "stop");
+	assert.ok(partial.content.some((b) => b.type === "thinking" && b.thinking.includes("[agy tool: view_file]")));
 });
