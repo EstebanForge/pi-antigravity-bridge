@@ -9,10 +9,10 @@
 import { FALLBACK_MODELS, toPiModel } from "../src/models.js";
 
 // Minimal mock of the ExtensionAPI surface the extension touches.
-function withMockApi<T>(fn: (api: MockApi) => Promise<T>): { result: Promise<T>; getRegistered: () => unknown; getCommand: () => unknown; getTool: () => unknown } {
+function withMockApi<T>(fn: (api: MockApi) => Promise<T>): { result: Promise<T>; getRegistered: () => unknown; getCommand: () => unknown; getTools: () => Array<{ name: string; def: Record<string, unknown> }> } {
 	let registered: unknown = null;
 	let command: unknown = null;
-	let tool: unknown = null;
+	const tools: Array<{ name: string; def: Record<string, unknown> }> = [];
 	const api: MockApi = {
 		registerProvider(id: string, config: Record<string, unknown>) {
 			registered = { id, config };
@@ -21,16 +21,18 @@ function withMockApi<T>(fn: (api: MockApi) => Promise<T>): { result: Promise<T>;
 			command = { name, def };
 		},
 		registerTool(def: Record<string, unknown>) {
-			tool = { name: def.name, def };
+			tools.push({ name: def.name as string, def });
 		},
+		on(_event: string, _fn: (...args: unknown[]) => unknown) {},
 	};
-	return { result: fn(api), getRegistered: () => registered, getCommand: () => command, getTool: () => tool };
+	return { result: fn(api), getRegistered: () => registered, getCommand: () => command, getTools: () => tools };
 }
 
 interface MockApi {
 	registerProvider(id: string, config: Record<string, unknown>): void;
 	registerCommand(name: string, def: Record<string, unknown>): void;
 	registerTool(def: Record<string, unknown>): void;
+	on(event: string, fn: (...args: unknown[]) => unknown): void;
 }
 
 // Import the extension default export. tsx resolves the relative path; the
@@ -38,7 +40,7 @@ interface MockApi {
 const extModule = await import("../extensions/index.js");
 const ext = extModule.default;
 
-const { result, getRegistered, getCommand, getTool } = withMockApi((api) => ext(api as never));
+const { result, getRegistered, getCommand, getTools } = withMockApi((api) => ext(api as never));
 
 // The extension's default export is async; agy discovery is bounded and may
 // return [] (e.g. agy not on PATH in CI)  -  the fallback catalog must still
@@ -46,7 +48,8 @@ const { result, getRegistered, getCommand, getTool } = withMockApi((api) => ext(
 await result;
 const registered = getRegistered() as { id: string; config: Record<string, unknown> } | null;
 const command = getCommand() as { name: string; def: Record<string, unknown> } | null;
-const tool = getTool() as { name: string; def: Record<string, unknown> } | null;
+const tools = getTools();
+const askTool = tools.find((t) => t.name === "AskAntigravity") ?? null;
 
 let failures = 0;
 const check = (label: string, cond: boolean) => {
@@ -57,7 +60,7 @@ const check = (label: string, cond: boolean) => {
 console.log("extension load smoke test");
 check("registerProvider was called", registered !== null);
 check("registerCommand was called for /agy", command !== null && command.name === "agy");
-check("registerTool called for AskAntigravity", tool !== null && tool.name === "AskAntigravity");
+check("registerTool called for AskAntigravity", askTool !== null && askTool.name === "AskAntigravity");
 if (registered) {
 	check("provider id is 'antigravity'", registered.id === "antigravity");
 	const cfg = registered.config;
