@@ -54,6 +54,11 @@ export interface AgyConfig {
 	defaultModel: string;
 	/** AskAntigravity tool: default thinking tier when the alias names none. */
 	defaultThinking: ThinkingTier;
+	/** Register the AskAntigravity one-shot delegation tool. Default on.
+	 *  off removes the tool entirely for users who want only the provider
+	 *  and models (no delegation tool in the model's window context).
+	 *  Takes effect at pi start (or /reload). */
+	askTool: boolean;
 	/** Set after the one-time notice about a leftover legacy invokeTool patch
 	 *  on the installed pi. The notice never repeats; /agy patch-cleanup is
 	 *  always available. */
@@ -96,6 +101,7 @@ const DEFAULTS: AgyConfig = {
 	skipPermissions: true,
 	defaultModel: "flash",
 	defaultThinking: "medium",
+	askTool: true,
 	bridgeTools: "all",
 	digest: false,
 	systemPrompt: true,
@@ -149,6 +155,10 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 	const defaultThinking: ThinkingTier =
 		thinkRaw === "low" || thinkRaw === "high" ? thinkRaw : "medium";
 
+	const askTool = process.env.AGY_ASK_TOOL !== undefined
+		? ["1", "true", "on"].includes(process.env.AGY_ASK_TOOL.toLowerCase())
+		: file.askTool ?? DEFAULTS.askTool;
+
 	const bridgeRaw = (process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
 	const bridgeTools: BridgeTools =
 		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp"
@@ -179,6 +189,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		skipPermissions,
 		defaultModel,
 		defaultThinking,
+		askTool,
 		bridgeTools,
 		digest,
 		systemPrompt,

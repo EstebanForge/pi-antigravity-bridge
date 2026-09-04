@@ -104,11 +104,12 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 
 | Key | Values | Default |
 | --- | --- | --- |
+| `askTool` | `on` (register the AskAntigravity delegation tool), `off` (no delegation tool; provider and models only) | `on` |
 | `bridgeTools` | `none` (bridge off), `all` (every non-builtin tool, incl. other `Ask*` delegations), `mcp` (pi-mcp-adapter tools + skills bridge only) | `all` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 | `systemPrompt` | `on` (prepend pi's system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` - to the first prompt of each new agy conversation) or `off` (agy-native behavior) | `on` |
 
-Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins over the file, so while `AGY_DIGEST` or `AGY_SYSTEM_PROMPT` is set, the matching `/agy digest` or `/agy system-prompt` toggle persists a value that never takes effect.
+Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_ASK_TOOL`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins over the file, so while `AGY_DIGEST` or `AGY_SYSTEM_PROMPT` is set, the matching `/agy digest` or `/agy system-prompt` toggle persists a value that never takes effect.
 
 The `activate_skill` catalog mirrors pi's directory-based skill discovery: the two global dirs plus project dirs, the latter only when pi has trusted the project (same gate pi itself applies). Pi's other skill sources - the `skills` settings array, `package.json` entries, and `--skill` CLI paths - are not mirrored and won't appear in the catalog.
 
@@ -123,6 +124,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
+/agy ask on|off           register the AskAntigravity delegation tool (default on; off keeps only the provider and models, even with pi-ask-antigravity installed)
 /agy model flash|pro|gemini   fallback model for the AskAntigravity tool; callers may override per call
 /agy thinking low|medium|high fallback thinking tier for the AskAntigravity tool; callers may override per call
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)

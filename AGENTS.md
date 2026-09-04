@@ -15,7 +15,7 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
     *   `patch-cleanup.ts`: Detects a leftover invokeTool patch from pre-1.3.0 installs; `/agy patch-cleanup` restores the original files from backup.
     *   `discovery.ts`: Conversation-id binding for the AskAntigravity one-shot tool (snapshot/diff + pid fd-scan; `agy -p` never prints the id). Scheduled for deletion in phase 4.
     *   `ask-tool.ts`: The `AskAntigravity` one-shot delegation tool (model/thinking defaults). Stays on `agy -p` until phase 4; `mode: "plan"` keeps that path permanently (ACP has no review-only mode).
-    *   `config.ts`: Configuration defaults (engine, acp.bin, bridgeTools, digest, systemPrompt), directory resolution, and environment parsing.
+    *   `config.ts`: Configuration defaults (engine, acp.bin, bridgeTools, askTool, digest, systemPrompt), directory resolution, and environment parsing.
     *   `diff-render.ts`: `stream-json` only: git-sourced edit diffs into pi's thinking stream. `formatInlineDiff` (no git) renders ACP's native diffs. ACP edits arrive as diffs in `tool_call content[]`.
     *   `mcp-server.ts`: Internal bridge HTTP/MCP server lifecycle and capability gating; `tools/call` parks into the provider round-trip. Shared-secret `x-bridge-token`; handle exposes `token` for ACP `mcpServers` headers.
     *   `models.ts`: Antigravity model catalog loading and background cache refreshing; `toPiModel(entry, input)` advertises text+image input only when the engine is `acp`.

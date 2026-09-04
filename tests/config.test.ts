@@ -57,6 +57,17 @@ test("config: invalid bridgeTools value falls back to the default surface", () =
 	}
 });
 
+test("config: askTool defaults on and round-trips through load/save", () => {
+	const p = tmpConfig();
+	try {
+		assert.equal(loadConfig(p).askTool, true);
+		saveConfig({ askTool: false }, p);
+		assert.equal(loadConfig(p).askTool, false);
+	} finally {
+		fs.rmSync(path.dirname(p), { recursive: true, force: true });
+	}
+});
+
 test("config: digest defaults off and round-trips through load/save", () => {
 	const p = tmpConfig();
 	try {

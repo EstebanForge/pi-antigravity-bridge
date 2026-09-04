@@ -209,8 +209,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// AskAntigravity tool: one-shot delegation to agy (ported from
 	// pi-ask-antigravity). When both extensions are installed, the bridge wins
 	// and pi-ask-antigravity registers nothing (its load-time defer guard
-	// detects this package via import.meta.resolve).
-	await registerAskAntigravityTool(pi, toolModels);
+	// detects this package via import.meta.resolve). Opt-out: askTool=false
+	// (config file, AGY_ASK_TOOL, /agy ask, or the picker) skips registration
+	// entirely - users who want only the provider keep a clean tool list.
+	// Note: the active flag below is set regardless of askTool, so
+	// pi-ask-antigravity keeps deferring even then: off means NO delegation
+	// tool from either package, not a fallback to pi-ask-antigravity.
+	if (loadConfig().askTool) await registerAskAntigravityTool(pi, toolModels);
 
 	// Display-only wrapper tool: the provider emits mutating agy steps as
 	// toolCalls against it (never re-executed - execute() replays the output
@@ -403,6 +408,7 @@ interface PendingConfig {
 	skipPermissions?: boolean;
 	defaultModel?: string;
 	defaultThinking?: ThinkingTier;
+	askTool?: boolean;
 	bridgeTools?: BridgeTools;
 	digest?: boolean;
 	systemPrompt?: boolean;
@@ -421,6 +427,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		row("models:", `${ctx.entries.length} ${source}`),
 		row("mode:", config.mode),
 		row("permissions:", perm),
+		row("AskAntigravity tool:", config.askTool ? "on" : "off"),
 		row("AskAntigravity model:", config.defaultModel),
 		row("AskAntigravity thinking:", config.defaultThinking),
 		row("sessions:", `${ctx.store.size} bound`),
@@ -429,7 +436,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		row("digest:", config.digest ? "on" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
 		"",
-		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy bridge all|mcp|none, /agy model <alias>, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
+		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
 	].join("\n");
 }
 
@@ -437,7 +444,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode plan|accept-edits|permissions on|off|bridge all|mcp|none|model <alias>|thinking low|medium|high|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -634,6 +641,20 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				return;
 			}
+			if (sub === "ask") {
+				if (val === "on" || val === "off") {
+					const next = saveConfig({ askTool: val === "on" });
+					ui?.notify(
+						next.askTool
+							? "AskAntigravity tool on. Registered on the next pi start (or /reload)."
+							: "AskAntigravity tool off. It is removed from the model's tool list on the next pi start (or /reload). Provider and models stay.",
+						"info",
+					);
+				} else {
+					ui?.notify(`AskAntigravity tool: ${loadConfig().askTool ? "on" : "off"}\nusage: /agy ask on|off`, "info");
+				}
+				return;
+			}
 			if (sub === "digest") {
 				if (val === "on" || val === "off") {
 					const next = saveConfig({ digest: val === "on" });
@@ -724,6 +745,14 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			values: ["auto-approved", "prompt"],
 		},
 		{
+			id: "ask",
+			label: "AskAntigravity tool",
+			description:
+				"Register the AskAntigravity one-shot delegation tool. off removes it from the model's tool list (provider and models stay, even with the separate pi-ask-antigravity package installed). Takes effect on the next pi start (or /reload).",
+			currentValue: config.askTool ? "on" : "off",
+			values: ["on", "off"],
+		},
+		{
 			id: "model",
 			label: "AskAntigravity model",
 			description:
@@ -785,6 +814,8 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 					pending.defaultModel = newValue;
 				} else if (id === "thinking") {
 					pending.defaultThinking = newValue as ThinkingTier;
+				} else if (id === "ask") {
+					pending.askTool = newValue === "on";
 				} else if (id === "bridge") {
 					pending.bridgeTools = newValue as BridgeTools;
 				} else if (id === "digest") {
@@ -832,6 +863,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			pending.skipPermissions !== undefined
 				? `permissions=${next.skipPermissions ? "auto-approved" : "prompt"}`
 				: null,
+			pending.askTool !== undefined ? `AskAntigravity tool=${next.askTool ? "on" : "off"}` : null,
 			pending.defaultModel !== undefined ? `AskAntigravity model=${next.defaultModel}` : null,
 			pending.defaultThinking !== undefined ? `AskAntigravity thinking=${next.defaultThinking}` : null,
 			pending.bridgeTools !== undefined ? `bridge=${next.bridgeTools}` : null,
