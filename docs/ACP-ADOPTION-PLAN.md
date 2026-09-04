@@ -745,52 +745,29 @@ ACP-PROTOCOL-REFERENCE.md "Phase-2 probe findings".
   changes); cancel probe done (phase 1); image probe end-to-end (probe +
   live smoke).
 
-### Phase 3: consolidation
+### Phase 3: consolidation (immediate priority, opt-in only)
 
-- AskAntigravity stays on the legacy one-shot path through phase 3 (review 2,
-  finding 5: migrating it while `stream-json` is still the default breaks
-  legacy-only users who never onboarded ACP auth, and legacy conversation
-  ids cannot resume under ACP). Migration moves to phase 4, simultaneous
-  with the legacy deletion.
-- Gate C evaluation: if `tool_call` content suffices, retire
-  `native-tools.ts` + `WrapperReplay` on the ACP engine (keep for legacy
-  engine until phase 4). `diff-render.ts` retires with them only if ACP
-  surfaces edit diffs equivalently; otherwise keep and note.
-- `/agy doctor` rebuilt on connection events: state, session ids, prompt
-  count, reconnects, lifecycle log, server version from `agentInfo`.
-- Optional: G1 digest via `embeddedContext` resource blocks instead of inline
-  text (keep the inline default; the digest churns the cache the same way
-  either way).
-- Acceptance: one-shot parity (text, abort, timeout, resumable id), doctor
-  parity, deleted-code census committed.
+Hard rule: Keep both engines in the extension. Default engine remains `stream-json`. All items below are non-breaking opt-in enhancements for the ACP engine that do NOT alter default behavior or touch legacy paths.
 
-### Phase 4: default flip and legacy deletion
+Queue:
+1. Gate C evaluation: if `tool_call` content suffices, retire `native-tools.ts` + `WrapperReplay` on the ACP engine (keep for legacy engine until phase 4).
+2. Retire `diff-render.ts` on the ACP engine if ACP surfaces edit diffs equivalently; otherwise keep and note.
+3. `/agy doctor` diagnostics expansion on connection events: state, session ids, prompt count, reconnects, lifecycle log, server version from `agentInfo`.
+4. Optional: G1 digest via `embeddedContext` resource blocks instead of inline text on ACP (keep inline default for stream-json; digest churns cache either way).
 
-- Gate A verdict PASS is a precondition for the flip (section 8). On FAIL
-  the default stays `stream-json` and the flip waits for upstream.
-- `engine` default becomes `"acp"` after one full release cycle with both
-  engines shipping. CHANGELOG announcement, README rewrite of the engine
-  section, `docs/ARCHITECTURE.md` engine section rewritten.
-- AskAntigravity migrates to the ACP one-shot (moved here from phase 3 by
-  review 2, finding 5): spawn/attach server, `session/new` +
-  `session/prompt`, real resumable ids. `discovery.ts` and its `/proc`
-  fd-scan delete together with the legacy engine. COMMITTED EXCEPTION
-  (review 4, finding 4): `mode: "plan"` delegations keep the legacy
-  `agy -p --mode plan` path unless the phase-2 equivalence probe proves an
-  ACP route; under `auto` policy a plan delegation on ACP could write.
-- Legacy deletion is CONDITIONED on Gate B lifting (review 4, finding 2):
-  `stream-json` stays as a secondary `config.engine` option until upstream
-  ships usage fields. Deleting it while ACP reports zero-usage would be a
-  permanent observability regression, violating the binding constraint. All
-  legacy-only code with no ACP dependency (e.g. `discovery.ts`) deletes on
-  schedule.
-- One release later (and only once Gate B lifted): delete `src/driver.ts`,
-  `src/stream-events.ts`, the legacy paths in tests, and `agy`-CLI-coupled
-  code that ACP replaced. No
-  backward-compat shim (house rule).
-- Acceptance: default-flip release ships with the parity suite as its
-  acceptance evidence; deletion release has zero references to the removed
-  modules.
+Acceptance: parity suite remains 14/14, doctor parity, no breakage to stream-json default.
+
+### Phase 4: default flip and legacy deletion (deferred, next month)
+
+All items below are deferred until a full soak cycle of both engines has completed and upstream conditions are met:
+
+1. AskAntigravity migration to ACP one-shot (migrating while `stream-json` is default breaks legacy-only users who haven't onboarded ACP auth; legacy conversation ids cannot resume under ACP). `mode: "plan"` delegations keep the legacy `agy -p --mode plan` path (committed exception).
+2. Delete `src/discovery.ts` (`/proc` fd-scan) once AskAntigravity migration completes.
+3. Default flip: `config.engine` default becomes `"acp"` after one full release soak cycle with both engines shipping. Gate A PASS is verified.
+4. Upstream Gate B resolution: Google ships usage counters in ACP payloads.
+5. Legacy engine deletion: `src/driver.ts`, `src/stream-events.ts`, and legacy tests deleted one release after the flip AND only once Gate B has lifted (so zero-usage is never forced).
+
+Acceptance: default-flip release ships with the parity suite as acceptance evidence; deletion release has zero references to the removed modules.
 
 ## 11. Test strategy
 
