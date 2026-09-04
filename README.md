@@ -4,6 +4,7 @@ A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](ht
 
 <img width="2566" height="1723" alt="SCR-20260903-sefo" src="https://github.com/user-attachments/assets/20f0c04c-d622-4b11-962a-3478f64570c2" align="center"/>
 
+
 <img width="1272" height="842" alt="SCR-20260903-sfcu" src="https://github.com/user-attachments/assets/c483613b-10ff-4d2f-9893-027d84130ac6" align="center" />
 
 If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
