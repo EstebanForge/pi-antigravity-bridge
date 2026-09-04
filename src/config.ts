@@ -39,7 +39,7 @@ export interface AcpConfig {
 }
 
 export interface AgyConfig {
-	/** Turn engine. Switching requires a pi restart (drivers wire at load). */
+	/** Engine. Switching requires a pi restart (drivers wire at load). */
 	engine: Engine;
 	/** Official-server ACP engine options (used when engine = "acp"). */
 	acp: AcpConfig;

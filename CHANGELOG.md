@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.4] - 2026-09-04
+
+### Added
+
+- The Google sign-in URL now surfaces in pi. The ACP server hands the OAuth URL only to the browser-open call (nothing on stdout/stderr, headless or not), so a `BROWSER` wrapper script records the URL and forwards to the real opener; the connection watches the record file and logs it as an `auth-url` event. The extension toasts it at warning level with the ssh port-forward command for the redirect port, so logins work from SSH sessions on remote machines; local users keep the automatic browser open and get the URL as a fallback. An existing `BROWSER` setting is chained, not replaced.
+
+### Fixed
+
+- ACP login pending was reported only at the moment setup wrote `settings.json`, so after the restart, with `settings.json` in place but the browser login never completed, every check went silent: no toast, no hint, while the first ACP message had no token to use. `needsLogin` now tracks the token file (stat only, never read): `oauth-personal` without `acp_token.json` is login-pending, so the switch-time toast, the picker, and the `session_start` self-heal keep saying so on every start until the login is done.
+
+### Changed
+
+- Engine switching is command-only now: `/agy engine stream-json|acp`. The bare-`/agy` settings picker no longer carries an Engine row (nor the post-save setup run), so the switch surface cannot be hit accidentally; `/agy engine acp` keeps the self-service setup (binary + auth) and the login warning. The picker's plan+acp (RC01) guard stays in a narrower form: the mode row alone can still produce `plan` while the engine is `acp`.
+- ACP login-pending messages rewritten for end users: what happens (the server opens the Google sign-in page in your browser on the first Antigravity message), when (after the restart or immediately, per moment), and which account (your Antigravity subscription, the same Google account as the `agy` CLI). No URL to open manually. All remaining moments (engine switch, session start) now toast at warning level so the pending action stands out.
+- The "Turn engine" wording became "Engine" in the README env table, the config comment, and the architecture doc heading; the picker row itself is gone (engine switching is command-only, see above).
+
 ## [1.4.3] - 2026-09-04
 
 ### Added

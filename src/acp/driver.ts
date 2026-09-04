@@ -41,6 +41,9 @@ export interface AcpDriverOptions {
 	/** Extra argv for the binary (tests: node + fake-server script). */
 	binArgs?: string[];
 	extraEnv?: Record<string, string>;
+	/** Record file for BROWSER-captured OAuth URLs; passed to the connection,
+	 *  which logs "auth-url" when the server tries to open a login. */
+	authUrlFile?: string;
 	/** Bridge registration for session/new AND session/load. */
 	mcpServers?: () => AcpMcpServer[];
 	log?: (msg: string, data?: unknown) => void;
@@ -422,6 +425,7 @@ export class AcpDriver implements TurnDriver {
 			bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin),
 			binArgs: this.#opts.binArgs,
 			extraEnv: this.#opts.extraEnv,
+			authUrlFile: this.#opts.authUrlFile,
 			cwd: request.cwd,
 			mcpServers: this.#opts.mcpServers,
 			log: (msg, data) => this.#log(msg, data),

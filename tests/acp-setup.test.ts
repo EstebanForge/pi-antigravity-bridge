@@ -180,9 +180,35 @@ describe("acp/setup ensureAcpReady", () => {
 		// settings.json is untouched (the server uses auth.type, not env presence).
 		assert.equal(status.auth, "oauth-personal");
 		assert.deepEqual(status.actions, []);
-		assert.equal(status.needsLogin, false);
+		// settings.json alone is not a login: the token file only appears after
+		// the browser round-trip, so setup must keep reporting login-pending
+		// (the session_start self-heal repeats the notice until then).
+		assert.equal(status.needsLogin, true);
 		assert.equal(fs.readFileSync(settingsFile, "utf8"), before);
 		assert.equal(fs.readdirSync(gdir).includes("acp_token.json"), false);
+	});
+
+	test("a completed login (token file present) is not login-pending", async () => {
+		const root = tmpDir();
+		const gdir = tmpDir();
+		writeAuthType("oauth-personal", gdir);
+		fs.writeFileSync(path.join(gdir, "acp_token.json"), "{}");
+		fs.mkdirSync(path.join(root, "current"), { recursive: true });
+		const bin = path.join(root, "current", "agy_acp_server.par");
+		fs.writeFileSync(bin, "#!/bin/sh\n");
+		fs.chmodSync(bin, 0o755);
+
+		const status = await ensureAcpReady({
+			installRoot: root,
+			geminiDir: gdir,
+			env: {},
+			fetchImpl: () => Promise.reject(new Error("network must not be touched")),
+		});
+		assert.equal(status.ok, true);
+		if (!status.ok) return;
+		assert.equal(status.auth, "oauth-personal");
+		assert.deepEqual(status.actions, []);
+		assert.equal(status.needsLogin, false);
 	});
 
 	test("install failure returns the manual fallback text", async () => {

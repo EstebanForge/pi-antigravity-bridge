@@ -227,6 +227,18 @@ export interface AuthState {
 	type?: string;
 }
 
+/** Token presence WITHOUT reading any credential value: acp_token.json is
+ *  stat()ed, never opened. The token only exists after the browser login
+ *  round-trip, so this is the real proof of a completed login. */
+function tokenPresent(target: string): boolean {
+	try {
+		fs.statSync(path.join(target, "acp_token.json"));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** Auth state WITHOUT reading any credential value: settings.json carries
  *  only auth.type (+ non-secret gcp placement), acp_token.json is stat()ed. */
 export function readAuthState(dir?: string): AuthState {
@@ -240,12 +252,7 @@ export function readAuthState(dir?: string): AuthState {
 	} catch {
 		/* absent or garbage = unconfigured */
 	}
-	try {
-		fs.statSync(path.join(target, "acp_token.json"));
-		return { configured: true, type: "token" };
-	} catch {
-		return { configured: false };
-	}
+	return tokenPresent(target) ? { configured: true, type: "token" } : { configured: false };
 }
 
 /** Write a minimal auth block into settings.json. The server reads this file
@@ -344,12 +351,18 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 			};
 		}
 	}
+	// settings.json alone proves nothing: setup writes it before the login,
+	// the token file only appears after the browser round-trip. oauth-personal
+	// without a token = login still pending, and every caller (switch toast,
+	// session_start self-heal) must keep saying so until the token exists.
+	// gemini-api-key has no browser login; a present token file means done.
+	const needsLogin = auth.type !== "gemini-api-key" && !tokenPresent(gdir);
 	return {
 		ok: true,
 		bin: binary.bin!,
 		binarySource: binary.source!,
 		auth: auth.type ?? "token",
-		needsLogin: false,
+		needsLogin,
 		actions,
 	};
 }

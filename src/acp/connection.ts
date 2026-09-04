@@ -20,8 +20,10 @@
 //     LIST; a dead URL is accepted at session time (lazy connect)
 
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parseAuthPort, readLastUrl } from "./browser-capture.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
 
 export interface AcpMcpServer {
@@ -63,6 +65,11 @@ export interface AcpConnectionOptions {
 	 *  "auto" selects the first allow option; "deny" fail-closes to the first
 	 *  reject option. Absent = deny (fail closed). */
 	permissions?: () => "auto" | "deny";
+	/** Record file for BROWSER-captured OAuth URLs (src/acp/browser-capture.ts).
+	 *  The server hands the login URL only to the browser-open call, so the
+	 *  wrapper records it there; the connection watches the file and logs
+	 *  "auth-url" {url, port} for every new URL. */
+	authUrlFile?: string;
 }
 
 const INIT_TIMEOUT_MS = 30_000;
@@ -80,6 +87,8 @@ export class AcpConnection {
 	agentInfo: Record<string, unknown> | undefined;
 	/** Last known mode/model config echo from set_config_option results. */
 	lastConfigOptions: unknown = undefined;
+	#authUrlWatcher: fs.FSWatcher | undefined;
+	#lastAuthUrl: string | null = null;
 
 	constructor(opts: AcpConnectionOptions) {
 		this.#opts = opts;
@@ -117,6 +126,7 @@ export class AcpConnection {
 			...(this.#opts.extraEnv ? { env: { ...process.env, ...this.#opts.extraEnv } } : {}),
 		});
 		this.#child = child;
+		if (this.#opts.authUrlFile) this.#watchAuthUrl();
 		child.stdout?.setEncoding("utf8");
 		child.stderr?.setEncoding("utf8");
 		// Pipe failures arrive asynchronously as stream 'error' events; the sync
@@ -373,9 +383,36 @@ export class AcpConnection {
 		}
 	}
 
+	/** Surface OAuth login URLs captured by the BROWSER wrapper: every new
+	 *  URL in the record file is logged once as "auth-url" {url, port}. Best
+	 *  effort only - a broken watch never affects turns. */
+	#watchAuthUrl(): void {
+		const file = this.#opts.authUrlFile!;
+		try {
+			const watcher = fs.watch(file, () => this.#emitAuthUrl());
+			// Without a listener, a watch 'error' event escapes as uncaught.
+			watcher.on("error", () => {
+				/* record file gone: login URL surfacing is off until respawn */
+			});
+			this.#authUrlWatcher = watcher;
+		} catch {
+			/* no watch; the one-shot check below still covers earlier writes */
+		}
+		this.#emitAuthUrl(); // URLs recorded before the watch started
+	}
+
+	#emitAuthUrl(): void {
+		const url = readLastUrl(this.#opts.authUrlFile!);
+		if (!url || url === this.#lastAuthUrl) return;
+		this.#lastAuthUrl = url;
+		this.#opts.log("auth-url", { url, port: parseAuthPort(url) });
+	}
+
 	#finish(reason: string): void {
 		if (this.#exited) return;
 		this.#exited = true;
+		this.#authUrlWatcher?.close();
+		this.#authUrlWatcher = undefined;
 		this.abortAll(`connection exited: ${reason || "process gone"}`);
 		this.#opts.onExit({ code: null, signal: null, stderrTail: this.#stderrTail });
 	}

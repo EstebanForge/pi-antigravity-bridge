@@ -2,7 +2,7 @@
 
 How the provider works internally. For build/test/debug workflow see [DEVELOPMENT.md](./DEVELOPMENT.md).
 
-## Turn engine
+## Engine
 
 The provider ships two turn engines behind one contract (`TurnDriver`,
 `src/driver-types.ts`): the default **stream-json engine** (below) and the

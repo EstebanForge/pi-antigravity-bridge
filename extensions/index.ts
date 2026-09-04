@@ -40,6 +40,7 @@ import { SessionStore } from "../src/sessions.js";
 import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
+import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
@@ -57,6 +58,12 @@ import {
 import { mapAgyToolToNative } from "../src/native-tools.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
+
+// Last UI seen (session_start / /agy commands). The ACP login URL arrives
+// via the driver log sink, which has no command context; the stash lets that
+// sink toast instead of only logging to stderr. Module scope: both the
+// default export (session_start, log sink) and registerAgyCommand assign it.
+let activeUi: ExtensionUIContext | null = null;
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -102,6 +109,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// ACP self-heal runs once per process (session_start re-fires on /reload;
 	// a ready setup is two file stats, so re-running is harmless anyway).
 	let acpSelfHealRan = false;
+	// OAuth URL capture: the server hands the login URL only to the
+	// browser-open call (nothing on stdio), so a BROWSER wrapper records it
+	// and the driver logs it as "auth-url". Local users keep the automatic
+	// browser open; over SSH the URL surfaces for copy-paste with the
+	// port-forward command.
+	const authCapture = setupAuthUrlCapture();
+	if (!authCapture && process.platform !== "win32") {
+		// Rare (unwritable data dir). Surfacing the diagnostic: without it,
+		// login URLs would silently stop appearing on headless boxes.
+		console.error("[antigravity-bridge] OAuth URL capture unavailable; login URL surfacing is off (setup failed).");
+	}
 	// Two turn engines behind one contract (plan §9): stream-json (tested
 	// default) and the official ACP server (opt-in via config.engine, off by
 	// default). Neither spawns anything until its first turn.
@@ -121,7 +139,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Resolved per connection: the setup flow can install the binary and
 		// update acp.bin mid-session; the next turn picks it up (no restart).
 		bin: () => loadConfig().acp.bin,
+		...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
 		log: (msg, data) => {
+			if (msg === "auth-url") {
+				const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
+				if (!url) return;
+				const ssh = port ? `\nSSH session? Forward the port on your machine first:\n  ssh -N -L ${port}:127.0.0.1:${port} <user@host>` : "";
+				const text = `Google sign-in URL for the ACP engine:\n${url}${ssh}`;
+				if (activeUi) activeUi.notify(text, "warning");
+				else console.error(`[antigravity-bridge acp] ${text}`);
+				return;
+			}
 			if (!acpFailures.has(msg)) return;
 			console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`);
 		},
@@ -241,6 +269,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
 	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.hasUI) activeUi = ctx.ui;
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
 		// and offer /agy patch-cleanup. Never auto-edits the install.
@@ -270,8 +299,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
 					}
 					if (status.needsLogin) {
-						const msg = acpLoginPending("Your next antigravity message opens the browser;");
-						if (ctx.hasUI) ctx.ui.notify(msg, "info");
+						const msg = acpLoginPending("Your next Antigravity message opens the Google sign-in page in your browser.");
+						if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 						else console.error(`[antigravity-bridge] ${msg}`);
 					}
 					return;
@@ -372,6 +401,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		}
 	});
 	pi.on("session_shutdown", async () => {
+		// The UI is going away; a later auth-url must fall back to stderr
+		// instead of toasting into a dead UI (where it would be lost).
+		activeUi = null;
 		const h = mcpHandle;
 		mcpHandle = null;
 		await h?.close();
@@ -384,11 +416,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 // --- /agy command -----------------------------------------------------------
 
 /** Shared body for every ACP-login-pending moment (session_start self-heal,
- *  /agy engine acp, picker): names the component so users know WHAT they are
- *  logging into, and that it is the same Google account as the agy CLI with
- *  its own token file. `browserTrigger` says when the browser opens. */
+ *  /agy engine acp, picker). End-user simple: what happens, when, which
+ *  account. The server opens the browser itself, so there is no URL to
+ *  open manually. `browserTrigger` says when that happens. */
 function acpLoginPending(browserTrigger: string): string {
-	return `One-time Google login pending for the antigravity-acp server, Google's own ACP binary and a separate component of the Antigravity suite (agy desktop, agy editor, agy cli, agy acp). ${browserTrigger} Sign in with your Antigravity subscription account: the same Google account as your agy CLI login, but its own login and token file. One-time; tokens stay on your machine and this extension never sees them.`;
+	return `One-time sign-in needed to finish ACP setup. ${browserTrigger} Use the Google account of your Antigravity subscription (the same account as your agy CLI login). If no browser opens, pi shows the sign-in URL to copy. The token stays on your machine; this extension never sees it.`;
 }
 
 interface AgyCommandCtx {
@@ -403,7 +435,6 @@ interface AgyCommandCtx {
 }
 
 interface PendingConfig {
-	engine?: Engine;
 	mode?: AgyMode;
 	skipPermissions?: boolean;
 	defaultModel?: string;
@@ -447,6 +478,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
+			if (ui) activeUi = ui;
 			const mode = cmdCtx.mode;
 			const sub = (args ?? "").trim().split(/\s+/)[0]?.toLowerCase();
 			const val = (args ?? "").trim().split(/\s+/)[1]?.toLowerCase();
@@ -501,12 +533,14 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						return;
 					}
 					saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
-					ui?.notify(
-						status.needsLogin
-							? `ACP engine ready. ${acpLoginPending("Your first ACP message (after the next pi start or /reload) opens the browser;")}`
-							: `ACP engine ready (auth: ${status.auth}). Takes effect on the next pi start (or /reload).`,
-						"info",
-					);
+					if (status.needsLogin) {
+						ui?.notify(
+							`ACP engine set. ${acpLoginPending("After the restart (pi restart or /reload), your first Antigravity message opens the Google sign-in page in your browser.")}`,
+							"warning",
+						);
+					} else {
+						ui?.notify(`ACP engine ready (auth: ${status.auth}). Takes effect on the next pi start (or /reload).`, "info");
+					}
 				} else {
 					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
 				}
@@ -547,8 +581,10 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						"   the antigravity-acp registry; point acp.bin or AGY_ACP_BIN at it.",
 						'2. Default: put {"auth":{"type":"oauth-personal"}} in',
 						"   ~/.gemini/antigravity-acp/settings.json, run one turn, and complete the",
-						"   Google login that opens in your browser (headless: tunnel 127.0.0.1:<port>",
-						"   over ssh, then open the URL on your machine).",
+						"   Google login that opens in your browser. No browser (SSH session)?",
+						"   pi shows the sign-in URL to copy; forward the redirect port over ssh",
+						"   (ssh -N -L <port>:127.0.0.1:<port> <user@host>), then open the URL",
+						"   on your machine.",
 						'   Headless alternative: GEMINI_API_KEY + {"auth":{"type":"gemini-api-key"}}',
 						"   (metered paid API - not your Antigravity plan). The key is used only",
 						"   when that type is selected; with the default oauth-personal in place,",
@@ -711,23 +747,15 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	});
 }
 
-/** Interactive settings picker (TUI only). Rows: the full runtime config
- *  surface (engine, mode, permissions, model, thinking, bridge, digest,
- *  system prompt). Picking acp runs the same self-service setup as
- *  `/agy engine acp` (binary + auth) right after the save. */
+/** Interactive settings picker (TUI only). Rows: the runtime config surface
+ *  (mode, permissions, model, thinking, bridge, digest, system prompt).
+ *  Engine switching is command-only: /agy engine stream-json|acp (the
+ *  command also runs self-service binary + auth setup for acp). */
 async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const config = loadConfig();
 	const pending: PendingConfig = {};
 
 	const items: SettingItem[] = [
-		{
-			id: "engine",
-			label: "Turn engine",
-			description:
-				"stream-json: the streaming engine (default, supported). acp: Google's official ACP server (experimental, opt-in). Switch takes effect on the next pi start (or /reload); acp also runs binary + auth setup on save.",
-			currentValue: config.engine,
-			values: ["stream-json", "acp"],
-		},
 		{
 			id: "mode",
 			label: "Execution mode",
@@ -804,9 +832,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			Math.min(items.length + 4, 15),
 			getSettingsListTheme(),
 			(id, newValue) => {
-				if (id === "engine") {
-					pending.engine = newValue as Engine;
-				} else if (id === "mode") {
+				if (id === "mode") {
 					pending.mode = newValue as AgyMode;
 				} else if (id === "permissions") {
 					pending.skipPermissions = newValue === "auto-approved";
@@ -840,16 +866,13 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 
 	if (Object.keys(pending).length === 0) return;
 
-	// The engine latches at load: a plan mode active while the effective
-	// engine is (or will be) acp would silently run non-plan. ACP has no
-	// review-only mode (RC01); refuse the combination. Both sides fall back
-	// to the on-disk config so a fresh engine pick over a saved plan (and
-	// vice versa) is caught too.
-	const nextEngine = pending.engine ?? ctx.engine;
+	// The picker cannot switch engines (command-only: /agy engine), but the
+	// mode row can still produce plan while the latched engine is acp. ACP
+	// has no review-only mode (RC01); refuse the combination.
 	const nextMode = pending.mode ?? config.mode;
-	if (nextMode === "plan" && nextEngine === "acp") {
+	if (nextMode === "plan" && ctx.engine === "acp") {
 		ui.notify(
-			"plan + acp is not supported (RC01): the ACP engine has no review-only mode. Save mode accept-edits or pick the stream-json engine first.",
+			"plan + acp is not supported (RC01): the ACP engine has no review-only mode. /agy engine stream-json first, or /agy mode accept-edits.",
 			"warning",
 		);
 		return;
@@ -858,7 +881,6 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 	try {
 		const next = saveConfig(pending);
 		const changed = [
-			pending.engine !== undefined ? `engine=${next.engine}` : null,
 			pending.mode ? `mode=${next.mode}` : null,
 			pending.skipPermissions !== undefined
 				? `permissions=${next.skipPermissions ? "auto-approved" : "prompt"}`
@@ -873,26 +895,6 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			.filter(Boolean)
 			.join(", ");
 		ui.notify(`Saved: ${changed}`, "info");
-		if (pending.engine === "acp") {
-			// Same flow as /agy engine acp: persist the switch, then prepare
-			// the server so the restart just works.
-			ui.notify("Preparing the ACP server (binary + auth)…", "info");
-			const status = await ensureAcpReady({
-				configBin: loadConfig().acp.bin,
-				onProgress: (m) => ui.notify(m, "info"),
-			});
-			if (status.ok) {
-				saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
-				ui.notify(
-					status.needsLogin
-						? `ACP server ready. ${acpLoginPending("Your first ACP message (after the restart) opens the browser;")}`
-						: `ACP server ready (auth: ${status.auth}).`,
-					"info",
-				);
-			} else {
-				ui.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
-			}
-		}
 	} catch (err) {
 		ui.notify(
 			`Failed to save config: ${err instanceof Error ? err.message : String(err)}`,
