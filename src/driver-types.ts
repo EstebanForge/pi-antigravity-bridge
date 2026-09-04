@@ -59,6 +59,10 @@ export type DriverActivity =
 			args: Record<string, unknown>;
 			output?: string;
 			durationSeconds?: number;
+			/** ACP only: the server's native edit diff from `tool_call`
+			 *  content[] ({type:"diff", path, oldText?, newText}). Legacy never
+			 *  sets it; the provider renders it without any git subprocess. */
+			diff?: { path: string; oldText?: string; newText: string };
 	  }
 	| { type: "tool_error"; stepId?: number; name: string; message: string }
 	| { type: "usage"; usage: AgyUsage }

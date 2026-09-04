@@ -88,8 +88,9 @@ describe("acp/events mapUpdate", () => {
 		assert.deepEqual(mapped, { kind: "tool_done", toolCallId: "t1", output: "THE RESULT" });
 	});
 
-	test("completed tool without text content falls back to rawOutput", () => {
-		// Diff entries carry no text; rawOutput is the only display then.
+	test("completed tool without text content falls back to rawOutput and carries the diff", () => {
+		// Diff entries carry no text (rawOutput is the only display text), but
+		// the native diff must still ride to the provider (Gate C rendering).
 		const mapped = mapUpdate({
 			sessionUpdate: "tool_call_update",
 			toolCallId: "t1",
@@ -97,7 +98,28 @@ describe("acp/events mapUpdate", () => {
 			content: [{ type: "diff", path: "/x/a.txt", newText: "hello\n" }],
 			rawOutput: "Running edit_file",
 		});
-		assert.deepEqual(mapped, { kind: "tool_done", toolCallId: "t1", output: "Running edit_file" });
+		assert.deepEqual(mapped, {
+			kind: "tool_done",
+			toolCallId: "t1",
+			output: "Running edit_file",
+			diff: { path: "/x/a.txt", newText: "hello\n" },
+		});
+	});
+
+	test("completed edit diff carries oldText when the server sends it", () => {
+		// Run-6 native edit shape: {type:"diff", path, newText, oldText?}.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "t2",
+			status: "completed",
+			content: [{ type: "diff", path: "/x/b.txt", oldText: "a\n", newText: "a\nb\n" }],
+		});
+		assert.deepEqual(mapped, {
+			kind: "tool_done",
+			toolCallId: "t2",
+			output: undefined,
+			diff: { path: "/x/b.txt", oldText: "a\n", newText: "a\nb\n" },
+		});
 	});
 
 	test("tool_call_update failed maps to tool_error with the raw output as message", () => {

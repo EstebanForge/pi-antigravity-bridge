@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 - Driver exit handling is connection-scoped in `AcpDriver`: a killed connection's late exit (the current ACP build intercepts SIGTERM and can outlive its replacement) no longer clobbers the live connection or fails the recovery turn.
 - `tool_call_update` display: the completed call's output now prefers the `content[]` text over `rawOutput`, which the server fills with a display title ("Call bridge_echo") rather than the result. The result itself reaches the model out-of-band; only the activity display was wrong.
 - Tool-frame mapping fixes from the phase-2 probe: MCP `rawInput` args unwrap the `arguments` envelope, and the tool name prefers `_meta.mcp.tool` over the "<server>_<tool>" title.
+- Gate C consolidation on the ACP engine: `native-tools.ts` re-exec and `WrapperReplay` parking are retired for ACP turns (tool steps render as thinking labels; `bridge_call` round-trips unaffected); ACP-native edit diffs from `tool_call` `content[]` render directly into the thinking stream via the new in-memory `formatInlineDiff` (same line-numbered format, zero git subprocesses). The git-sourced `diff-render.ts` path remains solely for the `stream-json` engine.
 
 ### Known limitations of the ACP engine (current build, RC01)
 

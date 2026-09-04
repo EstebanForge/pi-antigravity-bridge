@@ -353,7 +353,7 @@ export class AcpDriver implements TurnDriver {
 				const entry = turn.toolCalls.get(mapped.toolCallId);
 				const name = entry?.name ?? "tool";
 				const args = entry?.args ?? {};
-				this.#emit(turn, { type: "tool_done", name, args, output: mapped.output });
+				this.#emit(turn, { type: "tool_done", name, args, output: mapped.output, diff: mapped.diff });
 				return;
 			}
 			case "tool_error": {

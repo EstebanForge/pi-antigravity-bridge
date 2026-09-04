@@ -18,11 +18,20 @@
  *  carries nothing the driver consumes (plan/commands are doctor/phase-2
  *  material; user_message_chunk is load replay and must never reach pi as
  *  live text). */
+/** Native edit diff carried in tool_call content[] (run 6: edits arrive AS
+ *  DIFFS: {type:"diff", path, newText, optional oldText}). The provider
+ *  formats it in memory — no git subprocess needed on the ACP engine. */
+export interface AcpEditDiff {
+	path: string;
+	oldText?: string;
+	newText: string;
+}
+
 export type MappedUpdate =
 	| { kind: "text"; delta: string }
 	| { kind: "thought"; delta: string }
 	| { kind: "tool_start"; toolCallId: string; name: string; args: Record<string, unknown> }
-	| { kind: "tool_done"; toolCallId: string; output?: string }
+	| { kind: "tool_done"; toolCallId: string; output?: string; diff?: AcpEditDiff }
 	| { kind: "tool_error"; toolCallId: string; message: string }
 	| { kind: "replay_user" }
 	| null;
@@ -59,7 +68,13 @@ export function mapUpdate(update: unknown): MappedUpdate {
 				// content[] first (edits carry their diff there); rawOutput alone is
 				// often just the server's display title, not the result (probe
 				// 2026-09-03: completed MCP call, rawOutput "Call bridge_echo").
-				return { kind: "tool_done", toolCallId: id, output: contentText(u.content) ?? stringField(u.rawOutput) };
+				const diff = contentDiff(u.content);
+				return {
+					kind: "tool_done",
+					toolCallId: id,
+					output: contentText(u.content) ?? stringField(u.rawOutput),
+					...(diff ? { diff } : {}),
+				};
 			}
 			return null; // in_progress or unknown status: nothing to render yet
 		}
@@ -87,6 +102,22 @@ function metaToolName(meta: unknown): string | undefined {
 	const mcp = recordField(recordField(meta).mcp);
 	const tool = mcp.tool;
 	return typeof tool === "string" && tool.length > 0 ? tool : undefined;
+}
+
+/** First diff entry of a completed tool call: edits carry their native diff
+ *  in content[] as {type:"diff", path, newText, optional oldText} (run 6). */
+function contentDiff(content: unknown): AcpEditDiff | undefined {
+	if (!Array.isArray(content)) return undefined;
+	for (const entry of content) {
+		const e = recordField(entry);
+		if (e.type !== "diff") continue;
+		const path = stringField(e.path);
+		const newText = stringField(e.newText);
+		if (!path || newText === undefined) continue;
+		const oldText = stringField(e.oldText);
+		return oldText !== undefined ? { path, oldText, newText } : { path, newText };
+	}
+	return undefined;
 }
 
 /** Display text of a completed tool call. content[] entries wrap their

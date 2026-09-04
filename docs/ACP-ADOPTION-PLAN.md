@@ -750,10 +750,10 @@ ACP-PROTOCOL-REFERENCE.md "Phase-2 probe findings".
 Hard rule: Keep both engines in the extension. Default engine remains `stream-json`. All items below are non-breaking opt-in enhancements for the ACP engine that do NOT alter default behavior or touch legacy paths.
 
 Queue:
-1. [x] Gate C evaluation: `native-tools.ts` + `WrapperReplay` retired on the ACP engine (retained for legacy `stream-json` engine). ACP turns emit thinking labels for tool executions without parking turns for synthetic re-execution or wrapper cards; bridge MCP tools (`bridge_call`) continue parking natively. Verified: 162/162 vitest tests pass, live parity 14/14 held.
-2. Retire `diff-render.ts` on the ACP engine if ACP surfaces edit diffs equivalently; otherwise keep and note.
-3. `/agy doctor` diagnostics expansion on connection events: state, session ids, prompt count, reconnects, lifecycle log, server version from `agentInfo`.
-4. Optional: G1 digest via `embeddedContext` resource blocks instead of inline text on ACP (keep inline default for stream-json; digest churns cache either way).
+1. [x] Gate C evaluation: `native-tools.ts` + `WrapperReplay` retired on the ACP engine (retained for legacy `stream-json` engine). ACP turns emit thinking labels for tool executions without parking turns for synthetic re-execution or wrapper cards; bridge MCP tools (`bridge_call`) continue parking natively. Verified: live parity 14/14 held.
+2. [x] Retire `diff-render.ts` (git path) on the ACP engine — DONE 2026-09-04. The phase-2 probe proved ACP surfaces edit diffs natively (`tool_call` `content[]` `{type:"diff", path, oldText?, newText}`), which is richer AND cheaper than the git-sourced path: implemented as (a) `events.ts` extracts the first diff entry into the `tool_done` activity (`AcpEditDiff`); (b) `provider.ts` renders it on ACP turns via the new `formatInlineDiff` (in-memory `generateDiffString`, same line-numbered format, ZERO git subprocesses) instead of `TurnDiffContext.diffEdit`; (c) `diff-render.ts` git machinery remains solely for the `stream-json` engine. Tests: diff extraction (with/without `oldText`), ACP thinking-stream rendering (`+2 B` line-numbered), label-only fallback, no parking, legacy path unchanged. Verified: 165/165 vitest, tsc clean, live parity 14/14.
+3. [ ] `/agy doctor` diagnostics expansion on connection events: state, session ids, prompt count, reconnects, lifecycle log, server version from `agentInfo`.
+4. [ ] Optional: G1 digest via `embeddedContext` resource blocks instead of inline text on ACP (keep inline default for stream-json; digest churns cache either way).
 
 Acceptance: parity suite remains 14/14, doctor parity, no breakage to stream-json default.
 

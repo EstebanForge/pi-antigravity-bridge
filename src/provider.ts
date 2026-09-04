@@ -36,7 +36,7 @@ import { type AgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
 import path from "node:path";
-import { TurnDiffContext, createExecGitOps, parseEditToolInput } from "./diff-render.js";
+import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
 
 const DEFAULT_TIMEOUT_MIN = 10;
 
@@ -592,7 +592,24 @@ export function consumeActivity(
 			// Rendering happens on completion (output/diff available).
 			return "continue";
 		case "tool_done": {
-			// G8: agy file edits surface a git-sourced diff in a thinking block.
+			// Gate C (ACP): the server already executed the tool and carries the
+			// edit diff in the protocol (content[] {type:"diff", path, oldText?,
+			// newText}). Render it straight into the thinking stream — same
+			// line-numbered format as the legacy G8 path, but computed in memory:
+			// no git subprocess, no native re-exec, no wrapper replay, no parking.
+			if (feats.engine === "acp") {
+				const d = activity.diff;
+				if (d) {
+					appendThinking(stream, blocks, `[agy edit: ${path.basename(d.path)}]\n`);
+					const diffText = formatInlineDiff(d.oldText ?? "", d.newText);
+					if (diffText) appendThinking(stream, blocks, `${diffText}\n`);
+				} else {
+					appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+				}
+				return "continue";
+			}
+			// G8 (stream-json): agy file edits surface a git-sourced diff in a
+			// thinking block. The server sends no diff here, so OLD comes from git.
 			let inputJson: string | undefined;
 			try {
 				inputJson = JSON.stringify(activity.args);
@@ -609,11 +626,6 @@ export function consumeActivity(
 			} else {
 				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
 			}
-			// Gate C: On the ACP engine, native re-exec and wrapper replay are
-			// retired. Tools execute inside the ACP server and report via updates;
-			// bridge MCP tools arrive via bridge_call. Only stream-json uses
-			// synthetic round-trips for display cards.
-			if (feats.engine === "acp") return "continue";
 			// Native re-exec: read-only agy tools re-run as REAL pi builtins so
 			// their cards render natively. Everything else replays through the
 			// display-only wrapper tool. Both end the pi call with toolUse and

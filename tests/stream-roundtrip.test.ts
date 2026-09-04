@@ -290,6 +290,77 @@ test("consumeActivity: without a replay store, tool steps stay label-only", () =
 	assert.ok(!types.some((ty) => ty.startsWith("toolcall")));
 });
 
+test("consumeActivity: acp engine renders the native diff in thinking, never parks", async () => {
+	const driver = new AgyDriver();
+	const rt = new ToolRoundTrips(driver);
+	const replay = new WrapperReplay();
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{
+			type: "tool_done",
+			name: "edit_file",
+			args: { file_path: "/w/a.txt" },
+			diff: { path: "/w/a.txt", oldText: "a\nb\n", newText: "a\nB\nb\n" },
+			output: "Run edit_file?",
+		},
+		new TurnDiffContext(createExecGitOps()),
+		"/w",
+		{ replay, nativeActive: () => true, roundTrips: rt, engine: "acp" },
+	);
+	assert.equal(out, "continue");
+	// Diff renders as text in the thinking stream (pi-style), no toolUse card.
+	const thinking = collected
+		.filter((e) => (e as { type: string }).type === "thinking_delta")
+		.map((e) => (e as { delta: string }).delta)
+		.join("");
+	assert.ok(thinking.includes("[agy edit: a.txt]"));
+	// pi's generateDiffString line-number format: +<line> <text>.
+	assert.ok(thinking.includes("+2 B"));
+	assert.ok(!types(collected).some((ty) => ty.startsWith("toolcall")));
+	// Nothing parked: no round-trips, no wrapper replay entry.
+	assert.equal(rt.pendingIds.length, 0);
+	assert.equal(replay.size, 0);
+});
+
+test("consumeActivity: acp engine without a diff stays label-only", () => {
+	const stream = createAssistantMessageEventStream();
+	const blocks = newBlocks();
+	const collected: unknown[] = [];
+	const origPush = stream.push.bind(stream);
+	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
+		collected.push(e);
+		return origPush(e as never);
+	};
+	const out = consumeActivity(
+		stream,
+		blocks,
+		{ type: "tool_done", name: "bridge_echo", args: { text: "x" }, output: "Call bridge_echo" },
+		new TurnDiffContext(createExecGitOps()),
+		"/w",
+		{ engine: "acp" },
+	);
+	assert.equal(out, "continue");
+	const thinking = collected
+		.filter((e) => (e as { type: string }).type === "thinking_delta")
+		.map((e) => (e as { delta: string }).delta)
+		.join("");
+	assert.ok(thinking.includes("[agy tool: bridge_echo]"));
+	assert.ok(!types(collected).some((ty) => ty.startsWith("toolcall")));
+});
+
+function types(events: unknown[]): string[] {
+	return events.map((e) => (e as { type: string }).type);
+}
+
 test("parser: live stream shapes - text_delta on agent_response and SUCCESS result", () => {
 	// Captured from live `agy --output-format stream-json` (2026-09): the agent
 	// text arrives as text_delta and the terminal status is SUCCESS, not OK.

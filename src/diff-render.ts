@@ -188,3 +188,18 @@ function capLines(diff: string, max: number): string {
 	const dropped = lines.length - max;
 	return `${lines.slice(0, max).join("\n")}\n[... ${dropped} more diff lines]`;
 }
+
+/** Format an in-memory before/after pair as a line-numbered diff with pi's
+ *  own generateDiffString. No git subprocess: the ACP engine supplies
+ *  oldText/newText directly in tool_call content[] (Gate C), so the provider
+ *  renders the native diff without touching the repo. Exported for the
+ *  provider; TurnDiffContext keeps the git-sourced path for stream-json. */
+export function formatInlineDiff(
+	oldContent: string,
+	newContent: string,
+	maxDiffLines: number = DEFAULT_MAX_DIFF_LINES,
+): string {
+	if (oldContent === newContent) return "";
+	const { diff } = generateDiffString(oldContent, newContent);
+	return capLines(diff, maxDiffLines);
+}
