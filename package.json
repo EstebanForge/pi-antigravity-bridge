@@ -1,14 +1,20 @@
 {
   "name": "@estebanforge/pi-antigravity-bridge",
   "version": "1.4.0",
-  "description": "Streaming Gemini provider for pi, built on Google's official Antigravity binaries and official Google ACP server for Agy. Registers antigravity/* models in pi's /model picker; drives agy through its stream-json protocol (default) or the official ACP server (opt-in), with a no-patch MCP tool bridge for pi tools and live usage on stream-json.",
+  "description": "Streaming Gemini provider for pi on the Antigravity ACP server (official Google ACP) or the stream-json agy CLI. antigravity/* models in pi's /model picker, no-patch MCP bridge: agy runs pi's tools.",
   "keywords": [
     "pi-package",
     "pi-extension",
     "antigravity",
+    "antigravity-acp",
     "agy",
     "gemini",
     "google",
+    "google-acp",
+    "acp",
+    "agent-client-protocol",
+    "mcp",
+    "mcp-server",
     "provider",
     "streaming"
   ],
