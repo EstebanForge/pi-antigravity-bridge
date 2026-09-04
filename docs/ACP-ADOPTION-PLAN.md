@@ -6,7 +6,7 @@ PASS through the full stack. Gate F VERIFIED live (`scripts/smoke-acp-bridge.mjs
 the real server lists bridge tools and completes a tool call through the
 registered mcpServers entry. §6 parity run LIVE on both engines: 14/14
 (`scripts/parity-live.mjs`). Phase-1 acceptance: ALL `[x]` (docs included).
-Gates: A PASS, B ABSENT (managed — legacy engine retained
+Gates: A PASS, B ABSENT (managed — streaming engine retained
 until upstream ships usage), C PASS, D FAIL on RC01 (kill+reload fallback
 VERIFIED live, incl. the stale-exit race fix), E PASS, F PASS (verified
 live 2026-09-03). Verdicts in section 8.1; full captured protocol data in
@@ -20,7 +20,7 @@ Peer review 2: Antigravity (agy), 2026-09-03. Verdict PROCEED WITH CHANGES.
 7 findings integrated: Gate A made a blocking gate for the default flip (the
 ACP binary takes no model flags, so the recycle fallback could not carry a
 model), sessions re-keyed per engine (`@acp` suffix) after the engine-field
-design was shown to erase legacy bindings on rollback, parked-timer pause
+design was shown to erase streaming bindings on rollback, parked-timer pause
 changed to remaining-budget semantics, acp-permission plumbing specified
 through a TurnDriver interface, session/cancel + session/close pulled into
 phase 1, AskAntigravity migration moved from phase 3 to phase 4.
@@ -47,7 +47,7 @@ Adopt the official Google ACP server (`agy_acp_server.par`, registry id
 switch. The existing stream-json engine stays the default until the ACP
 engine proves parity. Every change is an improvement or a one-to-one
 replacement. No functionality is removed until a later phase deletes the
-legacy engine on purpose.
+streaming engine on purpose.
 
 Cross-references: [ARCHITECTURE.md](./ARCHITECTURE.md),
 [PI-BRIDGE-GAPS.md](./PI-BRIDGE-GAPS.md), [DEVELOPMENT.md](./DEVELOPMENT.md).
@@ -165,8 +165,8 @@ is an unmaintained contract. ACP is the maintained one.
 | Module | Role today | Disposition under ACP |
 | --- | --- | --- |
 | `src/provider.ts` | streamSimple: pi Context to agy turn to pi events; G9 round-trips; G1 digest; G10 system prompt | KEEP unchanged (additive thought-delta `if` only). Engine-agnostic by contract |
-| `src/driver.ts` | persistent stream-json process, turn queue, recycle, timers | KEEP as legacy engine. DELETE in phase 4 |
-| `src/stream-events.ts` | NDJSON parser + usage mapping | KEEP as legacy. DELETE in phase 4 |
+| `src/driver.ts` | persistent stream-json process, turn queue, recycle, timers | KEEP as streaming engine. DELETE in phase 4 |
+| `src/stream-events.ts` | NDJSON parser + usage mapping | KEEP as streaming. DELETE in phase 4 |
 | `src/sessions.ts` | pi session to agy conversation store | KEEP. Add `engine` tag (section 9.4) |
 | `src/config.ts` | runtime config | KEEP. Add engine + acp block (section 9.5) |
 | `src/models.ts` | `agy models` to pi Model projection | KEEP. Catalog source stays the CLI until ACP exposes one (probe A.6) |
@@ -256,10 +256,10 @@ Every box must be `[x]` on the ACP engine before phase 4 flips the default.
 Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
 (live, both engines: 14/14, 2026-09-03).
 
-- [x] Text streams token-adjacent to legacy (no full-text re-sends) — live
+- [x] Text streams token-adjacent to streaming (no full-text re-sends) — live
       both engines, delta stream + cumulative-resend guard held
 - [x] Multi-turn conversation continuity via `session/load` or our store —
-      live: ACP `session/load` (history suppressed, clean reply), legacy
+      live: ACP `session/load` (history suppressed, clean reply), streaming
       `--conversation` resume; the provider's session store supplies the id
 - [x] Turn serialization: two concurrent streamSimple calls never interleave
       — live both engines (queue releases only on settle) + driver tests
@@ -276,23 +276,23 @@ Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
 - [x] Abort: pi user abort produces `aborted`, the server process survives,
       the next turn on the session works — live both engines (aborted=true,
       recovery turn OK). "Process survives" holds on NEITHER engine and is
-      the documented Gate D behavior: legacy kills the child; RC01 has no
+      the documented Gate D behavior: streaming kills the child; RC01 has no
       cancel, ACP tears down after the -32601 probe and reloads next turn
 - [x] pi session restart resumes the right conversation (engine-tagged) —
       engine-scoped key tests + live `session/load`
 - [x] Engine rollback preserves the other engine's conversation bindings
       (engine-scoped keys, 9.4) — sessions tests (per-entry engine field
-      rejected precisely because set() would erase the legacy binding)
+      rejected precisely because set() would erase the streaming binding)
 - [x] Model catalog: same `antigravity/*` model ids and effort tiers resolve
       — shared provider catalog, engine-independent by construction
 - [x] Model/effort switch takes effect (gate A mechanism) — live: ACP
-      `set_config_option` on a LOADED session; legacy recycle+resume
+      `set_config_option` on a LOADED session; streaming recycle+resume
 - [x] G1 digest and G10 system prompt reach the prompt identically — shared
       prompt assembly in the provider; the driver receives the final prompt
 - [x] Skills `activate_skill` answered by the bridge as today — bridge
       server dep, same server serves both engines (ACP transport live)
 - [x] Usage counters: present (mapped) or documented-absent (zero-usage),
-      per gate B — live: legacy mapped, ACP absent (Gate B row in the
+      per gate B — live: streaming mapped, ACP absent (Gate B row in the
       parity matrix)
 - [x] `/agy doctor` shows connection state, session id, prompt/session stats,
       lifecycle log — implemented engine-aware (phase 1); re-verify in pi
@@ -303,7 +303,7 @@ Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
       as a visible `ACP session failed: Invalid params` turn error in the
       first parity attempt, exactly as designed
 - [x] `ask-tool` one-shot returns text, duration, abort/timeout states, and a
-      resumable session id — unchanged legacy `agy -p` path (phase-2 probe
+      resumable session id — unchanged `agy -p` path (phase-2 probe
       decides whether it moves to ACP)
 - [x] Overall-turn timer pauses while any round-trip is parked; a slow human
       permission decision cannot kill the turn — fake tests (park/kickIdle
@@ -396,8 +396,8 @@ What to record for each gate:
 | A | Model + effort switch per session? | `set_config_option` (or equivalent) switches both; next prompt uses them | NONE viable: the ACP binary takes no model flags, so respawn-per-switch cannot carry a model; a settings.json rewrite per switch is the only theoretical path and is rejected (unproven, racy). Gate A FAIL blocks the phase 4 default flip; ACP stays opt-in; the gap goes upstream |
 | B | Usage anywhere? | Any update or `_meta` carries token counts | Zero-usage documented; README notes it |
 | C | `tool_call` content richness | rawInput/output/locations enough to retire WrapperReplay + native-tools | Keep current replay machinery unchanged |
-| D | Cancel latency + state | `stopReason: cancelled` within ~2s; session reusable after | Keep kill semantics on legacy; on ACP keep kill as escalation path |
-| E | Startup cost | Cold start < 5s, steady RSS sane for a long-lived process | Spawn per turn-group only (like legacy recycle cadence) |
+| D | Cancel latency + state | `stopReason: cancelled` within ~2s; session reusable after | Keep kill semantics on streaming; on ACP keep kill as escalation path |
+| E | Startup cost | Cold start < 5s, steady RSS sane for a long-lived process | Spawn per turn-group only (like the streaming recycle cadence) |
 | F | MCP `mcpServers` registration | Bridge `tools/list` visible to the agent mid-turn | Keep bridge wired some other protocol-sanctioned way; if none, G9 parking breaks and phase 1 is BLOCKED |
 | F.7 | Slash behavior | Commands not auto-expanded against our prompt text | Prefix-safe prompt assembly unchanged |
 
@@ -478,7 +478,7 @@ scripts/smoke-acp.mjs  live smoke, gated by AGY_ACP_LIVE=1 (spends quota),
 `AcpDriver` matches the existing `AgyDriver` public surface: `state`,
 `activeHandle`, `run()`, `reentry()`, `kickIdle()`, `set onTurnEnd()`,
 `snapshot()`, `close()`. `DriverActivity` gains one additive variant; the
-legacy engine never emits it:
+streaming engine never emits it:
 
 ```ts
 // stream-events/driver today:            { type: "thought"; tokens: number }
@@ -487,7 +487,7 @@ legacy engine never emits it:
 ```
 
 `provider.ts` change: when `delta` is present call `appendThinking`, else keep
-the current token-count behavior. One `if`, additive, legacy untouched.
+the current token-count behavior. One `if`, additive, streaming untouched.
 
 Interface extraction (review 2, finding 7): `provider.ts` imports the
 concrete `AgyDriver` class today; deleting `driver.ts` in phase 4 would break
@@ -504,7 +504,7 @@ correlation-map entry (the pending `session/prompt` request, any unanswered
 client-side requests), the driver settles the turn outcome as
 `ERROR`/`aborted` (never left pending), and `onTurnEnd` fires so the
 provider's `roundTrips.failAll()` fails parked round-trips exactly as the
-legacy driver's `failTurn` path does. Nothing is ever written to a dead
+streaming driver's `failTurn` path does. Nothing is ever written to a dead
 socket; no promise survives the kill. Mirrors `ToolRoundTrips.failAll()`.
 
 Event mapping (`src/acp/events.ts`):
@@ -524,7 +524,7 @@ Event mapping (`src/acp/events.ts`):
 | `refusal` / `max_turn_requests` / `max_tokens` | TurnOutcome ERROR / OK+note | `error` / `stop` + `errorMessage` |
 | `user_message_chunk` (during `session/load` only) | suppressed (history replay) | never emitted to pi as live text |
 
-Defensive guard ported from the legacy engine: if an `agent_message_chunk`
+Defensive guard ported from the streaming engine: if an `agent_message_chunk`
 repeats the full accumulated text instead of a delta, detect and slice (the
 `isCumulativeResend` lesson; same agy binary lineage, same quirk class).
 Guard plus test ship in phase 1. Honest labeling: the ACP spec defines chunks
@@ -575,24 +575,24 @@ parked and, on settle, re-arms it with the REMAINING budget (`deadline -
 now`), never a fresh cap: the overall timer is a turn DEADLINE, not an
 inactivity guard. Every park carries its own timeout (`BRIDGE_TIMEOUT_MS`),
 so a paused deadline cannot hang forever. Driver-local (AcpDriver only);
-legacy behavior untouched; ships in phase 1.
+streaming behavior untouched; ships in phase 1.
 
 ### 9.4 Sessions schema (engine-scoped keys)
 
 The first design (a per-entry `engine` field) was rejected in review 2:
 `set()` overwrites the single `sid:<pi-session>` key, so one ACP turn ERASES
-the legacy conversation binding, and a rollback loses continuity, breaking
+the streaming conversation binding, and a rollback loses continuity, breaking
 the section 13 guarantee. Engines scope at the KEY level instead:
 
 ```jsonc
 // ~/.pi/agent/antigravity-bridge/sessions.json
 {
-  "sid:<pi-session>":     { "conversationId": "<legacy id>", "lastStepIdx": -1, "lastMessageCount": 42 },
+  "sid:<pi-session>":     { "conversationId": "<streaming id>", "lastStepIdx": -1, "lastMessageCount": 42 },
   "sid:<pi-session>@acp": { "conversationId": "<ACP sessionId>", "lastStepIdx": -1, "lastMessageCount": 42 }
 }
 ```
 
-- Un-suffixed keys belong to the legacy engine, byte-compatible with every
+- Un-suffixed keys belong to the streaming engine, byte-compatible with every
   persisted store; ACP keys carry an `@acp` suffix appended by
   `sessionKey()` when `config.engine === "acp"`.
 - Engines never touch each other's keys: rollback keeps both continuations,
@@ -747,11 +747,11 @@ ACP-PROTOCOL-REFERENCE.md "Phase-2 probe findings".
 
 ### Phase 3: consolidation (immediate priority, opt-in only)
 
-Hard rule: Keep both engines in the extension. Default engine remains `stream-json`. All items below are non-breaking opt-in enhancements for the ACP engine that do NOT alter default behavior or touch legacy paths.
+Hard rule: Keep both engines in the extension. Default engine remains `stream-json`. All items below are non-breaking opt-in enhancements for the ACP engine that do NOT alter default behavior or touch streaming paths.
 
 Queue:
-1. [x] Gate C evaluation: `native-tools.ts` + `WrapperReplay` retired on the ACP engine (retained for legacy `stream-json` engine). ACP turns emit thinking labels for tool executions without parking turns for synthetic re-execution or wrapper cards; bridge MCP tools (`bridge_call`) continue parking natively. Verified: live parity 14/14 held.
-2. [x] Retire `diff-render.ts` (git path) on the ACP engine — DONE 2026-09-04. The phase-2 probe proved ACP surfaces edit diffs natively (`tool_call` `content[]` `{type:"diff", path, oldText?, newText}`), which is richer AND cheaper than the git-sourced path: implemented as (a) `events.ts` extracts the first diff entry into the `tool_done` activity (`AcpEditDiff`); (b) `provider.ts` renders it on ACP turns via the new `formatInlineDiff` (in-memory `generateDiffString`, same line-numbered format, ZERO git subprocesses) instead of `TurnDiffContext.diffEdit`; (c) `diff-render.ts` git machinery remains solely for the `stream-json` engine. Tests: diff extraction (with/without `oldText`), ACP thinking-stream rendering (`+2 B` line-numbered), label-only fallback, no parking, legacy path unchanged. Verified: 165/165 vitest, tsc clean, live parity 14/14.
+1. [x] Gate C evaluation: `native-tools.ts` + `WrapperReplay` retired on the ACP engine (retained for the streaming (`stream-json`) engine). ACP turns emit thinking labels for tool executions without parking turns for synthetic re-execution or wrapper cards; bridge MCP tools (`bridge_call`) continue parking natively. Verified: live parity 14/14 held.
+2. [x] Retire `diff-render.ts` (git path) on the ACP engine — DONE 2026-09-04. The phase-2 probe proved ACP surfaces edit diffs natively (`tool_call` `content[]` `{type:"diff", path, oldText?, newText}`), which is richer AND cheaper than the git-sourced path: implemented as (a) `events.ts` extracts the first diff entry into the `tool_done` activity (`AcpEditDiff`); (b) `provider.ts` renders it on ACP turns via the new `formatInlineDiff` (in-memory `generateDiffString`, same line-numbered format, ZERO git subprocesses) instead of `TurnDiffContext.diffEdit`; (c) `diff-render.ts` git machinery remains solely for the `stream-json` engine. Tests: diff extraction (with/without `oldText`), ACP thinking-stream rendering (`+2 B` line-numbered), label-only fallback, no parking, streaming path unchanged. Verified: 165/165 vitest, tsc clean, live parity 14/14.
 3. [x] `/agy doctor` diagnostics expansion — DONE 2026-09-04. The ACP
       snapshot now carries `reconnects` (connections beyond the first =
       Gate D kills + stale-exit replacements) and the handshake `agentInfo`
@@ -773,17 +773,17 @@ Status: 🚧 Phase 3 remaining items are COMPLETE (2026-09-04): 168/168 tests,
 tsc clean, live parity 14/14, embeddedContext verified live (resource block
 with a secret word answered correctly). Remaining phase-3 acceptance:
 deleted-code census lands with phase 4's deletions (nothing deletes in
-phase 3 — the legacy modules stay for the `stream-json` engine).
+phase 3 — the streaming modules stay for the `stream-json` engine).
 
-### Phase 4: default flip and legacy deletion (deferred, next month)
+### Phase 4: default flip and streaming deletion (deferred, next month)
 
 All items below are deferred until a full soak cycle of both engines has completed and upstream conditions are met:
 
-1. AskAntigravity migration to ACP one-shot (migrating while `stream-json` is default breaks legacy-only users who haven't onboarded ACP auth; legacy conversation ids cannot resume under ACP). `mode: "plan"` delegations keep the legacy `agy -p --mode plan` path (committed exception).
+1. AskAntigravity migration to ACP one-shot (migrating while `stream-json` is default breaks streaming-only users who haven't onboarded ACP auth; streaming conversation ids cannot resume under ACP). `mode: "plan"` delegations keep the `agy -p --mode plan` path (committed exception).
 2. Delete `src/discovery.ts` (`/proc` fd-scan) once AskAntigravity migration completes.
 3. Default flip: `config.engine` default becomes `"acp"` after one full release soak cycle with both engines shipping. Gate A PASS is verified.
 4. Upstream Gate B resolution: Google ships usage counters in ACP payloads.
-5. Legacy engine deletion: `src/driver.ts`, `src/stream-events.ts`, and legacy tests deleted one release after the flip AND only once Gate B has lifted (so zero-usage is never forced).
+5. Streaming engine deletion: `src/driver.ts`, `src/stream-events.ts`, and streaming tests deleted one release after the flip AND only once Gate B has lifted (so zero-usage is never forced).
 
 Acceptance: default-flip release ships with the parity suite as acceptance evidence; deletion release has zero references to the removed modules.
 
@@ -801,7 +801,7 @@ Acceptance: default-flip release ships with the parity suite as acceptance evide
 - **Provider**: the existing `provider-streaming` / `provider-digest` /
   `provider-sysprompt` suites run against both engines via the shared driver
   contract. New case: thought delta path.
-- **Sessions**: engine-tag matching, legacy-file compatibility (no tag),
+- **Sessions**: engine-tag matching, streaming-file compatibility (no tag),
   cross-engine miss starts fresh.
 - **Config**: narrowing of stale/garbage `engine` values, env precedence.
 - **Parity suite**: the section 6 checklist encoded as an integration run
@@ -836,8 +836,8 @@ Install layout:
 ## 13. Rollback
 
 At any phase: `AGY_ENGINE=stream-json` (or `/agy engine stream-json`) returns
-to the legacy engine. Sessions are keyed per engine (9.4), so the legacy
-engine resumes its own conversations untouched. The legacy engine is only deleted in
+to the streaming engine. Sessions are keyed per engine (9.4), so the streaming
+engine resumes its own conversations untouched. The streaming engine is only deleted in
 phase 4, one release after the flip, so rollback stays possible throughout.
 
 ## 14. Documentation updates
@@ -856,7 +856,7 @@ phase 4, one release after the flip, so rollback stays possible throughout.
 | # | Risk | L | I | Response |
 | --- | --- | --- | --- | --- |
 | R1 | Gate A fails (no model switch) | M | H | default flip blocked; ACP stays opt-in; escalate upstream. No ship-anyway: model switching is not optional |
-| R2 | Gate F fails (bridge not registrable) | L | H | BLOCKS phase 1; escalate upstream, keep legacy |
+| R2 | Gate F fails (bridge not registrable) | L | H | BLOCKS phase 1; escalate upstream, keep streaming |
 | R3 | Usage absent (CONFIRMED, Gate B) | H | M | zero-usage documented on ACP; stream-json retained as secondary engine; phase-4 deletion conditioned on Gate B lift (review 4) |
 | R4 | Binary churn (hourly registry, RC builds) | M | M | pin by build id, record sha256 |
 | R5 | Server rejects second simultaneous session | L | M | one session per connection (today's model), N connections instead |

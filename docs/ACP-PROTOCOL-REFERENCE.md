@@ -247,7 +247,7 @@ unreachable on RC01 — no cancel method).
 
 - Chunks are pure DELTAS. Verified by content: numbers split mid-token across
   chunk boundaries (`"...\n39\n40\n4"` then `"1\n42\n43..."`), and no chunk
-  ever contained a full prefix of the accumulated text. The legacy
+  ever contained a full prefix of the accumulated text. The stream-json
   cumulative-resend failure mode was NOT observed over ACP (defensive guard
   stays cheap insurance).
 - Throughput: 300 numbers (~600 tokens) completed within one 25 s poll;
