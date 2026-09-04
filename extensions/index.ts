@@ -38,7 +38,7 @@ import { SessionStore } from "../src/sessions.js";
 import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
-import { resolveAcpBinary } from "../src/acp/connection.js";
+import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
@@ -97,14 +97,32 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
 	let mcpHandle: McpServerHandle | null = null;
+	// ACP self-heal runs once per process (session_start re-fires on /reload;
+	// a ready setup is two file stats, so re-running is harmless anyway).
+	let acpSelfHealRan = false;
 	// Two turn engines behind one contract (plan §9): stream-json (tested
 	// default) and the official ACP server (opt-in via config.engine, off by
 	// default). Neither spawns anything until its first turn.
+	// ACP log routing: only genuine failures reach stderr. Routine lifecycle
+	// (driver-created, spawn, session-new, ...) stays in the driver's
+	// #lifecycle ring buffer, visible via /agy doctor. An unfiltered sink fired
+	// console.error at extension load ("driver-created"), before any UI exists,
+	// and leaked raw driver lines into the terminal on every startup.
+	const acpFailures = new Set([
+		"start-failed", "spawn-error", "parse-error", "write-failed",
+		"mode-apply-failed", "timeout", "stall", "auth-required",
+		"session-load-failed-creating-fresh", "connection-exited", "cancel-failed",
+		"unsupported-server-request",
+	]);
 	const legacyDriver = new AgyDriver();
 	const acpDriver = new AcpDriver({
-		bin: resolveAcpBinary(loadConfig().acp.bin),
-		log: (msg, data) =>
-			console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`),
+		// Resolved per connection: the setup flow can install the binary and
+		// update acp.bin mid-session; the next turn picks it up (no restart).
+		bin: () => loadConfig().acp.bin,
+		log: (msg, data) => {
+			if (!acpFailures.has(msg)) return;
+			console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`);
+		},
 		mcpServers: () => {
 			const handle = mcpHandle;
 			if (!handle) return [];
@@ -233,29 +251,52 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		} catch {
 			/* detection is best-effort */
 		}
-		// Bridge lifecycle/error logger. Routes through ctx.ui.notify (an
-		// ephemeral toast that fades) instead of stderr: pi's TUI captures stderr
-		// and pins it above the input for the whole session, which left the
-		// startup "bridge-config-written" / "listening" lines stuck on screen all
-		// session. Headless modes (print/json, hasUI === false) have no toast, so
-		// fall back to stderr there. Per-turn success events (list-tools /
-		// call-tool) stay silent either way.
+		// ACP self-heal: engine=acp needs a server binary + auth. Silent when
+		// everything is ready; installs from the registry and bootstraps auth
+		// otherwise; manual instructions only on failure. Fire-and-forget: it
+		// must not delay session start (and nothing spawns until the first turn).
+		if (engine === "acp" && !acpSelfHealRan) {
+			acpSelfHealRan = true;
+			void ensureAcpReady({ configBin: loadConfig().acp.bin }).then((status) => {
+				if (status.ok) {
+					if (status.binarySource === "installed" || status.binarySource === "existing") {
+						saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
+					}
+					if (status.needsLogin) {
+						const msg =
+							"ACP: one-time Google login pending. Your next antigravity message opens the browser; sign in with your Antigravity subscription account (the same login as the agy CLI). Tokens stay on your machine.";
+						if (ctx.hasUI) ctx.ui.notify(msg, "info");
+						else console.error(`[antigravity-bridge] ${msg}`);
+					}
+					return;
+				}
+				const msg = `ACP auto-setup failed (${status.error}).\n${status.manual}`;
+				if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+				else console.error(`[antigravity-bridge] ${msg}`);
+			});
+		}
+		// Bridge failure logger. Routine lifecycle (listening,
+		// bridge-config-written/removed, closed) is normal startup/teardown
+		// traffic: toasting it every session, or pinning it via stderr in
+		// headless mode, was noise. Only genuine failures surface - as a
+		// warning toast (ctx.ui.notify, ephemeral) or stderr when headless.
+		// Per-turn success events (list-tools / call-tool) stay silent.
 		const mcpLog = (s: string, d?: unknown) => {
-			const surfaced = new Set([
-				"listening", "capability-missing", "http-error", "closed",
-				"bridge-config-written", "bridge-config-removed", "bridge-config-write-failed",
-				"call-tool-fail", "transport-error", "handleRequest-error",
-				"request-error", "request-handler-error", "unauthorized", "self-patch-error",
-			]);
-			if (!surfaced.has(s)) return;
-			const msg = `[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`;
-			if (ctx.hasUI) {
-				const ok = s === "listening" || s === "bridge-config-written"
-					|| s === "bridge-config-removed" || s === "closed";
-				ctx.ui.notify(msg, ok ? "info" : "warning");
-			} else {
-				console.error(msg);
+			// Routine abort traffic: failAll fires on turn end / session shutdown
+			// and the bridge answers every parked call with an error. Not a fault.
+			if (s === "call-tool-fail") {
+				const detail = (d as { msg?: string } | undefined)?.msg ?? "";
+				if (detail.includes("unresolved pi tool call") || detail.includes("session shut down")) return;
 			}
+			const failures = new Set([
+				"http-error", "bridge-config-write-failed", "call-tool-fail",
+				"transport-error", "handleRequest-error", "request-error",
+				"request-handler-error", "unauthorized",
+			]);
+			if (!failures.has(s)) return;
+			const msg = `[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`;
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+			else console.error(msg);
 		};
 		// Start the bridge unless the user turned it off. No patch gate, no
 		// consent flow: calls route through pi's normal toolUse loop.
@@ -413,9 +454,32 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 			if (sub === "engine") {
 				if (val === "acp" || val === "stream-json") {
+					if (val === "acp" && loadConfig().mode === "plan") {
+						ui?.notify("mode is plan; the ACP engine has no plan mode. /agy mode accept-edits first.", "warning");
+						return;
+					}
 					const next = saveConfig({ engine: val });
+					if (next.engine !== "acp") {
+						ui?.notify("engine set to stream-json. Takes effect on the next pi start (or /reload).", "info");
+						return;
+					}
+					// Self-service setup: install the server from the official
+					// registry and bootstrap auth now, so the restart just works.
+					// Manual instructions only when a step fails.
+					ui?.notify("engine set to acp. Preparing the server (binary + auth)…", "info");
+					const status = await ensureAcpReady({
+						configBin: loadConfig().acp.bin,
+						onProgress: (m) => ui?.notify(m, "info"),
+					});
+					if (!status.ok) {
+						ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
+						return;
+					}
+					saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
 					ui?.notify(
-						`engine set to ${next.engine}. Takes effect on the next pi start (or /reload).${next.engine === "acp" ? "\nRequires the official ACP server binary (AGY_ACP_BIN or acp.bin) and a one-time auth: /agy acp-auth" : ""}`,
+						status.needsLogin
+							? "ACP engine ready. Your first ACP message opens the Google login in your browser: sign in with the account of your Antigravity subscription (the same login as the Antigravity CLI, agy). One-time; tokens stay on your machine and this extension never sees them. Takes effect on the next pi start (or /reload)."
+							: `ACP engine ready (auth: ${status.auth}). Takes effect on the next pi start (or /reload).`,
 						"info",
 					);
 				} else {
@@ -426,17 +490,26 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "acp-auth") {
 				ui?.notify(
 					[
-						"ACP engine authentication (one-time):",
-						"1. Install the server binary (agy_acp_server.par from the ACP registry",
-						"   build URL) and point acp.bin or AGY_ACP_BIN at it.",
-						"2. Pick one credential path:",
-						'   - oauth-personal: put {"auth":{"type":"oauth-personal"}} in',
-						"     ~/.gemini/antigravity-acp/settings.json, run one turn, and open the",
-						"     login URL the server produces (headless: tunnel 127.0.0.1:<port>",
-						"     over ssh, then open the URL on your machine).",
-						'   - gemini-api-key: export GEMINI_API_KEY and set',
-						'     {"auth":{"type":"gemini-api-key"}} (headless-friendly; metered).',
-						"   The agent never reads or writes your credentials.",
+						"ACP engine authentication (one-time; usually automatic -",
+						"/agy engine acp and session start set this up for you):",
+						"",
+						"The server is Google's official Antigravity ACP, installed from Google's",
+						"own registry. Logging in uses your Antigravity subscription: the same",
+						"Google account and plan as the Antigravity CLI (agy). It is no different",
+						"from logging into the CLI; the server just keeps its own token file on",
+						"your machine, like any Google tool. This extension never sees your",
+						"credentials.",
+						"",
+						"1. Server binary: auto-setup installs it. Manual: agy_acp_server.par from",
+						"   the antigravity-acp registry; point acp.bin or AGY_ACP_BIN at it.",
+						'2. Default: put {"auth":{"type":"oauth-personal"}} in',
+						"   ~/.gemini/antigravity-acp/settings.json, run one turn, and complete the",
+						"   Google login that opens in your browser (headless: tunnel 127.0.0.1:<port>",
+						"   over ssh, then open the URL on your machine).",
+						'   Headless alternative: GEMINI_API_KEY + {"auth":{"type":"gemini-api-key"}}',
+						"   (metered paid API - not your Antigravity plan). The key is used only",
+						"   when that type is selected; with the default oauth-personal in place,",
+						"   an exported key is ignored.",
 						"3. Run one turn; /agy doctor shows the server version when auth is OK.",
 					].join("\n"),
 					"info",
@@ -469,11 +542,22 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					lines.push("  lifecycle (last 5):");
 					for (const entry of snap.lifecycle.slice(-5)) lines.push(`    ${entry}`);
 				}
+				if (engine === "acp") {
+					const setup = inspectAcpSetup({ configBin: config.acp.bin });
+					lines.push(
+						`  acp binary:    ${setup.bin ?? "not found (auto-setup offers install)"}${setup.source ? ` (${setup.source})` : ""}`,
+						`  acp auth:      ${setup.auth ?? "not configured (auto-setup bootstraps)"}`,
+					);
+				}
 				ui?.notify(lines.join("\n"), "info");
 				return;
 			}
 			if (sub === "mode") {
 				if (val === "plan" || val === "accept-edits") {
+					if (val === "plan" && ctx.engine === "acp") {
+						ui?.notify("the ACP engine has no plan mode (RC01). /agy engine stream-json first, or /agy mode accept-edits.", "warning");
+						return;
+					}
 					const next = saveConfig({ mode: val as AgyMode });
 					ui?.notify(`mode set to ${next.mode}`, "info");
 				} else {
@@ -637,6 +721,11 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		pending.defaultThinking === undefined
 	)
 		return;
+
+	if (pending.mode === "plan" && ctx.engine === "acp") {
+		ui.notify("the ACP engine has no plan mode (RC01). Switch /agy engine stream-json first.", "warning");
+		return;
+	}
 
 	try {
 		const next = saveConfig(pending);

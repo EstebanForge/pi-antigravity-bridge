@@ -34,8 +34,10 @@ import type {
 const LIFECYCLE_LIMIT = 24;
 
 export interface AcpDriverOptions {
-	/** Config acp.bin value (may be empty). Env AGY_ACP_BIN wins. */
-	bin: string;
+	/** Config acp.bin value (may be empty). Env AGY_ACP_BIN wins. A function
+	 *  is resolved per connection: setup can install the binary and update
+	 *  config mid-session, and the next turn picks it up without a restart. */
+	bin: string | (() => string);
 	/** Extra argv for the binary (tests: node + fake-server script). */
 	binArgs?: string[];
 	extraEnv?: Record<string, string>;
@@ -88,11 +90,11 @@ export function acpModelSlug(model: string, effort?: string): string {
 	return `${model}-${effort}`;
 }
 
-/** Map our config knobs onto ACP session modes. Under the single `auto`
- *  policy the practical effect of the modes converges (everything is
- *  approved); the mapping keeps the server-side counters honest.
- *  Known gap: the CLI's `--mode plan` has no ACP equivalent (review 4,
- *  finding 4) — plan delegations stay on the legacy path. */
+/** Map our config knobs onto ACP session modes. skipPermissions=false also
+ *  fail-closes the in-connection permission handler (reject options), so the
+ *  modes keep their server-side meaning. Known gap: the CLI's `--mode plan`
+ *  has no ACP equivalent (review 4, finding 4) — plan + acp is refused at the
+ *  command level and fails the turn visibly. */
 export function acpMode(mode: string, skipPermissions: boolean): string {
 	if (skipPermissions) return "yolo";
 	return mode === "plan" ? "default" : "auto_edit";
@@ -122,7 +124,7 @@ export class AcpDriver implements TurnDriver {
 
 	constructor(opts: AcpDriverOptions) {
 		this.#opts = opts;
-		this.#log("driver-created", { bin: resolveAcpBinary(opts.bin) });
+		this.#log("driver-created", { bin: typeof opts.bin === "function" ? "(resolved per turn)" : resolveAcpBinary(opts.bin) });
 	}
 
 	get state(): DriverState {
@@ -417,17 +419,19 @@ export class AcpDriver implements TurnDriver {
 		this.#state = "starting";
 		this.#stats.spawns += 1;
 		const conn = new AcpConnection({
-			bin: resolveAcpBinary(this.#opts.bin),
+			bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin),
 			binArgs: this.#opts.binArgs,
 			extraEnv: this.#opts.extraEnv,
 			cwd: request.cwd,
 			mcpServers: this.#opts.mcpServers,
 			log: (msg, data) => this.#log(msg, data),
+			// Fail-closed permissions: only turns with skipPermissions answer allow.
+			permissions: () => (this.#active?.request.skipPermissions ? "auto" : "deny"),
 			onUpdate: (sessionId, update) => this.#onConnectionUpdate(sessionId, update),
 			onExit: (info) => this.#onConnectionExit(conn, info),
 		});
 		this.#conn = conn;
-		this.#log("spawn", { bin: resolveAcpBinary(this.#opts.bin) });
+		this.#log("spawn", { bin: resolveAcpBinary(typeof this.#opts.bin === "function" ? this.#opts.bin() : this.#opts.bin) });
 		return conn
 			.start()
 			.then(() => {

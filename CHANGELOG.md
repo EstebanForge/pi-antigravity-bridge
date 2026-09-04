@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-09-04
+
+### Added
+
+- Self-service ACP setup (`src/acp/setup.ts`): `/agy engine acp` now prepares the whole engine instead of printing instructions. It installs the official server binary from the antigravity-acp registry entry (`agentclientprotocol/registry`) into the pinned layout `~/.local/opt/agy-acp/<build>/` with a `current` symlink and the zip sha256 recorded (no upstream checksums exist; plan §12), points `acp.bin` at it, and prepares the login: `oauth-personal` by default, which is the user's own Antigravity subscription (the same Google account and plan as the `agy` CLI; the server opens the browser on the first ACP message, tokens persist). Credential values are never read or written (`acp_token.json` is only stat()ed); `gemini-api-key` stays a manual headless option, never the default. A `session_start` self-heal repeats the check silently when everything is ready and surfaces the manual steps only on failure; `AcpDriverOptions.bin` accepts a resolver so a mid-session install is picked up by the next turn without a restart; `/agy doctor` shows binary source and auth type. Tests inject the registry, archive, and unpacker, so the suite stays offline.
+
+### Fixed
+
+- Stream-json frames split across pipe chunks are now reassembled instead of dropped: `AgyDriver` buffers the trailing partial stdout line (the scheme `JsonRpcSession.feed` already used on the ACP engine). Previously a large `tool` frame or the `result` frame split by a pipe boundary was lost whole, which could turn a successful turn into a bogus "agy exited with status 0" error. Regression test drives a fake agy whose reply is deliberately split mid-line.
+- Both drivers attach an `'error'` listener on the child's stdin: an async pipe failure (EPIPE when agy/the ACP server dies mid-write) now fails the turn (ACP: tears the connection down) instead of escaping as an uncaught exception that kills the whole pi process.
+- ACP permission answering is fail-closed: `session/request_permission` selects the first reject option unless the turn runs with `skipPermissions`. Previously every request was auto-approved regardless of the `permissions` setting shown by `/agy status`. The unsupported `engine=acp` + `mode=plan` combination is now refused at `/agy engine`, `/agy mode`, and the settings picker, and fails the turn with a visible error instead of silently running non-plan (ACP has no review-only mode in RC01).
+- Startup-log fix hardening: four genuine ACP failure events (`session-load-failed-creating-fresh`, `connection-exited`, `cancel-failed`, `unsupported-server-request`) surface again; the dead MCP entries (`capability-missing`, `self-patch-error`) are gone; `call-tool-fail` no longer toasts for the routine fail-all on turn end / session shutdown.
+- Startup log leaks: the ACP driver log sink now forwards only genuine failures (`start-failed`, `spawn-error`, `parse-error`, `write-failed`, `mode-apply-failed`, `timeout`, `stall`, `auth-required`) to stderr; routine lifecycle (`driver-created`, spawn, session new/load) stays in the `#lifecycle` ring buffer under `/agy doctor`. The MCP bridge logger no longer toasts (or headless-stderr-logs) normal startup/teardown events (`listening`, `bridge-config-written`, `bridge-config-removed`, `closed`); only failures surface, as warning toasts. The stream-json engine already had no terminal sink.
+
 ## [1.4.0] - 2026-09-04
 
 ### Added

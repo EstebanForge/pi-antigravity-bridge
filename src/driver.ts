@@ -132,6 +132,10 @@ export class AgyDriver implements TurnDriver {
 	#queueTail: Promise<void> = Promise.resolve();
 	#shutdown = false;
 	#stderrTail = "";
+	// Frames can split across pipe chunks; the trailing partial line lives here
+	// until its newline arrives (same scheme as JsonRpcSession.feed). Dropping
+	// it ate large tool frames and could hide the result frame of a turn.
+	#stdoutBuf = "";
 	#lifecycle: string[] = [];
 	#onTurnEnd: ((outcome: TurnOutcome) => void) | undefined;
 	#stats = {
@@ -332,7 +336,16 @@ export class AgyDriver implements TurnDriver {
 			windowsHide: true,
 		});
 		this.#child = child;
+		this.#stdoutBuf = "";
 		this.#stats.spawns += 1;
+		// Pipe write failures surface asynchronously as stream 'error' events;
+		// the sync try/catch around stdin.write cannot see them. Without this
+		// listener an EPIPE (agy died mid-write) is uncaught and kills pi.
+		child.stdin!.on("error", (err) => {
+			if (generation !== this.#generation) return;
+			const turn = this.#active;
+			if (turn && !turn.closed) this.#failTurn(turn, `agy stdin write failed: ${err.message}`);
+		});
 		this.#log(`spawn:${child.pid ?? "?"}:${request.conversationId ? "resume" : "fresh"}`);
 		this.#state = "ready";
 
@@ -379,10 +392,15 @@ export class AgyDriver implements TurnDriver {
 	}
 
 	#onStdout(chunk: string): void {
+		// Buffer the trailing partial line: a frame split across pipe chunks is
+		// reassembled when its newline arrives (mirrors JsonRpcSession.feed).
+		this.#stdoutBuf += chunk;
+		const lines = this.#stdoutBuf.split("\n");
+		this.#stdoutBuf = lines.pop() ?? "";
 		const turn = this.#active;
 		if (!turn || turn.closed) return;
 		if (turn.idleTimer) turn.idleTimer.refresh();
-		for (const line of chunk.split("\n")) {
+		for (const line of lines) {
 			if (!line.trim()) continue;
 			this.#applyParsed(turn, parseAgyLine(line));
 			if (turn.closed) return;
@@ -585,6 +603,7 @@ export class AgyDriver implements TurnDriver {
 		if (!child) return;
 		this.#child = undefined;
 		this.#generation += 1;
+		this.#stdoutBuf = "";
 		try {
 			child.stdout?.removeAllListeners();
 			child.stderr?.removeAllListeners();

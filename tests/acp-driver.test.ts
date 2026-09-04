@@ -34,6 +34,7 @@ async function runDriver(
 		contextBlock?: { uri: string; title: string; text: string };
 		conversationId?: string | null;
 		timeoutMin?: number;
+		skipPermissions?: boolean;
 		signal?: AbortSignal;
 		onHandle?: (handle: Awaited<ReturnType<AcpDriver["run"]>>) => void;
 	} = {},
@@ -53,7 +54,7 @@ async function runDriver(
 		model: "gemini-3.8-flash",
 		effort: "low",
 		mode: "accept-edits",
-		skipPermissions: true,
+		skipPermissions: opts.skipPermissions ?? true,
 		conversationId: opts.conversationId ?? null,
 		prompt: opts.prompt ?? "hi",
 		images: opts.images,
@@ -172,8 +173,8 @@ describe("acp/driver load replay (run 6 rules)", () => {
 	});
 });
 
-describe("acp/driver permission policy (auto)", () => {
-	test("request_permission is answered in-connection with allow", async () => {
+describe("acp/driver permission policy", () => {
+	test("request_permission is answered in-connection with allow when skipPermissions", async () => {
 		const run = await tracked("permission", { prompt: "make the file" });
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "OK");
@@ -183,6 +184,18 @@ describe("acp/driver permission policy (auto)", () => {
 			_permissionAnswer: string;
 		};
 		assert.equal(answer._permissionAnswer, "allow");
+	});
+
+	test("request_permission fail-closes to reject when skipPermissions is off", async () => {
+		const run = await tracked("permission", { prompt: "make the file", skipPermissions: false });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(textOf(run.activities), "PERMIS");
+		const log = sentRequests(run._logPath);
+		const answer = log.find((r) => (r as { _permissionAnswer?: string })._permissionAnswer) as {
+			_permissionAnswer: string;
+		};
+		assert.equal(answer._permissionAnswer, "deny");
 	});
 });
 

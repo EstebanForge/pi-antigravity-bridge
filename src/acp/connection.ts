@@ -11,8 +11,9 @@
 //     the effort tier baked in, e.g. gemini-3.8-flash-low)
 //   - session/cancel returns -32601 on RC01 (not implemented) — the driver
 //     treats that as "cancel unsupported" and falls back to teardown+kill
-//   - session/request_permission is answered in-connection: single `auto`
-//     policy, first allow option selected (plan §9.3)
+//   - session/request_permission is answered in-connection: policy per turn
+//     (skipPermissions on -> first allow option; off -> first reject option,
+//     fail-closed)
 //   - session/load replays history as notifications BEFORE its response; the
 //     driver suppresses updates while the load is in flight
 //   - mcpServers entries: {name, type:"http", url, headers:[]} — headers is a
@@ -58,6 +59,10 @@ export interface AcpConnectionOptions {
 	/** mcpServers entries for session/new AND session/load (run 6: load takes
 	 *  the same param). Evaluated lazily per call. */
 	mcpServers?: () => AcpMcpServer[];
+	/** Permission policy for session/request_permission, evaluated per request:
+	 *  "auto" selects the first allow option; "deny" fail-closes to the first
+	 *  reject option. Absent = deny (fail closed). */
+	permissions?: () => "auto" | "deny";
 }
 
 const INIT_TIMEOUT_MS = 30_000;
@@ -114,6 +119,13 @@ export class AcpConnection {
 		this.#child = child;
 		child.stdout?.setEncoding("utf8");
 		child.stderr?.setEncoding("utf8");
+		// Pipe failures arrive asynchronously as stream 'error' events; the sync
+		// try/catch in #write cannot see them. Without this listener an EPIPE
+		// (server died mid-handshake) is uncaught and kills pi.
+		child.stdin?.on("error", (err) => {
+			this.#opts.log("stdin-error", { message: err.message });
+			if (!this.#exited && !this.#killed) this.#finish(err.message);
+		});
 
 		const rpc = new JsonRpcSession({
 			send: (frame) => this.#write(frame),
@@ -253,9 +265,10 @@ export class AcpConnection {
 		await this.guarded("session/close", { sessionId }, SESSION_OP_TIMEOUT_MS);
 	}
 
-	/** Protocol-level abort: single `auto` policy (plan §9.3) — select the
-	 *  first allow option. Never hangs: options are data from the server and
-	 *  the answer is computed synchronously. */
+	/** Protocol-level permission answering: policy from the driver ("auto"
+	 *  selects the first allow option; "deny" fail-closes to the first reject
+	 *  option). Never hangs: options are data from the server and the answer
+	 *  is computed synchronously. */
 	#onServerRequest(method: string, params: unknown): Promise<unknown> {
 		if (method === "session/request_permission") {
 			const options = (
@@ -263,9 +276,10 @@ export class AcpConnection {
 			) as Array<{ optionId?: string; kind?: string }> | undefined;
 			const allow = options?.find((o) => typeof o.kind === "string" && o.kind.startsWith("allow"));
 			const deny = options?.find((o) => typeof o.kind === "string" && o.kind.startsWith("reject"));
-			const chosen = allow ?? deny ?? options?.[0];
-			this.#opts.log("permission", { optionId: chosen?.optionId ?? "allow", policy: "auto" });
-			return Promise.resolve({ outcome: { outcome: "selected", optionId: chosen?.optionId ?? "allow" } });
+			const policy = this.#opts.permissions?.() ?? "deny";
+			const chosen = policy === "auto" ? (allow ?? deny ?? options?.[0]) : (deny ?? options?.[0]);
+			this.#opts.log("permission", { optionId: chosen?.optionId, policy });
+			return Promise.resolve({ outcome: { outcome: "selected", optionId: chosen?.optionId } });
 		}
 		// fs/* and terminal/* are declined: our client capabilities are off and
 		// agy keeps executing its own tools (plan §8 capability posture).

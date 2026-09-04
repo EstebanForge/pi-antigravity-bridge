@@ -846,6 +846,14 @@ export function createStreamSimple(
 		const config = loadConfig();
 		const engine = deps.engine ?? config.engine;
 		const selected = engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
+		// RC01: ACP modes are permission modes, there is no review-only plan.
+		// A plan turn on ACP would silently run non-plan; fail visibly instead.
+		if (selected === deps.acpDriver && config.mode === "plan") {
+			const partial = newAssistant(model);
+			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			finalize(stream, blocks, "error", "ACP engine has no plan mode. /agy mode accept-edits, or /agy engine stream-json.");
+			return stream;
+		}
 		if (selected && roundTrips) {
 			void runTurnDriver(stream, model, context, options, entries, store, {
 				driver: selected,

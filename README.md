@@ -25,7 +25,7 @@ Turns run through one of two engines behind the same provider surface (`config.e
 
 Engine-dependent features: pi image attachments ride natively only on the ACP engine (the picker offers image attach automatically when `config.engine` is `acp`; the stream-json CLI prompt is text-only). With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text.
 
-Switch with `/agy engine acp|stream-json` (takes effect on restart). ACP needs the server binary installed locally (`AGY_ACP_BIN` or `config.acp.bin`; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)), and its own one-time credential setup: run `/agy acp-auth` for the steps. The ACP server keeps its own auth state; the token never touches this code. Sessions are engine-scoped, so switching engines never crosses conversations.
+Switch with `/agy engine acp|stream-json` (takes effect on restart). Setup is automatic: switching to `acp` installs Google's official ACP server binary from the [antigravity-acp registry entry](https://github.com/agentclientprotocol/registry) (`~/.local/opt/agy-acp/<build>/` + a `current` symlink, zip sha256 recorded; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)) and prepares the login. The login is your Antigravity subscription: on your first ACP message the server opens the Google login in your browser, and you sign in with the same account and plan you use for the Antigravity CLI (`agy`). It is no different from logging into the CLI; the server just keeps its own token file on your machine, like any Google tool, and this extension never sees your credentials. If you also export `GEMINI_API_KEY`, it is ignored: the server uses the auth type in settings.json, and setup always writes `oauth-personal`. A session start self-heals the same way, silently when everything is ready. Manual instructions (`/agy acp-auth`) surface only when a step fails. Sessions are engine-scoped, so switching engines never crosses conversations.
 
 ## What it cannot do
 
@@ -125,8 +125,8 @@ Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins o
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
 /agy system-prompt on|off send pi's system prompt + AGENTS.md to new agy conversations (default on)
-/agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json)
-/agy acp-auth                 one-time credential setup for the ACP engine
+/agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp runs self-service setup: binary install + auth bootstrap)
+/agy acp-auth                 manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
 /agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)
 ```
@@ -149,7 +149,7 @@ For isolation when running any agent that executes commands without a confirmati
 | --- | --- |
 | `AGY_BIN` | Path to the agy binary. Defaults to `agy` on PATH. |
 | `AGY_ENGINE` | Turn engine: `stream-json` (default) or `acp`. Wins over the config file. |
-| `AGY_ACP_BIN` | Path to the ACP server binary (`agy_acp_server.par`). Defaults to `agy_acp_server.par` on PATH. Wins over `config.acp.bin`. |
+| `AGY_ACP_BIN` | Path to the ACP server binary (`agy_acp_server.par`). Defaults to `agy_acp_server.par` on PATH. Wins over `config.acp.bin`. When neither points at a binary, auto-setup installs one. |
 | `AGY_EXTRA_ARGS` | Extra args appended to every invocation. Whitespace-split. |
 | `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
 | `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
