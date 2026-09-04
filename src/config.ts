@@ -59,8 +59,10 @@ export interface AgyConfig {
 	 *  always available. */
 	patchCleanupNotified?: boolean;
 	/** Which pi tools the MCP bridge exposes to agy: "none" (bridge off),
-	 *  "mcp" (pi-mcp-adapter tools + skills bridge; default), "all" (every
-	 *  registered non-builtin tool incl. other Ask* delegations). */
+	 *  "all" (every registered non-builtin tool incl. other Ask* delegations;
+	 *  default - users expect the bridge working out of the box, and the
+	 *  "mcp" surface serves an empty catalog on installs without
+	 *  pi-mcp-adapter), "mcp" (pi-mcp-adapter tools + skills bridge only). */
 	bridgeTools: BridgeTools;
 	/** Inject a delta digest of pi-side context (compaction summaries, turns
 	 *  handled by other providers or pi's own tools) into each agy prompt.
@@ -94,7 +96,7 @@ const DEFAULTS: AgyConfig = {
 	skipPermissions: true,
 	defaultModel: "flash",
 	defaultThinking: "medium",
-	bridgeTools: "mcp",
+	bridgeTools: "all",
 	digest: false,
 	systemPrompt: true,
 	acp: { bin: "", permissions: "auto" },
@@ -149,7 +151,9 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 
 	const bridgeRaw = (process.env.AGY_BRIDGE_TOOLS ?? file.bridgeTools ?? DEFAULTS.bridgeTools).toLowerCase();
 	const bridgeTools: BridgeTools =
-		bridgeRaw === "none" || bridgeRaw === "all" ? bridgeRaw : "mcp";
+		bridgeRaw === "none" || bridgeRaw === "all" || bridgeRaw === "mcp"
+			? bridgeRaw
+			: DEFAULTS.bridgeTools;
 
 	const digest = process.env.AGY_DIGEST !== undefined
 		? ["1", "true", "on"].includes(process.env.AGY_DIGEST.toLowerCase())

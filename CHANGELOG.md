@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2] - 2026-09-04
+
+### Changed
+
+- `bridgeTools` now defaults to `all` (every registered non-builtin pi tool) instead of `mcp`. The `mcp` surface filters to pi-mcp-adapter tools and serves an empty catalog on installs without that adapter, which left the bridge registered but tool-less from the model's point of view. `none` still opts out entirely; explicit `"bridgeTools": "mcp"` in an existing config keeps pinning the narrow surface.
+- Skill discovery now mirrors pi's directory-based scan (docs/skills.md): global `~/.pi/agent/skills` AND `~/.agents/skills`, project `.pi/skills` plus `.agents/skills` in cwd and ancestors up to the git root (project dirs only when pi has trusted the project, same gate pi applies), recursive SKILL.md discovery with grouping folders, per-style root/`.md` rules, hidden entries skipped, and description-less skills dropped. Pi's other skill sources (`skills` settings array, `package.json`, `--skill`) are not mirrored. Previously only one flat level of two directories was scanned, and `~/.agents/skills` (where pi actually reads most skills) was missing entirely, so `activate_skill` never appeared.
+- `/agy` now exposes the full runtime config surface: new `/agy bridge all|mcp|none` (which pi tools the MCP bridge hands to agy) and `/agy acp-bin <path|auto>` (target a specific ACP server binary; applies on the next ACP turn), plus Bridge tools, Context digest, and System prompt rows in the bare `/agy` settings picker. Usage strings and `/agy status` list every knob.
+
 ## [1.4.1] - 2026-09-04
 
 ### Added

@@ -11,10 +11,12 @@
 //   ("[agy tool: editing foo.ts]") for visibility, but the edits already landed
 //   on disk and pi's inline diff review does not engage.
 //
-// /agy command: status, mode picker (plan / accept-edits),
-// and session clear. Config persists to ~/.pi/agent/antigravity-bridge/
-// config.json so toggles survive restarts.
+// /agy command: full runtime config surface (engine, mode, permissions,
+// bridge tools, model, thinking, digest, system prompt, acp binary) plus
+// doctor, auth, patch-cleanup, and session clear. Config persists to
+// ~/.pi/agent/antigravity-bridge/config.json so toggles survive restarts.
 
+import os from "node:os";
 import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -304,7 +306,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
 		const SKIP = new Set(["AskAntigravity"]);
-		const skills: SkillLite[] = scanSkills(process.cwd());
+		// pi loads project skill locations only after the project is trusted;
+		// mirror that gate. Global skill dirs are always scanned.
+		const skills: SkillLite[] = scanSkills(ctx.isProjectTrusted() ? process.cwd() : undefined);
 		const getAll = (pi as unknown as {
 			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
 		}).getAllTools.bind(pi);
@@ -391,6 +395,9 @@ interface PendingConfig {
 	skipPermissions?: boolean;
 	defaultModel?: string;
 	defaultThinking?: ThinkingTier;
+	bridgeTools?: BridgeTools;
+	digest?: boolean;
+	systemPrompt?: boolean;
 }
 
 function statusText(ctx: AgyCommandCtx): string {
@@ -411,7 +418,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		`  digest:        ${config.digest ? "on" : "off"}`,
 		`  system prompt: ${config.systemPrompt ? "on" : "off"}`,
 		"",
-		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy model flash|pro|gemini, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy acp-auth, /agy patch-cleanup, /agy clear",
+		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy bridge all|mcp|none, /agy model <alias>, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
 	].join("\n");
 }
 
@@ -419,7 +426,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, engine picker, mode picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode [plan|accept-edits]|permissions on|off|digest on|off|system-prompt on|off|acp-auth|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode plan|accept-edits|permissions on|off|bridge all|mcp|none|model <alias>|thinking low|medium|high|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			const mode = cmdCtx.mode;
@@ -484,6 +491,24 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					);
 				} else {
 					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
+				}
+				return;
+			}
+			if (sub === "acp-bin") {
+				const rest = (args ?? "").trim().split(/\s+/).slice(1).join(" ");
+				if (rest.length > 0) {
+					// Only the keyword compares case-insensitively; the path keeps its case.
+					const bin = rest.toLowerCase() === "auto" ? "" : rest.replace(/^~(?=\/|$)/, os.homedir());
+					saveConfig({ acp: { bin, permissions: loadConfig().acp.permissions } });
+					ui?.notify(
+						bin
+							? `acp.bin set to ${bin}. The next ACP turn (re)connects with it.`
+							: "acp.bin cleared. Auto-setup (or AGY_ACP_BIN) picks the binary on the next ACP turn.",
+						"info",
+					);
+				} else {
+					const cur = loadConfig().acp.bin;
+					ui?.notify(`acp.bin: ${cur || "(auto: setup installs, or AGY_ACP_BIN)"}\nusage: /agy acp-bin <path|auto>`, "info");
 				}
 				return;
 			}
@@ -575,6 +600,20 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				return;
 			}
+			if (sub === "bridge") {
+				if (val === "all" || val === "mcp" || val === "none") {
+					const next = saveConfig({ bridgeTools: val });
+					ui?.notify(
+						next.bridgeTools === "none"
+							? "bridge off. The MCP tool bridge will not start on the next pi start (or /reload)."
+							: `bridge tools set to ${next.bridgeTools}. The catalog rebuilds on the next pi start (or /reload).`,
+						"info",
+					);
+				} else {
+					ui?.notify(`bridge: ${loadConfig().bridgeTools}\nusage: /agy bridge all|mcp|none\n  all: every non-builtin pi tool (default). mcp: pi-mcp-adapter tools + skills only. none: bridge off.`, "info");
+				}
+				return;
+			}
 			if (sub === "model") {
 				if (val && val.length > 0) {
 					const next = saveConfig({ defaultModel: val });
@@ -640,7 +679,10 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	});
 }
 
-/** Interactive settings picker (TUI only). Rows: mode + permissions + model + thinking. */
+/** Interactive settings picker (TUI only). Rows: the full runtime config
+ *  surface (mode, permissions, model, thinking, bridge, digest, system
+ *  prompt). Engine stays a subcommand: switching runs install + auth setup
+ *  and needs a restart. */
 async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const config = loadConfig();
 	const pending: PendingConfig = {};
@@ -678,6 +720,30 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			currentValue: config.defaultThinking,
 			values: ["low", "medium", "high"],
 		},
+		{
+			id: "bridge",
+			label: "Bridge tools",
+			description:
+				"Which pi tools the MCP bridge exposes to agy. all: every non-builtin tool (default). mcp: pi-mcp-adapter tools + skills. none: bridge off.",
+			currentValue: config.bridgeTools,
+			values: ["all", "mcp", "none"],
+		},
+		{
+			id: "digest",
+			label: "Context digest",
+			description:
+				"Inject a delta of pi-side context into each agy prompt. Defeats agy's prompt cache (~25-30k tokens re-billed per turn).",
+			currentValue: config.digest ? "on" : "off",
+			values: ["on", "off"],
+		},
+		{
+			id: "system-prompt",
+			label: "System prompt",
+			description:
+				"Prepend pi's system prompt (incl. AGENTS.md files) to the first prompt of each new agy conversation.",
+			currentValue: config.systemPrompt ? "on" : "off",
+			values: ["on", "off"],
+		},
 	];
 
 	await ui.custom((tui, theme, _kb, done) => {
@@ -698,6 +764,12 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 					pending.defaultModel = newValue;
 				} else if (id === "thinking") {
 					pending.defaultThinking = newValue as ThinkingTier;
+				} else if (id === "bridge") {
+					pending.bridgeTools = newValue as BridgeTools;
+				} else if (id === "digest") {
+					pending.digest = newValue === "on";
+				} else if (id === "system-prompt") {
+					pending.systemPrompt = newValue === "on";
 				}
 			},
 			() => done(undefined),
@@ -714,13 +786,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		};
 	});
 
-	if (
-		pending.mode === undefined &&
-		pending.skipPermissions === undefined &&
-		pending.defaultModel === undefined &&
-		pending.defaultThinking === undefined
-	)
-		return;
+	if (Object.keys(pending).length === 0) return;
 
 	if (pending.mode === "plan" && ctx.engine === "acp") {
 		ui.notify("the ACP engine has no plan mode (RC01). Switch /agy engine stream-json first.", "warning");
@@ -736,6 +802,9 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 				: null,
 			pending.defaultModel !== undefined ? `tool model=${next.defaultModel}` : null,
 			pending.defaultThinking !== undefined ? `tool thinking=${next.defaultThinking}` : null,
+			pending.bridgeTools !== undefined ? `bridge=${next.bridgeTools}` : null,
+			pending.digest !== undefined ? `digest=${next.digest ? "on" : "off"}` : null,
+			pending.systemPrompt !== undefined ? `system-prompt=${next.systemPrompt ? "on" : "off"}` : null,
 		]
 			.filter(Boolean)
 			.join(", ");

@@ -12,11 +12,11 @@ function tmpConfig(): string {
 	return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-cfg-")), "config.json");
 }
 
-test("config: defaults select the mcp bridge surface", () => {
+test("config: defaults select the full bridge surface", () => {
 	const p = tmpConfig();
 	try {
 		const c = loadConfig(p);
-		assert.equal(c.bridgeTools, "mcp");
+		assert.equal(c.bridgeTools, "all");
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
@@ -25,9 +25,10 @@ test("config: defaults select the mcp bridge surface", () => {
 test("config: bridgeTools round-trips through load/save", () => {
 	const p = tmpConfig();
 	try {
-		saveConfig({ bridgeTools: "all" }, p);
-		const c = loadConfig(p);
-		assert.equal(c.bridgeTools, "all");
+		for (const surface of ["all", "mcp", "none"] as const) {
+			saveConfig({ bridgeTools: surface }, p);
+			assert.equal(loadConfig(p).bridgeTools, surface);
+		}
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}
@@ -46,11 +47,11 @@ test("config: unrelated save does not clobber bridgeTools", () => {
 	}
 });
 
-test("config: invalid bridgeTools value falls back to mcp", () => {
+test("config: invalid bridgeTools value falls back to the default surface", () => {
 	const p = tmpConfig();
 	try {
 		saveConfig({ bridgeTools: "bogus" as never }, p);
-		assert.equal(loadConfig(p).bridgeTools, "mcp");
+		assert.equal(loadConfig(p).bridgeTools, "all");
 	} finally {
 		fs.rmSync(path.dirname(p), { recursive: true, force: true });
 	}

@@ -104,19 +104,21 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 
 | Key | Values | Default |
 | --- | --- | --- |
-| `bridgeTools` | `none` (bridge off), `mcp` (pi-mcp-adapter tools), `all` (every non-builtin tool, incl. other `Ask*` delegations) | `mcp` |
+| `bridgeTools` | `none` (bridge off), `all` (every non-builtin tool, incl. other `Ask*` delegations), `mcp` (pi-mcp-adapter tools + skills bridge only) | `all` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 | `systemPrompt` | `on` (prepend pi's system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` - to the first prompt of each new agy conversation) or `off` (agy-native behavior) | `on` |
 
 Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins over the file, so while `AGY_DIGEST` or `AGY_SYSTEM_PROMPT` is set, the matching `/agy digest` or `/agy system-prompt` toggle persists a value that never takes effect.
+
+The `activate_skill` catalog mirrors pi's directory-based skill discovery: the two global dirs plus project dirs, the latter only when pi has trusted the project (same gate pi itself applies). Pi's other skill sources - the `skills` settings array, `package.json` entries, and `--skill` CLI paths - are not mirrored and won't appear in the catalog.
 
 ### The /agy command
 
 `/agy` configures the provider at runtime. Settings persist to `~/.pi/agent/antigravity-bridge/config.json` and take effect on the next turn.
 
 ```
-/agy                      status, or open the mode/permissions/model/thinking picker (TUI)
-/agy status               print current mode, permissions, model + session counts
+/agy                      status, or open the full settings picker (TUI)
+/agy status               print current settings + session counts
 /agy doctor               bridge state, driver counters, bridge port, last lifecycle events
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
@@ -125,6 +127,8 @@ Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins o
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
 /agy system-prompt on|off send pi's system prompt + AGENTS.md to new agy conversations (default on)
+/agy bridge all|mcp|none  which pi tools the MCP bridge exposes to agy (default all; none = bridge off)
+/agy acp-bin <path|auto>  point the ACP engine at a specific server binary (auto = setup installs, or AGY_ACP_BIN; applies on the next ACP turn)
 /agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp runs self-service setup: binary install + auth bootstrap)
 /agy acp-auth                 manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
 /agy patch-cleanup        restore the original pi files if an older version patched them
