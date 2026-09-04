@@ -105,6 +105,40 @@ test("toAgyEffort maps pi levels onto the base's supported tiers (clamped)", () 
 	assert.equal(toAgyEffort(undefined, pro), "low");
 });
 
+test("streamSimple forwards image blocks from the user message to the driver", async () => {
+	const seen: { opts?: DriverTurnRequest } = {};
+	const driver = capturingDriver(seen);
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
+		store: new SessionStore(tmpStorePath()),
+		driver,
+		roundTrips: new ToolRoundTrips(driver),
+	});
+	const context: Context = {
+		systemPrompt: undefined,
+		messages: [
+			{
+				role: "user",
+				timestamp: Date.now(),
+				content: [
+					{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+					{ type: "text", text: "What is this?" },
+				],
+			},
+		],
+	};
+	const stream = streamSimple(
+		{ ...model, id: "gemini-flash" },
+		context,
+		{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
+	);
+	for await (const ev of stream) void ev;
+	// Text rides as the prompt; images ride separately (the legacy driver
+	// ignores them, the ACP driver forwards them as typed content blocks).
+	assert.equal(seen.opts?.prompt, "What is this?");
+	assert.deepEqual(seen.opts?.images, [{ data: "aGVsbG8=", mimeType: "image/png" }]);
+});
+
 test("streamSimple forwards options.reasoning as effort for an effort-driven base", async () => {
 	const opts = await captureTurn(
 		{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] },

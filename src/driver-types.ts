@@ -26,6 +26,10 @@ export interface DriverTurnRequest extends DriverProfile {
 	 *  `session/new` when the server no longer knows it). */
 	conversationId?: string | null;
 	prompt: string;
+	/** Image blocks riding with the prompt. ACP forwards them as typed
+	 *  content blocks (probe 2026-09-03: 64x64 two-tone PNG answered
+	 *  correctly); the legacy CLI prompt is text-only and ignores them. */
+	images?: Array<{ data: string; mimeType: string }>;
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). */

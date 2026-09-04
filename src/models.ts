@@ -273,8 +273,11 @@ function thinkingLevelMapFor(efforts: readonly AgyEffort[]): ThinkingLevelMap {
 	return map as ThinkingLevelMap;
 }
 
-/** Project an agy entry to pi's Model shape. */
-export function toPiModel(entry: AgyModelEntry): Model<Api> {
+/** Project an agy entry to pi's Model shape. `input` advertises accepted
+ *  inputs: text-only (default) or text+image. The ACP engine forwards image
+ *  blocks natively (probe 2026-09-03); the legacy CLI prompt is text-only, so
+ *  the extension decides by engine at load time. */
+export function toPiModel(entry: AgyModelEntry, input: Array<"text" | "image"> = ["text"]): Model<Api> {
 	const effortDriven = !!entry.efforts && entry.efforts.length > 0;
 	return {
 		id: entry.id,
@@ -290,11 +293,10 @@ export function toPiModel(entry: AgyModelEntry): Model<Api> {
 		// changed and agy rejects --effort for them.
 		reasoning: effortDriven,
 		...(effortDriven ? { thinkingLevelMap: thinkingLevelMapFor(entry.efforts!) } : {}),
-		// agy's -p prompt is text-only. Advertising image input would let pi
-		// offer image attach, but extractUserPrompt silently drops image blocks,
-		// so the user would be misled. Keep input text-only until agy supports
-		// image passthrough in print mode.
-		input: ["text"],
+		// Input advertising comes from the caller (engine-dependent): the ACP
+		// engine forwards image blocks; advertising images on the legacy engine
+		// would let pi offer image attach only for them to be dropped.
+		input,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		// Gemini long context. agy doesn't expose the real per-model window in
 		// `agy models`; 1M is the documented Gemini ceiling.

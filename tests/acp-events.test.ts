@@ -55,6 +55,51 @@ describe("acp/events mapUpdate", () => {
 		assert.deepEqual(mapped, { kind: "tool_done", toolCallId: "t1", output: "Create probe.txt" });
 	});
 
+	test("MCP tool frames: args unwrap the arguments envelope, name from _meta", () => {
+		// Verbatim shape from the phase-2 probe (bridge_echo through the real
+		// server): title is "<server>_<tool>", the clean name hides in
+		// _meta.mcp.tool, and rawInput wraps args in an MCP arguments envelope.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call",
+			toolCallId: "e5a2e6d6eada432fbdb51c694b8e7300",
+			title: "pi-bridge_bridge_echo",
+			kind: "other",
+			status: "pending",
+			content: [],
+			rawInput: { arguments: { text: "PROBE-9" } },
+			_meta: { mcp: { tool: "bridge_echo", server: "pi-bridge" }, is_mcp_tool_call: true },
+		});
+		assert.ok(mapped && mapped.kind === "tool_start");
+		if (mapped.kind !== "tool_start") return;
+		assert.equal(mapped.name, "bridge_echo");
+		assert.deepEqual(mapped.args, { text: "PROBE-9" });
+	});
+
+	test("completed tool content[] wins over rawOutput", () => {
+		// Probe: rawOutput was the display title while content[] carried the
+		// real payload text.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "t1",
+			status: "completed",
+			content: [{ type: "content", content: { type: "text", text: "THE RESULT" } }],
+			rawOutput: "Run bridge_echo?",
+		});
+		assert.deepEqual(mapped, { kind: "tool_done", toolCallId: "t1", output: "THE RESULT" });
+	});
+
+	test("completed tool without text content falls back to rawOutput", () => {
+		// Diff entries carry no text; rawOutput is the only display then.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "t1",
+			status: "completed",
+			content: [{ type: "diff", path: "/x/a.txt", newText: "hello\n" }],
+			rawOutput: "Running edit_file",
+		});
+		assert.deepEqual(mapped, { kind: "tool_done", toolCallId: "t1", output: "Running edit_file" });
+	});
+
 	test("tool_call_update failed maps to tool_error with the raw output as message", () => {
 		const mapped = mapUpdate({
 			sessionUpdate: "tool_call_update",

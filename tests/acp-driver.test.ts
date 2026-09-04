@@ -30,6 +30,7 @@ async function runDriver(
 	scenario: string,
 	opts: {
 		prompt?: string;
+		images?: Array<{ data: string; mimeType: string }>;
 		conversationId?: string | null;
 		timeoutMin?: number;
 		signal?: AbortSignal;
@@ -54,6 +55,7 @@ async function runDriver(
 		skipPermissions: true,
 		conversationId: opts.conversationId ?? null,
 		prompt: opts.prompt ?? "hi",
+		images: opts.images,
 		timeoutMin: opts.timeoutMin,
 		signal: opts.signal ?? controller.signal,
 	});
@@ -264,6 +266,23 @@ describe("acp/driver timers", () => {
 		const o2 = await h2.outcome;
 		assert.equal(o2.status, "OK");
 		assert.match(o2.response, /P2/);
+	});
+
+	test("images ride as typed content blocks ahead of the text", async () => {
+		const run = await runDriver("happy", {
+			prompt: "What is it?",
+			images: [{ data: "aGVsbG8=", mimeType: "image/png" }],
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const promptReq = sentRequests(run._logPath).find((r) => r.method === "session/prompt");
+		assert.ok(promptReq, "session/prompt in the request log");
+		const blocks = (promptReq as { params: { prompt: Array<{ type: string; text?: string; mimeType?: string }> } })
+			.params.prompt;
+		assert.equal(blocks[0].type, "image");
+		assert.equal(blocks[0].mimeType, "image/png");
+		assert.equal(blocks[blocks.length - 1].type, "text");
+		run.cleanup();
 	});
 
 	test("park pauses the overall deadline; kickIdle resumes it (remaining budget)", async () => {

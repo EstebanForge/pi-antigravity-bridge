@@ -10,17 +10,23 @@ All notable changes to this project will be documented in this file.
 - `/agy engine acp|stream-json` command and `/agy acp-auth` (one-time credential setup for the ACP server, which keeps its own auth state). `/agy doctor` is engine-aware.
 - `scripts/smoke-acp.mjs` (live ACP smoke), `scripts/smoke-acp-bridge.mjs` (live Gate F bridge e2e), `scripts/parity-live.mjs` (live parity run: 7 scenarios through BOTH engines). All quota-gated via `AGY_ACP_LIVE=1`.
 - `docs/ACP-ADOPTION-PLAN.md` (adoption plan, gates, progress tracking) and `docs/ACP-PROTOCOL-REFERENCE.md` (captured wire shapes of the ACP server).
+- Image prompt support on the ACP engine: pi image attachments ride as typed content blocks (`DriverTurnRequest.images`, forwarded by `connection.prompt` ahead of the text block). Models advertise `input: ["text","image"]` only when the engine is `acp` (read at extension load; engine switches require a restart), so the text-only legacy CLI never offers an attach button it cannot honor. Verified live: a 64x64 two-tone PNG answered correctly through the full driver stack (`scripts/smoke-acp-image.mjs`, quota-gated) and in the phase-2 probe (`scripts/probe-acp-phase2.mjs`).
+- `scripts/probe-acp-phase2.mjs`: live probe capturing thought-chunk sparsity, image end-to-end, full tool_call/tool_call_update frames, and the `/plan` command flow (raw frames in `probe-logs/`).
 
 ### Changed
 
 - `McpServerHandle` exposes the shared-secret token (`token`), and `TOKEN_HEADER` is exported: engines other than the stream-json discovery file need the header to reach the bridge (the ACP registration was silently sending no header and would have been 403'd).
 - Driver exit handling is connection-scoped in `AcpDriver`: a killed connection's late exit (the current ACP build intercepts SIGTERM and can outlive its replacement) no longer clobbers the live connection or fails the recovery turn.
+- `tool_call_update` display: the completed call's output now prefers the `content[]` text over `rawOutput`, which the server fills with a display title ("Call bridge_echo") rather than the result. The result itself reaches the model out-of-band; only the activity display was wrong.
+- Tool-frame mapping fixes from the phase-2 probe: MCP `rawInput` args unwrap the `arguments` envelope, and the tool name prefers `_meta.mcp.tool` over the "<server>_<tool>" title.
 
 ### Known limitations of the ACP engine (current build, RC01)
 
 - No usage fields anywhere: token display shows zero (Gate B; the stream-json engine stays default until upstream ships usage).
 - No `session/cancel` (-32601): abort tears the connection down and reloads on the next turn; `cancelSupported` is probed once and shown in `/agy doctor`.
-- `tool_done` activity output carries agy's tool title rather than the result content (the model receives the result; only the activity display lacks it).
+- `tool_call` activity output shows the server's display string, not the MCP result content (the model receives the result out-of-band; only the activity display lacks it).
+- `agent_thought_chunk` is sparse on RC01 (a step-by-step prompt produced zero; reasoning ships as plain message text). The thinking pipeline handles deltas when they occur.
+- ACP has NO review-only mode: the three modes are permission modes only, and the server-intercepted `/plan` command writes its artifact under auto policy. Plan delegations keep the legacy `agy -p --mode plan` path (committed exception).
 
 ## [1.3.3] - 2026-09-01
 

@@ -704,21 +704,46 @@ Open acceptance (blocking "phase 1 done"):
 Acceptance gate: every section 6 box `[x]` on the ACP engine, or explicitly
 marked with its gate fallback.
 
-### Phase 2: protocol-native wins
+### Phase 2: protocol-native wins — ✅ COMPLETE (2026-09-03)
 
-- `permissions: "bridge"` policy: REMOVED by decision 2026-09-03 (pi has no
+Probe evidence: `probe-logs/acp-phase2-traffic.jsonl` + shapes recorded in
+ACP-PROTOCOL-REFERENCE.md "Phase-2 probe findings".
+
+- ~~`permissions: "bridge"` policy~~: REMOVED by decision 2026-09-03 (pi has no
   native permission concept; per-tool gating belongs to the tools themselves
-  and is preserved by G9; see 9.3). Phase 2 instead probes plan-mode
-  equivalence (ACP modes are permission modes; the CLI's `--mode plan` has
-  no confirmed mapping) before any mode-dependent feature ships.
-- Image (and optionally audio) prompt blocks forwarded from pi content.
-- Thought text deltas through the existing thinking pipeline.
-- `session/cancel` moved to phase 1; phase 2 keeps the parity test that an
-  aborted turn leaves the server process alive and reusable.
-- Model/effort switching via the gate A mechanism; on gate A FAIL the flip
-  is blocked (see section 8), not worked around.
-- Plan updates rendered as thinking labels.
-- Acceptance: no parity regression; cancel probe; image probe end-to-end.
+  and is preserved by G9; see 9.3).
+- [x] Plan-mode equivalence probe: ACP modes are permission modes only
+  (default/auto_edit/yolo) — NO review-only mode exists. The server's
+  `/plan` command is intercepted server-side (F.7) and WRITES the plan
+  artifact under auto policy. Verdict: plan delegations keep
+  `agy -p --mode plan` (the committed exception); do not route mode:plan
+  through ACP.
+- [x] Image prompt blocks forwarded from pi content — driver `images`
+  param, `connection.prompt` builds typed blocks ahead of the text,
+  provider extracts image blocks from the user message, models advertise
+  `input: ["text","image"]` on the ACP engine only (engine read at load;
+  engine switches require a restart). Verified live: 64x64 two-tone PNG
+  through the full driver stack (`scripts/smoke-acp-image.mjs`) and in the
+  probe.
+- [x] Thought text deltas through the thinking pipeline — already wired in
+  phase 1 (provider renders `thought` deltas into the thinking block);
+  probe finding: chunks are SPARSE on RC01 (a step-by-step prompt produced
+  zero; reasoning ships as plain message text). No further work justified.
+- [x] `session/cancel` parity — landed in phase 1 (Gate D fallback,
+  abort-recover live on both engines).
+- [x] Model/effort switching via the gate A mechanism — PASS (live,
+  including on a loaded session; parity scenario).
+- [x] Tool-frame display fixes (found by the probe, shipped with this
+  phase): `tool_call_update` output prefers `content[]` text over the
+  display-title `rawOutput`; MCP args unwrap the `arguments` envelope;
+  tool name prefers `_meta.mcp.tool` over the "<server>_<tool>" title.
+- [x] "Plan updates rendered as thinking labels" — OBSERVED-ABSENT on
+  RC01: no `plan` sessionUpdate type exists; artifacts arrive as ordinary
+  edit tool_calls (already rendered as cards). Item closed as not
+  applicable, not deferred.
+- Acceptance: no parity regression (14/14 re-run after the mapping
+  changes); cancel probe done (phase 1); image probe end-to-end (probe +
+  live smoke).
 
 ### Phase 3: consolidation
 

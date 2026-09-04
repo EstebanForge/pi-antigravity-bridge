@@ -72,7 +72,7 @@ if (registered) {
 		const ids = models.map((m) => m.id).join(", ");
 		console.log(`       registered model ids: ${ids}`);
 		// The fallback models must project cleanly through toPiModel.
-		const projected = FALLBACK_MODELS.map(toPiModel);
+		const projected = FALLBACK_MODELS.map((e) => toPiModel(e));
 		check("fallback models all project provider=antigravity", projected.every((m) => m.provider === "antigravity"));
 	}
 	// Subagent guard: a second load must NOT re-register (Symbol.for global).

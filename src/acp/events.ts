@@ -45,8 +45,8 @@ export function mapUpdate(update: unknown): MappedUpdate {
 			return {
 				kind: "tool_start",
 				toolCallId: id,
-				name: toolName(u.title, u.kind),
-				args: recordField(u.rawInput),
+				name: metaToolName(u._meta) ?? toolName(u.title, u.kind),
+				args: rawArguments(u.rawInput),
 			};
 		}
 		case "tool_call_update": {
@@ -56,7 +56,10 @@ export function mapUpdate(update: unknown): MappedUpdate {
 				return { kind: "tool_error", toolCallId: id, message: stringField(u.rawOutput) ?? "tool failed" };
 			}
 			if (u.status === "completed") {
-				return { kind: "tool_done", toolCallId: id, output: stringField(u.rawOutput) };
+				// content[] first (edits carry their diff there); rawOutput alone is
+				// often just the server's display title, not the result (probe
+				// 2026-09-03: completed MCP call, rawOutput "Call bridge_echo").
+				return { kind: "tool_done", toolCallId: id, output: contentText(u.content) ?? stringField(u.rawOutput) };
 			}
 			return null; // in_progress or unknown status: nothing to render yet
 		}
@@ -65,6 +68,38 @@ export function mapUpdate(update: unknown): MappedUpdate {
 			// the driver snapshot / future phases, not mapped to activities.
 			return null;
 	}
+}
+
+/** MCP tools wrap their args in an `arguments` envelope
+ *  ({arguments:{...}}); native tools carry them directly (probe 2026-09-03:
+ *  bridge_echo rawInput {arguments:{text}}, edit_file rawInput {file_path}). */
+function rawArguments(rawInput: unknown): Record<string, unknown> {
+	const rec = recordField(rawInput);
+	const args = rec.arguments;
+	return typeof args === "object" && args !== null && !Array.isArray(args)
+		? (args as Record<string, unknown>)
+		: rec;
+}
+
+/** Clean tool name for MCP tools: the title is "<server>_<tool>" (e.g.
+ *  "pi-bridge_bridge_echo") and the real name hides in _meta.mcp.tool. */
+function metaToolName(meta: unknown): string | undefined {
+	const mcp = recordField(recordField(meta).mcp);
+	const tool = mcp.tool;
+	return typeof tool === "string" && tool.length > 0 ? tool : undefined;
+}
+
+/** Display text of a completed tool call. content[] entries wrap their
+ *  payload ({type:"content", content:{type:"text", text}}); diff entries
+ *  carry no text and are skipped. */
+function contentText(content: unknown): string | undefined {
+	if (!Array.isArray(content)) return undefined;
+	const parts: string[] = [];
+	for (const entry of content) {
+		const inner = recordField(recordField(entry).content ?? entry);
+		if (typeof inner.text === "string" && inner.text.length > 0) parts.push(inner.text);
+	}
+	return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
 /** Extract the text of a content block ({type:"text", text}). */

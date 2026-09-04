@@ -61,12 +61,23 @@ function extractUserPrompt(context: Context): string | null {
 	if (!last || last.role !== "user") return null;
 	const content = last.content;
 	if (typeof content === "string") return content;
-	// Flatten text blocks; drop images (agy CLI prompt is text-only via -p).
+	// Flatten text blocks; images ride separately via extractImages (ACP only).
 	return content
 		.filter((b): b is { type: "text"; text: string } => b.type === "text")
 		.map((b) => b.text)
 		.join("\n")
 		.trim() || null;
+}
+
+/** Image blocks of the latest user message (pi-ai ImageContent: base64 data
+ *  + mimeType). The ACP engine forwards them as typed content blocks; the
+ *  legacy CLI prompt is text-only, so its driver simply ignores these. */
+function extractImages(context: Context): Array<{ data: string; mimeType: string }> {
+	const last = context.messages[context.messages.length - 1];
+	if (!last || last.role !== "user" || typeof last.content === "string") return [];
+	return last.content
+		.filter((b): b is { type: "image"; data: string; mimeType: string } => b.type === "image")
+		.map((b) => ({ data: b.data, mimeType: b.mimeType }));
 }
 
 // --- G1: pi-side context digest --------------------------------------------------
@@ -671,7 +682,10 @@ async function runTurnDriver(
 		handle = active;
 	} else {
 		const prompt = extractUserPrompt(context);
-		if (!prompt) {
+		const images = extractImages(context);
+		// An image-only message (no text) is valid on the ACP engine; only fail
+		// when there is nothing at all to send.
+		if (!prompt && images.length === 0) {
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
@@ -684,7 +698,7 @@ async function runTurnDriver(
 		// re-sending it every turn would bloat each prompt and bust the cache.
 		const sysPrompt =
 			config.systemPrompt && !existing?.conversationId ? context.systemPrompt : undefined;
-		const fullPrompt = buildFullPrompt(sysPrompt, digest, prompt);
+		const fullPrompt = buildFullPrompt(sysPrompt, digest, prompt ?? "");
 		try {
 			handle = await deps.driver.run({
 				cwd,
@@ -694,6 +708,7 @@ async function runTurnDriver(
 				skipPermissions: config.skipPermissions,
 				conversationId: existing?.conversationId ?? null,
 				prompt: fullPrompt,
+				images: images.length > 0 ? images : undefined,
 				signal: options?.signal,
 			});
 		} catch (err) {

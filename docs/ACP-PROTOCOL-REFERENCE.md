@@ -416,3 +416,45 @@ All remaining probes executed. Results:
 
 Probe session closed cleanly (`session/close` then kill). Final gate status:
 plan section 8.1.
+
+## Phase-2 probe findings (2026-09-03; raw traffic
+`probe-logs/acp-phase2-traffic.jsonl`, one session, four labeled prompts,
+all `end_turn`)
+
+1. **`agent_thought_chunk` is SPARSE on RC01.** A step-by-step math prompt
+   produced ZERO thought chunks - the reasoning shipped as plain
+   `agent_message_chunk` text. The only thought chunk in the capture came
+   from the `/plan` flow. Shape is identical to the message chunk
+   (`content:{type:"text",text}`), already mapped. Consequence: the
+   thinking-block pipeline rarely renders on flash-low; do not build UI
+   assumptions on frequent thought deltas.
+2. **Image prompts: PASS at real resolution.** 64x64 two-tone PNG (top
+   red / bottom blue) sent as `{type:"image",data,mimeType}` blocks ahead
+   of the text block answered "Top: Red, Bottom: Blue". Mixed
+   image+text prompt arrays work; no 1x1-only limitation.
+3. **Tool frames: three mappings the phase-1 driver got wrong.**
+   - MCP tools wrap args in an envelope: `rawInput:{arguments:{text}}`.
+     Native `edit_file` carries args directly (`rawInput:{file_path}`).
+   - MCP tool titles are "<server>_<tool>" ("pi-bridge_bridge_echo"); the
+     clean name hides in `_meta.mcp.tool`.
+   - A completed `tool_call_update`'s `rawOutput` is the server's DISPLAY
+     string, often just the tool title ("Call bridge_echo"), NOT the
+     result. `content[]` entries wrap their payload
+     (`{type:"content",content:{type:"text",text}}`); for edits the same
+     array carries the real diff (`newText`...). The MCP result itself
+     reaches the model out-of-band: the client answered ECHO:PROBE-9
+     correctly without the result ever appearing in an update.
+4. **`/plan` command flow (F.7 answered: the server INTERCEPTS leading
+   slash commands).** "/plan Organize a birthday party" produced: one
+   `agent_thought_chunk`, a `create_file` tool_call with the full plan
+   diff in `content[]`, an `edit_file` into the server's brain dir
+   (`~/.gemini/antigravity-acp/brain/<sessionId>/...`), and a closing
+   message asking for decisions. It WRITES under the auto permission
+   policy. **Verdict: ACP has NO review-only mode.** The three modes
+   (default/auto_edit/yolo) are permission modes only; the CLI's
+   `--mode plan` has no ACP equivalent. The committed exception stands:
+   plan delegations keep `agy -p --mode plan`.
+5. **No `plan` sessionUpdate type exists** on RC01. Plan artifacts arrive
+   as ordinary edit `tool_call`s (rendered as tool cards), not as a
+   distinct update stream. The phase-2 idea "plan updates as thinking
+   labels" is observed-absent, not deferred.

@@ -201,10 +201,20 @@ export class AcpConnection {
 
 	/** No request timeout on purpose: the driver's overall/idle timers govern
 	 *  the turn and fire abortAll on breach. */
-	async prompt(sessionId: string, text: string): Promise<{ stopReason: string }> {
+	async prompt(
+		sessionId: string,
+		text: string,
+		images: Array<{ data: string; mimeType: string }> = [],
+	): Promise<{ stopReason: string }> {
+		// Image blocks first, text last (probe 2026-09-03: mixed blocks answered
+		// correctly; the text question rides after the image it refers to).
+		const blocks: Array<Record<string, string>> = [
+			...images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+			{ type: "text", text },
+		];
 		const result = (await this.request("session/prompt", {
 			sessionId,
-			prompt: [{ type: "text", text }],
+			prompt: blocks,
 		})) as Record<string, unknown> | undefined;
 		const stopReason = result?.stopReason;
 		if (typeof stopReason !== "string") {

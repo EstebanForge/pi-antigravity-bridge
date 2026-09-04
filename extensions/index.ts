@@ -82,7 +82,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const toolModels = toolModelsFromRaw(raw);
 	const usingFallback = discovered.length === 0;
 	const entries: AgyModelEntry[] = usingFallback ? FALLBACK_MODELS : discovered;
-	const models = entries.map(toPiModel);
+	// Engine switching requires a restart, so the catalog-time engine read is
+	// authoritative for input advertising: image attach rides only when turns
+	// will run on the ACP engine (the legacy CLI prompt is text-only).
+	const modelInput: Array<"text" | "image"> =
+		loadConfig().engine === "acp" ? ["text", "image"] : ["text"];
+	const models = entries.map((e) => toPiModel(e, modelInput));
 
 	const store = new SessionStore();
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port

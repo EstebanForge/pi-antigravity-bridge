@@ -278,7 +278,7 @@ export class AcpDriver implements TurnDriver {
 		try {
 			// Nothing to cancel before the prompt RPC exists; see promptStarted.
 			turn.promptStarted = true;
-			const result = await conn.prompt(turn.sessionId, request.prompt);
+			const result = await conn.prompt(turn.sessionId, request.prompt, request.images);
 			if (turn.closed) return;
 			turn.sawResult = true;
 			const mapped = mapStopReason(result.stopReason);
