@@ -2,14 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.4.3] - 2026-09-04
 
 ### Added
 
 - AskAntigravity tool toggle: `/agy ask on|off`, an "AskAntigravity tool" row in the bare-`/agy` picker, and the `askTool` config key (env `AGY_ASK_TOOL`). Default on; `off` skips registering the AskAntigravity one-shot delegation tool entirely, for users who want only the provider and its models and no delegation tool in the model's window context. When the separate pi-ask-antigravity package is also installed, `off` means no delegation tool from either package (no fallback). Takes effect on the next pi start (or /reload); `/agy status` shows the state.
 
-## [1.4.3] - 2026-09-04
-
+### Changed
 ### Changed
 
 - The bare-`/agy` settings picker gains a Turn engine row (`stream-json`/`acp`). Saving `acp` persists the switch, then runs the same self-service setup as `/agy engine acp` (binary install + auth bootstrap, `acp.bin` updated). The plan+acp RC01 guard now evaluates the effective engine AND mode after the save, so a config already in `plan` plus a fresh `acp` pick is refused instead of persisting an invalid combination (peer-review find).
