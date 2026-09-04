@@ -319,38 +319,59 @@ describe("acp/driver timers", () => {
 		run.cleanup();
 	});
 
+	test("run-6 shapes: diff from the pending tool_call lands on tool_done", async () => {
+		// Supersede quirk: the completed update arrives under a different id
+		// with no diff; the diff captured at tool_start must still ride.
+		const run = await tracked("tool-diff", { prompt: "make the file" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const done = run.activities.find((a) => a.type === "tool_done");
+		assert.ok(done && done.type === "tool_done");
+		assert.equal(done.name, "create_file");
+		assert.deepEqual(done.diff, { path: "/w/probe.txt", newText: "hello\n" });
+	});
+
 	test("park pauses the overall deadline; kickIdle resumes it (remaining budget)", async () => {
-		// Scenario "slow": the fake never responds. Budget 1.2s: park at ~0.1s
-		// (deadline freezes), then unpark (deadline resumes with the remaining
-		// budget and fires at ~1.6s). A broken pause would fire at 1.2s.
+		// Park scenario: P1 streams at ~100 ms, P2 at 2500 ms. Budget 1.2 s is
+		// armed right after session setup. Park on the FIRST CHUNK (post-arm -
+		// the round-7 bug: parks that arrive before arming took the setup-park
+		// branch and hid the missing deadline), wait 500 ms, then unpark. The
+		// deadline must resume with its REMAINING budget and fire around
+		// ~1.8-1.9 s elapsed. A no-op pause lets the timer keep running and
+		// fire at ~1.3 s.
 		const dir = tmpDir();
 		const driver = new AcpDriver({
 			bin: process.execPath,
 			binArgs: [FAKE_SERVER],
-			extraEnv: { ACP_FAKE_SCENARIO: "slow", ACP_FAKE_LOG: path.join(dir, "log.jsonl") },
+			extraEnv: { ACP_FAKE_SCENARIO: "park", ACP_FAKE_LOG: path.join(dir, "log.jsonl") },
 			log: () => {},
 		});
 		cleanups.push(() => {
 			void driver.close("shutdown");
 			fs.rmSync(dir, { recursive: true, force: true });
 		});
+		const started = Date.now();
 		const handle = await driver.run({
 			cwd: dir,
 			model: "gemini-3.8-flash",
 			effort: "low",
 			mode: "accept-edits",
 			skipPermissions: true,
-			prompt: "hang",
+			prompt: "park me",
 			timeoutMin: 0.02,
 		});
-		// Park at ~0.1s: the 1.2s deadline freezes with ~1.1s remaining.
+		// First chunk proves the overall timer is armed; park now (post-arm).
+		await handle.next();
 		handle.pushExternal({ type: "bridge_call", callId: "c1", name: "ask_user_question", args: {} });
-		await new Promise((r) => setTimeout(r, 400));
-		// Unpark: the deadline resumes with its remaining budget and fires.
+		await new Promise((r) => setTimeout(r, 500));
 		driver.kickIdle();
 		const outcome = await handle.outcome;
+		const elapsed = Date.now() - started;
 		assert.equal(outcome.status, "ERROR");
 		assert.match(outcome.error ?? "", /deadline/);
+		// Broken pause: fires ~1.3 s elapsed. Fixed: ~1.8-1.9 s (parked time
+		// did not consume budget).
+		assert.ok(elapsed >= 1600, `deadline fired at ${elapsed} ms - pause is a no-op`);
 	});
 });
 

@@ -20,7 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import { AcpConnection, resolveAcpBinary, type AcpMcpServer } from "./connection.js";
-import { mapStopReason, mapUpdate, TextAccumulator } from "./events.js";
+import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
 import type {
 	DriverActivity,
 	DriverSnapshot,
@@ -68,8 +68,14 @@ interface ActiveTurn {
 	overallRemainingMs: number | null;
 	overallTimer?: ReturnType<typeof setTimeout>;
 	idleTimer?: ReturnType<typeof setTimeout>;
-	/** toolCallId → tool name + args (tool_call carries both; updates don't). */
-	toolCalls: Map<string, { name: string; args: Record<string, unknown> }>;
+	/** toolCallId → tool name + args + optional native diff (diff rides on
+	 *  the pending tool_call frame; updates don't repeat it). */
+	toolCalls: Map<string, { name: string; args: Record<string, unknown>; diff?: AcpEditDiff }>;
+	/** Last pending native tool seen. The supersede quirk (run 6, finding 7)
+	 *  means the executing call can arrive under a DIFFERENT id than the
+	 *  approved one; unknown-id updates adopt this so the diff and name are
+	 *  not lost. */
+	lastNativeTool?: { name: string; args: Record<string, unknown>; diff?: AcpEditDiff };
 }
 
 /** Recombine the provider's (base slug, effort) into the FULL ACP model slug.
@@ -346,15 +352,25 @@ export class AcpDriver implements TurnDriver {
 				return;
 			}
 			case "tool_start": {
-				turn.toolCalls.set(mapped.toolCallId, { name: mapped.name, args: mapped.args });
+				const entry = { name: mapped.name, args: mapped.args, diff: mapped.diff };
+				turn.toolCalls.set(mapped.toolCallId, entry);
+				turn.lastNativeTool = { ...entry };
 				this.#emit(turn, { type: "tool_start", name: mapped.name, args: mapped.args });
 				return;
 			}
 			case "tool_done": {
-				const entry = turn.toolCalls.get(mapped.toolCallId);
+				let entry = turn.toolCalls.get(mapped.toolCallId);
+				if (!entry && turn.lastNativeTool) {
+					// Unknown id with a recent native tool: adopt it (supersede).
+					entry = { ...turn.lastNativeTool };
+					turn.toolCalls.set(mapped.toolCallId, entry);
+					turn.lastNativeTool = undefined;
+				}
 				const name = entry?.name ?? "tool";
 				const args = entry?.args ?? {};
-				this.#emit(turn, { type: "tool_done", name, args, output: mapped.output, diff: mapped.diff });
+				// Native diff from the stored tool_call frame; the update's own
+				// diff (future builds) wins when present.
+				this.#emit(turn, { type: "tool_done", name, args, output: mapped.output, diff: mapped.diff ?? entry?.diff });
 				return;
 			}
 			case "tool_error": {
@@ -425,8 +441,11 @@ export class AcpDriver implements TurnDriver {
 				return conn;
 			})
 			.catch((err) => {
+				// A server that spawned but failed the handshake (init timeout,
+				// auth hang) must not leak: it is detached, so it outlives pi.
 				this.#state = "dead";
 				this.#conn = undefined;
+				conn.kill();
 				this.#log("start-failed", { message: describe(err) });
 				throw err;
 			});
@@ -545,6 +564,11 @@ export class AcpDriver implements TurnDriver {
 	}
 
 	#startOverallTimer(turn: ActiveTurn, ms: number): void {
+		// The deadline lives HERE, not just in the callers: the running branch
+		// of #armOverall never assigns it, and #pauseOverall keys off
+		// `deadline !== null` to do anything at all. Without this line every
+		// post-arm park is a silent no-op and the timer ticks through the park.
+		turn.overallDeadline = this.#nowMs() + ms;
 		turn.overallTimer = setTimeout(() => {
 			if (turn.closed) return;
 			turn.abortedBy = "timer";
@@ -571,7 +595,6 @@ export class AcpDriver implements TurnDriver {
 	#resumeOverall(turn: ActiveTurn): void {
 		if (turn.overallRemainingMs === null) return;
 		const remaining = turn.overallRemainingMs;
-		turn.overallDeadline = this.#nowMs() + remaining;
 		turn.overallRemainingMs = null;
 		this.#startOverallTimer(turn, remaining);
 	}
@@ -658,7 +681,7 @@ export class AcpDriver implements TurnDriver {
 		return {
 			state: this.#state,
 			pid: this.#conn?.pid,
-			conversationId: this.#lastSessionId ?? this.#active?.sessionId,
+			conversationId: this.#active?.sessionId ?? this.#lastSessionId,
 			stats: {
 				spawns: this.#stats.spawns,
 				turns: this.#stats.turns,

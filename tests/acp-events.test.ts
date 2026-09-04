@@ -122,17 +122,64 @@ describe("acp/events mapUpdate", () => {
 		});
 	});
 
+	test("run-6 edit: diff rides on the PENDING tool_call frame", () => {
+		// Verbatim shape from probe-logs/acp-traffic-run6...jsonl:10. The diff
+		// arrives on the pending frame; the completed update repeats none of it
+		// (supersede quirk), so this is the only place it can be captured.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call",
+			toolCallId: "33eb71a04aae4d4c9b85081f20ab5169",
+			title: "Run create_file?",
+			kind: "edit",
+			status: "pending",
+			content: [{ newText: "hello\n", path: "/w/probe.txt", _meta: { kind: "add" }, type: "diff" }],
+			locations: [{ path: "/w/probe.txt" }],
+			rawInput: { file_path: "/w/probe.txt" },
+		});
+		assert.ok(mapped && mapped.kind === "tool_start");
+		if (mapped.kind !== "tool_start") return;
+		assert.equal(mapped.name, "create_file");
+		assert.deepEqual(mapped.args, { file_path: "/w/probe.txt" });
+		assert.deepEqual(mapped.diff, { path: "/w/probe.txt", newText: "hello\n" });
+	});
+
+	test("run-6 supersede echo is dropped, not rendered as a tool error", () => {
+		// After the allow, the APPROVED id reports failed with this sentinel
+		// while the real edit runs under a different id that succeeds.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "33eb71a04aae4d4c9b85081f20ab5169",
+			status: "failed",
+			rawOutput: "Tool call was approved but never executed.",
+		});
+		assert.equal(mapped, null);
+	});
+
+	test("run-6 completed update carries no diff (rawOutput only)", () => {
+		// Verbatim: the completed update for the REAL call (supersede quirk -
+		// different id than the approved one) has no content at all.
+		const mapped = mapUpdate({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "fake-session-0001:7",
+			status: "completed",
+			rawOutput: "Create probe.txt",
+		});
+		assert.deepEqual(mapped, { kind: "tool_done", toolCallId: "fake-session-0001:7", output: "Create probe.txt" });
+	});
+
 	test("tool_call_update failed maps to tool_error with the raw output as message", () => {
+		// A GENUINE failure (not the RC01 approved-echo sentinel, which has its
+		// own suppression test above).
 		const mapped = mapUpdate({
 			sessionUpdate: "tool_call_update",
 			toolCallId: "t1",
 			status: "failed",
-			rawOutput: "Tool call was approved but never executed.",
+			rawOutput: "File not found: /x/nope.txt",
 		});
 		assert.deepEqual(mapped, {
 			kind: "tool_error",
 			toolCallId: "t1",
-			message: "Tool call was approved but never executed.",
+			message: "File not found: /x/nope.txt",
 		});
 	});
 
@@ -194,20 +241,45 @@ describe("acp/events TextAccumulator", () => {
 		assert.equal(acc.text, "HELLO");
 	});
 
-	test("cumulative resend flips the mode and emits only the suffix", () => {
+	test("cumulative resend flips only after a respectable accumulation", () => {
+		const first = "a".repeat(32);
 		const acc = new TextAccumulator();
-		acc.append("1\n2\n3");
-		// A cumulative sender repeats the full text.
-		assert.equal(acc.append("1\n2\n3\n4"), "\n4");
-		assert.equal(acc.text, "1\n2\n3\n4");
+		assert.equal(acc.append(first), first);
+		// A cumulative sender repeats the full text: only the suffix emits.
+		const full = `${first}\nmore`;
+		assert.equal(acc.append(full), "\nmore");
+		assert.equal(acc.text, full);
 	});
 
-	test("non-extending chunks in cumulative mode emit nothing", () => {
+	test("short-prefix extensions never flip (markdown opener regression)", () => {
+		// Round-7: '**' followed by '**Contents:**' flipped the old guard and
+		// corrupted every remaining frame. Short accumulations never flip; in
+		// append mode the wire truth is the plain concatenation.
 		const acc = new TextAccumulator();
-		acc.append("abc");
-		acc.append("abcdef");
-		assert.equal(acc.append("ab"), null);
-		assert.equal(acc.text, "abcdef");
+		assert.equal(acc.append("**"), "**");
+		assert.equal(acc.append("**Contents:**"), "**Contents:**");
+		assert.equal(acc.append("\n"), "\n");
+		assert.equal(acc.text, "****Contents:**\n");
+	});
+
+	test("unflips when a cumulative frame stops extending the accumulator", () => {
+		const first = "a".repeat(40);
+		const acc = new TextAccumulator();
+		acc.append(first);
+		assert.equal(acc.append(`${first} tail`), " tail");
+		// Non-prefix frame = misflip evidence: back to deltas.
+		assert.equal(acc.append("fresh"), "fresh");
+		assert.equal(acc.text, `${first} tailfresh`);
+	});
+
+	test("non-extending chunk in cumulative mode is misflip evidence: unflip to deltas", () => {
+		const base = "a".repeat(40);
+		const acc = new TextAccumulator();
+		acc.append(base);
+		assert.equal(acc.append(`${base}def`), "def");
+		// 'ab' cannot extend a 43-char accumulator: the flip was wrong.
+		assert.equal(acc.append("ab"), "ab");
+		assert.equal(acc.text, `${base}defab`);
 	});
 
 	test("never flips on compliant deltas (mid-token splits)", () => {

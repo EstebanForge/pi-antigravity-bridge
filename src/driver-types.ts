@@ -33,7 +33,7 @@ export interface DriverTurnRequest extends DriverProfile {
 	/** ACP only: pi-side context delivered as a native `embeddedContext`
 	 *  resource block instead of inline prompt text (G1 on ACP). Legacy
 	 *  embeds the digest in the prompt string and ignores this. */
-	contextBlock?: { uri: string; title: string; text: string };
+	contextBlock?: { uri: string; text: string };
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). */

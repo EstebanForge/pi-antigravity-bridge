@@ -28,6 +28,7 @@ import {
 	type ThinkingLevel,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import fs from "node:fs";
 import type { Api } from "@earendil-works/pi-ai";
 import type { DriverActivity, TurnDriver, TurnHandle } from "./driver-types.js";
 import { toPiUsage } from "./stream-events.js";
@@ -315,6 +316,10 @@ export interface StreamSimpleDeps {
 	/** Whether a pi tool is active in the session; native re-exec toolCalls
 	 *  are only emitted for active builtins (else the wrapper). */
 	nativeActive?: (name: string) => boolean;
+	/** Engine latched at extension load. When omitted, the per-call config
+	 *  read decides (tests); production wiring always passes it so a
+	 *  mid-session config flip cannot move one side of a parked turn. */
+	engine?: "stream-json" | "acp";
 }
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
@@ -565,6 +570,12 @@ function emitToolUse(
 	stream.end();
 }
 
+/** ACP edit-class tool names that carry a file-path arg and land the file on
+ *  disk (observed live: edit_file, create_file). Read/execute tools also
+ *  match the arg-shape heuristic but produce no diff (unchanged content), so
+ *  the gate avoids mislabeling them as edits. */
+const ACP_EDIT_TOOLS = new Set(["edit_file", "create_file", "write_to_file"]);
+
 export function consumeActivity(
 	stream: AssistantMessageEventStream,
 	blocks: BlockState,
@@ -591,21 +602,47 @@ export function consumeActivity(
 		case "tool_start":
 			// Rendering happens on completion (output/diff available).
 			return "continue";
+/** File-path argument of an ACP edit tool (observed: `file_path`); other
+ *  tool kinds (execute, read) don't carry one. Returns undefined for
+ *  non-edit tools. */
+function acpEditFileArg(args: Record<string, unknown>): string | undefined {
+	for (const [k, v] of Object.entries(args)) {
+		if (typeof v === "string" && v.trim() && /file|path/i.test(k)) return v;
+	}
+	return undefined;
+}
+
 		case "tool_done": {
-			// Gate C (ACP): the server already executed the tool and carries the
-			// edit diff in the protocol (content[] {type:"diff", path, oldText?,
-			// newText}). Render it straight into the thinking stream — same
-			// line-numbered format as the legacy G8 path, but computed in memory:
-			// no git subprocess, no native re-exec, no wrapper replay, no parking.
+			// Gate C (ACP): the server already executed the tool; nothing parks.
+			// Edit display has TWO paths on ACP:
+			//   a) native diff in tool_call content[] (future builds / the
+			//      permission-request flow carries it; phase-2 probe shape);
+			//   b) RC01 with the auto policy sends NO content: the file simply
+			//      lands on disk. Read it and diff against git HEAD - the same
+			//      output the stream-json engine produces, one readFileSync.
 			if (feats.engine === "acp") {
 				const d = activity.diff;
 				if (d) {
 					appendThinking(stream, blocks, `[agy edit: ${path.basename(d.path)}]\n`);
 					const diffText = formatInlineDiff(d.oldText ?? "", d.newText);
 					if (diffText) appendThinking(stream, blocks, `${diffText}\n`);
-				} else {
-					appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
+					return "continue";
 				}
+				const editFile = ACP_EDIT_TOOLS.has(activity.name) ? acpEditFileArg(activity.args) : undefined;
+				if (editFile) {
+					const absFile = path.isAbsolute(editFile) ? editFile : path.resolve(cwd, editFile);
+					appendThinking(stream, blocks, `[agy edit: ${path.basename(absFile)}]\n`);
+					let disk = "";
+					try {
+						disk = fs.readFileSync(absFile, "utf8");
+					} catch {
+						/* deleted or unreadable: diffEdit degrades to a summary */
+					}
+					const outcome = diffCtx.diffEdit(absFile, disk);
+					if (outcome.text) appendThinking(stream, blocks, `${outcome.text}\n`);
+					return "continue";
+				}
+				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
 				return "continue";
 			}
 			// G8 (stream-json): agy file edits surface a git-sourced diff in a
@@ -715,7 +752,11 @@ async function runTurnDriver(
 		// G1 delivery per engine. stream-json: digest rides inline in the prompt
 		// (the CLI has no context channel). ACP: the server advertises
 		// `embeddedContext`, so the digest ships as a native resource block
-		// instead of prompt text (plan phase 3). Same churn either way.
+		// instead of prompt text (plan phase 3). The preamble framing goes INTO
+		// the block: an unlabeled blob of other-agent turns is a mild injection
+		// surface, and the model needs the use-for-continuity-only instruction.
+		// The uri is suffixed per turn so a deduping server cannot serve stale
+		// content on turn 2+.
 		const embeddedDigest = deps.engine === "acp" && digest ? digest : undefined;
 		// Fresh conversation only: agy stores the block in its own history, so
 		// re-sending it every turn would bloat each prompt and bust the cache.
@@ -734,9 +775,8 @@ async function runTurnDriver(
 				images: images.length > 0 ? images : undefined,
 				contextBlock: embeddedDigest
 					? {
-							uri: "urn:pi-bridge:context-digest",
-							title: "pi-side context digest",
-							text: embeddedDigest,
+							uri: `urn:pi-bridge:context-digest/${messageCount}`,
+							text: `${DIGEST_PREAMBLE}\n\n${embeddedDigest}`,
 						}
 					: undefined,
 				signal: options?.signal,
@@ -800,11 +840,12 @@ export function createStreamSimple(
 	return function streamSimple(model, context, options) {
 		const stream = createAssistantMessageEventStream();
 		// Fire the async turn; return the stream synchronously per pi's contract.
-		// Engine selection is per-call: the config switch flips engines without
-		// touching this closure (both drivers wire at extension load). One
-		// loadConfig() read per turn, shared with the session key below.
+		// Engine selection: the latched load-time engine when the extension
+		// provides one, else the per-call config read (tests). One loadConfig()
+		// read per turn, shared with the session key below.
 		const config = loadConfig();
-		const selected = config.engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
+		const engine = deps.engine ?? config.engine;
+		const selected = engine === "acp" && deps.acpDriver ? deps.acpDriver : deps.driver;
 		if (selected && roundTrips) {
 			void runTurnDriver(stream, model, context, options, entries, store, {
 				driver: selected,

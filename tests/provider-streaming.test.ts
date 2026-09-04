@@ -191,7 +191,10 @@ test("streamSimple: acp engine ships the digest as a contextBlock, not inline", 
 		for await (const ev of stream) void ev;
 		// Digest rides as the embeddedContext resource block...
 		assert.ok(seen.opts?.contextBlock, "contextBlock present");
-		assert.equal(seen.opts.contextBlock.uri, "urn:pi-bridge:context-digest");
+		assert.equal(seen.opts.contextBlock.uri, "urn:pi-bridge:context-digest/3");
+		// The digest block carries the framing preamble INTO the resource: an
+		// unlabeled blob of other-agent turns is a mild injection surface.
+		assert.ok(seen.opts.contextBlock.text.includes("context from the broader pi session"));
 		assert.ok(seen.opts.contextBlock.text.includes("claude says hi"));
 		// ...and stays out of the prompt text (no inline preamble).
 		assert.equal(seen.opts.prompt, "current");

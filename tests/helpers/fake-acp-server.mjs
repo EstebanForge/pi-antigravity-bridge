@@ -16,6 +16,11 @@
 //   load-fails         session/load -> -32000 (driver must fall back to new)
 //   park               prompt -> chunk "P1", then after 2500ms "P2" + end_turn
 //                      (overall-timer pause tests: park past a tight deadline)
+//   tool-diff          prompt -> tool_call (pending, WITH diff content) ->
+//                      tool_call_update (in_progress) -> tool_call_update
+//                      (completed, rawOutput only, no content) -> chunk
+//                      "DONE" -> end_turn (Gate C: diff arrives on the
+//                      PENDING frame, run 6:10)
 
 import fs from "node:fs";
 import readline from "node:readline";
@@ -153,6 +158,49 @@ async function handle(msg) {
 
     case "session/prompt": {
       pendingPromptId = id;
+      if (scenario === "tool-diff") {
+        // Run-6 wire shapes verbatim: diff on the PENDING tool_call, the
+        // completed update carries only rawOutput under a DIFFERENT id
+        // (the supersede quirk).
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: {
+              toolCallId: "33eb71a04aae4d4c9b85081f20ab5169",
+              title: "Run create_file?",
+              kind: "edit",
+              status: "pending",
+              content: [{ newText: "hello\n", path: "/w/probe.txt", _meta: { kind: "add" }, type: "diff" }],
+              locations: [{ path: "/w/probe.txt" }],
+              rawInput: { file_path: "/w/probe.txt" },
+              sessionUpdate: "tool_call",
+            },
+          },
+        });
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { toolCallId: "fake-session-0001:7", kind: "edit", status: "in_progress", sessionUpdate: "tool_call_update" },
+          },
+        });
+        send({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: {
+            sessionId,
+            update: { toolCallId: "fake-session-0001:7", status: "completed", rawOutput: "Create probe.txt", sessionUpdate: "tool_call_update" },
+          },
+        });
+        notifyChunk("DONE");
+        result(id, { stopReason: "end_turn" });
+        pendingPromptId = null;
+        streaming = false;
+        return;
+      }
       if (scenario === "permission") {
         send({
           jsonrpc: "2.0",

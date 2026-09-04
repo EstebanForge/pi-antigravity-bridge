@@ -205,7 +205,7 @@ export class AcpConnection {
 		sessionId: string,
 		text: string,
 		images: Array<{ data: string; mimeType: string }> = [],
-		contextBlock?: { uri: string; title: string; text: string },
+		contextBlock?: { uri: string; text: string },
 	): Promise<{ stopReason: string }> {
 		// Block order: images, then the embedded-context resource (pi-side
 		// digest), then the text question last (it refers to everything before

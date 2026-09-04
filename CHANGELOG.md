@@ -23,7 +23,21 @@ All notable changes to this project will be documented in this file.
 - G1 digest delivery split by engine: on ACP the digest ships as a native `embeddedContext` resource block in the prompt array (`promptCapabilities.embeddedContext` verified live: a resource block with a secret word was read and answered correctly); `stream-json` keeps the inline text default.
 - `/agy doctor` (ACP): shows server reconnects (connections beyond the first = Gate D kills + replacements) and the handshake `agentInfo` name/title next to the server version.
 
-### Known limitations of the ACP engine (current build, RC01)
+### Fixed
+
+- `tool_call_update` failed frames whose `rawOutput` matches the RC01
+  approved-but-never-executed sentinel are dropped instead of rendering as a
+  bogus tool error next to a successful edit (run 6, finding 7).
+- `AcpDriver` kills a leaked server process when the initialize handshake
+  fails (spawn succeeded, init timed out) - the detached process would
+  otherwise outlive pi.
+- `AcpDriver` snapshot prefers the active session id over the last settled
+  one, so `/agy doctor` during a live turn shows the correct session.
+- Text dedupe guard: the cumulative-mode flip now requires a respectable
+  accumulation (32+ chars), and a cumulative frame that stops extending the
+  accumulator falls back to append mode - a short markdown opener (`**`,
+  `#`) followed by an ordinary delta no longer corrupts the remaining output
+  (round-7 review, applies to both engines).
 
 - No usage fields anywhere: token display shows zero (Gate B; the stream-json engine stays default until upstream ships usage).
 - No `session/cancel` (-32601): abort tears the connection down and reloads on the next turn; `cancelSupported` is probed once and shown in `/agy doctor`.

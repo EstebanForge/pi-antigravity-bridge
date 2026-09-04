@@ -111,6 +111,17 @@ export function isCumulativeResend(accumulated: string, next: string): boolean {
 	return accumulated.length > 0 && next.length > accumulated.length && next.startsWith(accumulated);
 }
 
+/** Flip threshold for the same guard: short accumulations ("**", "#", "\n")
+ *  are trivially extended by ordinary markdown deltas, and flipping on them
+ *  corrupts every remaining frame of the turn. Require a respectable
+ *  accumulation before believing a resend. Exported for tests. */
+export const CUMULATIVE_FLIP_MIN_CHARS = 32;
+
+/** Mode decision for the text-dedupe guard. Extracted for tests. */
+export function shouldFlipToCumulative(accumulated: string, next: string): boolean {
+	return accumulated.length >= CUMULATIVE_FLIP_MIN_CHARS && isCumulativeResend(accumulated, next);
+}
+
 export class AgyDriver implements TurnDriver {
 	#state: DriverState = "idle";
 	#child: ChildProcess | undefined;
@@ -473,13 +484,26 @@ export class AgyDriver implements TurnDriver {
 	#appendAgentText(turn: ActiveTurn, text: string): void {
 		// response_text is observed as a delta stream; guard against builds that
 		// resend the full text. A cumulative sender's second chunk CONTAINS
-		// everything accumulated so far as a prefix.
+		// everything accumulated so far as a prefix. Two guards against
+		// misflips (round-7 review): short accumulations never flip, and a
+		// cumulative frame that no longer extends the accumulator is evidence
+		// of a misflip - fall back to append mode.
 		if (turn.cumulativeText === undefined) {
 			turn.cumulativeText = false;
-		} else if (!turn.cumulativeText && isCumulativeResend(turn.response, text)) {
+		} else if (
+			!turn.cumulativeText &&
+			shouldFlipToCumulative(turn.response, text)
+		) {
 			turn.cumulativeText = true;
 		}
 		if (turn.cumulativeText) {
+			if (!text.startsWith(turn.response)) {
+				// Misflip evidence: back to deltas.
+				turn.cumulativeText = false;
+				turn.response += text;
+				emit(turn, { type: "text", delta: text });
+				return;
+			}
 			if (text.length > turn.response.length) {
 				const delta = text.slice(turn.response.length);
 				turn.response = text;

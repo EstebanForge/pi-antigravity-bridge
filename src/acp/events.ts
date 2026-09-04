@@ -30,7 +30,7 @@ export interface AcpEditDiff {
 export type MappedUpdate =
 	| { kind: "text"; delta: string }
 	| { kind: "thought"; delta: string }
-	| { kind: "tool_start"; toolCallId: string; name: string; args: Record<string, unknown> }
+	| { kind: "tool_start"; toolCallId: string; name: string; args: Record<string, unknown>; diff?: AcpEditDiff }
 	| { kind: "tool_done"; toolCallId: string; output?: string; diff?: AcpEditDiff }
 	| { kind: "tool_error"; toolCallId: string; message: string }
 	| { kind: "replay_user" }
@@ -56,13 +56,25 @@ export function mapUpdate(update: unknown): MappedUpdate {
 				toolCallId: id,
 				name: metaToolName(u._meta) ?? toolName(u.title, u.kind),
 				args: rawArguments(u.rawInput),
+				// Edits carry their native diff HERE, on the pending tool_call
+				// frame (run 6:10) — the completed update carries only display
+				// text. contentDiff on the update stays as a future-build
+				// fallback.
+				diff: contentDiff(u.content),
 			};
 		}
 		case "tool_call_update": {
 			const id = stringField(u.toolCallId);
 			if (!id) return null;
 			if (u.status === "failed") {
-				return { kind: "tool_error", toolCallId: id, message: stringField(u.rawOutput) ?? "tool failed" };
+				// RC01 echo (run 6, finding 7): after an allow, the APPROVED call
+				// id reports failed with this sentinel while the real work runs
+				// under a different id that reports its own lifecycle. Track
+				// effects, not ids: drop the echo instead of rendering a bogus
+				// failure next to a successful edit.
+				const raw = stringField(u.rawOutput);
+				if (raw?.includes("approved but never executed")) return null;
+				return { kind: "tool_error", toolCallId: id, message: raw ?? "tool failed" };
 			}
 			if (u.status === "completed") {
 				// content[] first (edits carry their diff there); rawOutput alone is
@@ -191,7 +203,16 @@ export function mapStopReason(stopReason: unknown): {
 /** Defensive accumulation with the cumulative-resend port. RC01 streams pure
  *  deltas (verified: mid-token splits across the run-5 stress streams), so on
  *  a compliant server the resend branch stays inert; it exists because the
- *  same backend's private protocol exhibited exactly this failure mode. */
+ *  same backend's private protocol exhibited exactly this failure mode.
+ *
+ *  Two guards keep a misflip from corrupting the rest of the turn:
+ *  - the flip requires the accumulated text to be at least FLIP_MIN_CHARS,
+ *    because short prefixes ("**", "\n", "#") are trivially extended by
+ *    ordinary markdown deltas;
+ *  - in cumulative mode, a frame that no longer extends the accumulator is
+ *    evidence of a misflip: fall back to append mode instead of slicing. */
+const FLIP_MIN_CHARS = 32;
+
 export class TextAccumulator {
 	#acc = "";
 	#cumulative: boolean | undefined;
@@ -199,11 +220,22 @@ export class TextAccumulator {
 	/** Returns the delta to emit, or null when nothing new should be emitted. */
 	append(delta: string): string | null {
 		if (this.#cumulative === undefined) this.#cumulative = false;
-		else if (!this.#cumulative && delta.length > this.#acc.length && delta.startsWith(this.#acc)) {
+		else if (
+			!this.#cumulative &&
+			this.#acc.length >= FLIP_MIN_CHARS &&
+			delta.length > this.#acc.length &&
+			delta.startsWith(this.#acc)
+		) {
 			this.#cumulative = true;
 		}
 		if (this.#cumulative) {
-			if (delta.length <= this.#acc.length) return null;
+			if (!delta.startsWith(this.#acc)) {
+				// Misflip evidence: back to deltas.
+				this.#cumulative = false;
+				this.#acc += delta;
+				return delta;
+			}
+			if (delta.length <= this.#acc.length) return null; // duplicate frame
 			const emit = delta.slice(this.#acc.length);
 			this.#acc = delta;
 			return emit;

@@ -40,7 +40,7 @@ import { AgyDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { resolveAcpBinary } from "../src/acp/connection.js";
 import type { TurnDriver } from "../src/driver-types.js";
-import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type ThinkingTier } from "../src/config.js";
+import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
@@ -82,11 +82,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const toolModels = toolModelsFromRaw(raw);
 	const usingFallback = discovered.length === 0;
 	const entries: AgyModelEntry[] = usingFallback ? FALLBACK_MODELS : discovered;
+	// Engine latched at load: /agy engine takes effect on the next pi start
+	// (documented). Everything below resolves from THIS value - per-call
+	// config reads would let a mid-session flip leave ToolRoundTrips,
+	// kickIdle, and reentry pointing at the other engine (round-7 finding).
+	const engine: Engine = loadConfig().engine;
 	// Engine switching requires a restart, so the catalog-time engine read is
 	// authoritative for input advertising: image attach rides only when turns
 	// will run on the ACP engine (the legacy CLI prompt is text-only).
-	const modelInput: Array<"text" | "image"> =
-		loadConfig().engine === "acp" ? ["text", "image"] : ["text"];
+	const modelInput: Array<"text" | "image"> = engine === "acp" ? ["text", "image"] : ["text"];
 	const models = entries.map((e) => toPiModel(e, modelInput));
 
 	const store = new SessionStore();
@@ -116,10 +120,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			];
 		},
 	});
-	// The active engine is resolved per call from config (engine switches take
-	// effect on restart, when drivers re-wire).
-	const activeDriver = (): TurnDriver => (loadConfig().engine === "acp" ? acpDriver : legacyDriver);
-	const driver = activeDriver();
+	// The active engine is resolved from the latched load-time value.
+	const activeDriver = (): TurnDriver => (engine === "acp" ? acpDriver : legacyDriver);
+	// The provider's stream-json slot gets the LEGACY driver explicitly - never
+	// activeDriver(), or a load-time acp engine would make deps.driver and
+	// deps.acpDriver the same object and break the engine identity check.
+	const driver = legacyDriver;
 	// The no-patch pi-tool round-trip store: the MCP bridge parks calls here;
 	// the provider emits them as real pi toolUse turns and completes them from
 	// the next call's toolResult.
@@ -138,9 +144,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// A settled turn cannot answer its parked calls; the driver never sees
 	// ToolRoundTrips, so the provider bridges the two here (both engines).
 	const onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
-	driver.onTurnEnd = onTurnEnd;
+	legacyDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
-	const streamSimple = createStreamSimple({ entries, store, driver, acpDriver, roundTrips, replay, nativeActive });
+	const streamSimple = createStreamSimple({
+		entries,
+		store,
+		driver,
+		acpDriver,
+		roundTrips,
+		replay,
+		nativeActive,
+		engine,
+	});
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -167,6 +182,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		usingFallback,
 		driver,
 		acpDriver,
+		engine,
 		getMcpPort: () => mcpHandle?.port ?? null,
 	});
 
@@ -324,6 +340,8 @@ interface AgyCommandCtx {
 	usingFallback: boolean;
 	driver: TurnDriver;
 	acpDriver: AcpDriver;
+	/** Engine latched at extension load (see the provider wiring note). */
+	engine: Engine;
 	getMcpPort: () => number | null;
 }
 
@@ -427,7 +445,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			}
 			if (sub === "doctor") {
 				const config = loadConfig();
-				const engine = config.engine;
+				const engine = ctx.engine;
 				const snap = (engine === "acp" ? ctx.acpDriver : ctx.driver).snapshot();
 				const port = ctx.getMcpPort();
 				const lines = [
