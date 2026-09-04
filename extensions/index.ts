@@ -265,8 +265,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
 					}
 					if (status.needsLogin) {
-						const msg =
-							"ACP: one-time Google login pending. Your next antigravity message opens the browser; sign in with your Antigravity subscription account (the same login as the agy CLI). Tokens stay on your machine.";
+						const msg = acpLoginPending("Your next antigravity message opens the browser;");
 						if (ctx.hasUI) ctx.ui.notify(msg, "info");
 						else console.error(`[antigravity-bridge] ${msg}`);
 					}
@@ -379,6 +378,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
 // --- /agy command -----------------------------------------------------------
 
+/** Shared body for every ACP-login-pending moment (session_start self-heal,
+ *  /agy engine acp, picker): names the component so users know WHAT they are
+ *  logging into, and that it is the same Google account as the agy CLI with
+ *  its own token file. `browserTrigger` says when the browser opens. */
+function acpLoginPending(browserTrigger: string): string {
+	return `One-time Google login pending for the antigravity-acp server, Google's own ACP binary and a separate component of the Antigravity suite (agy desktop, agy editor, agy cli, agy acp). ${browserTrigger} Sign in with your Antigravity subscription account: the same Google account as your agy CLI login, but its own login and token file. One-time; tokens stay on your machine and this extension never sees them.`;
+}
+
 interface AgyCommandCtx {
 	entries: AgyModelEntry[];
 	store: SessionStore;
@@ -391,6 +398,7 @@ interface AgyCommandCtx {
 }
 
 interface PendingConfig {
+	engine?: Engine;
 	mode?: AgyMode;
 	skipPermissions?: boolean;
 	defaultModel?: string;
@@ -404,19 +412,22 @@ function statusText(ctx: AgyCommandCtx): string {
 	const config = loadConfig();
 	const source = ctx.usingFallback ? "fallback (agy models failed)" : "discovered";
 	const perm = config.skipPermissions ? "auto-approved (DANGEROUS)" : "prompt (hangs in -p)";
+	// padEnd keyed to the longest label ("AskAntigravity thinking:") so the
+	// value column stays aligned as labels grow.
+	const row = (label: string, value: string) => `  ${label.padEnd(24)} ${value}`;
 	return [
 		"Antigravity bridge",
-		`  engine:        ${config.engine}${config.engine === "acp" ? " (official server, opt-in)" : ""}`,
-		`  models:        ${ctx.entries.length} ${source}`,
-		`  mode:          ${config.mode}`,
-		`  permissions:   ${perm}`,
-		`  tool model:    ${config.defaultModel}`,
-		`  tool thinking: ${config.defaultThinking}`,
-		`  sessions:      ${ctx.store.size} bound`,
-		`  config:        ${CONFIG_PATH}`,
-		`  bridge tools:  ${config.bridgeTools}`,
-		`  digest:        ${config.digest ? "on" : "off"}`,
-		`  system prompt: ${config.systemPrompt ? "on" : "off"}`,
+		row("engine:", `${config.engine}${config.engine === "acp" ? " (official server, opt-in)" : ""}`),
+		row("models:", `${ctx.entries.length} ${source}`),
+		row("mode:", config.mode),
+		row("permissions:", perm),
+		row("AskAntigravity model:", config.defaultModel),
+		row("AskAntigravity thinking:", config.defaultThinking),
+		row("sessions:", `${ctx.store.size} bound`),
+		row("config:", CONFIG_PATH),
+		row("bridge tools:", config.bridgeTools),
+		row("digest:", config.digest ? "on" : "off"),
+		row("system prompt:", config.systemPrompt ? "on" : "off"),
 		"",
 		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy bridge all|mcp|none, /agy model <alias>, /agy thinking low|medium|high, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
 	].join("\n");
@@ -485,7 +496,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
 					ui?.notify(
 						status.needsLogin
-							? "ACP engine ready. Your first ACP message opens the Google login in your browser: sign in with the account of your Antigravity subscription (the same login as the Antigravity CLI, agy). One-time; tokens stay on your machine and this extension never sees them. Takes effect on the next pi start (or /reload)."
+							? `ACP engine ready. ${acpLoginPending("Your first ACP message (after the next pi start or /reload) opens the browser;")}`
 							: `ACP engine ready (auth: ${status.auth}). Takes effect on the next pi start (or /reload).`,
 						"info",
 					);
@@ -617,9 +628,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "model") {
 				if (val && val.length > 0) {
 					const next = saveConfig({ defaultModel: val });
-					ui?.notify(`tool default model set to ${next.defaultModel}`, "info");
+					ui?.notify(`AskAntigravity default model set to ${next.defaultModel}`, "info");
 				} else {
-					ui?.notify(`tool model: ${loadConfig().defaultModel}\nusage: /agy model flash|pro|gemini|<exact>`, "info");
+					ui?.notify(`AskAntigravity model: ${loadConfig().defaultModel} (fallback; callers may override per call)\nusage: /agy model flash|pro|gemini|<exact>`, "info");
 				}
 				return;
 			}
@@ -655,9 +666,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			if (sub === "thinking") {
 				if (val === "low" || val === "medium" || val === "high") {
 					const next = saveConfig({ defaultThinking: val as ThinkingTier });
-					ui?.notify(`tool default thinking set to ${next.defaultThinking}`, "info");
+					ui?.notify(`AskAntigravity default thinking set to ${next.defaultThinking}`, "info");
 				} else {
-					ui?.notify(`tool thinking: ${loadConfig().defaultThinking}\nusage: /agy thinking low|medium|high`, "info");
+					ui?.notify(`AskAntigravity thinking: ${loadConfig().defaultThinking} (fallback; callers may override per call)\nusage: /agy thinking low|medium|high`, "info");
 				}
 				return;
 			}
@@ -680,14 +691,22 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 }
 
 /** Interactive settings picker (TUI only). Rows: the full runtime config
- *  surface (mode, permissions, model, thinking, bridge, digest, system
- *  prompt). Engine stays a subcommand: switching runs install + auth setup
- *  and needs a restart. */
+ *  surface (engine, mode, permissions, model, thinking, bridge, digest,
+ *  system prompt). Picking acp runs the same self-service setup as
+ *  `/agy engine acp` (binary + auth) right after the save. */
 async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promise<void> {
 	const config = loadConfig();
 	const pending: PendingConfig = {};
 
 	const items: SettingItem[] = [
+		{
+			id: "engine",
+			label: "Turn engine",
+			description:
+				"stream-json: the streaming engine (default, supported). acp: Google's official ACP server (experimental, opt-in). Switch takes effect on the next pi start (or /reload); acp also runs binary + auth setup on save.",
+			currentValue: config.engine,
+			values: ["stream-json", "acp"],
+		},
 		{
 			id: "mode",
 			label: "Execution mode",
@@ -706,17 +725,17 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 		},
 		{
 			id: "model",
-			label: "Tool default model",
+			label: "AskAntigravity model",
 			description:
-				"Alias used when the AskAntigravity tool omits its model param. flash/pro/gemini, or an exact id.",
+				"AskAntigravity one-shot delegation tool: model used when its caller omits the model param. Callers may override per call; this is only the fallback. flash/pro/gemini, or an exact id. Does not affect the provider model you pick in /model.",
 			currentValue: config.defaultModel,
 			values: ["flash", "pro", "gemini"],
 		},
 		{
 			id: "thinking",
-			label: "Tool default thinking",
+			label: "AskAntigravity thinking",
 			description:
-				"Thinking tier used when the model alias names none. Pro has no Medium; it falls back to nearest.",
+				"AskAntigravity one-shot delegation tool: thinking tier used when the call names none. Callers may override per call; this is only the fallback. Pro has no Medium; it falls back to nearest.",
 			currentValue: config.defaultThinking,
 			values: ["low", "medium", "high"],
 		},
@@ -756,7 +775,9 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			Math.min(items.length + 4, 15),
 			getSettingsListTheme(),
 			(id, newValue) => {
-				if (id === "mode") {
+				if (id === "engine") {
+					pending.engine = newValue as Engine;
+				} else if (id === "mode") {
 					pending.mode = newValue as AgyMode;
 				} else if (id === "permissions") {
 					pending.skipPermissions = newValue === "auto-approved";
@@ -788,20 +809,31 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 
 	if (Object.keys(pending).length === 0) return;
 
-	if (pending.mode === "plan" && ctx.engine === "acp") {
-		ui.notify("the ACP engine has no plan mode (RC01). Switch /agy engine stream-json first.", "warning");
+	// The engine latches at load: a plan mode active while the effective
+	// engine is (or will be) acp would silently run non-plan. ACP has no
+	// review-only mode (RC01); refuse the combination. Both sides fall back
+	// to the on-disk config so a fresh engine pick over a saved plan (and
+	// vice versa) is caught too.
+	const nextEngine = pending.engine ?? ctx.engine;
+	const nextMode = pending.mode ?? config.mode;
+	if (nextMode === "plan" && nextEngine === "acp") {
+		ui.notify(
+			"plan + acp is not supported (RC01): the ACP engine has no review-only mode. Save mode accept-edits or pick the stream-json engine first.",
+			"warning",
+		);
 		return;
 	}
 
 	try {
 		const next = saveConfig(pending);
 		const changed = [
+			pending.engine !== undefined ? `engine=${next.engine}` : null,
 			pending.mode ? `mode=${next.mode}` : null,
 			pending.skipPermissions !== undefined
 				? `permissions=${next.skipPermissions ? "auto-approved" : "prompt"}`
 				: null,
-			pending.defaultModel !== undefined ? `tool model=${next.defaultModel}` : null,
-			pending.defaultThinking !== undefined ? `tool thinking=${next.defaultThinking}` : null,
+			pending.defaultModel !== undefined ? `AskAntigravity model=${next.defaultModel}` : null,
+			pending.defaultThinking !== undefined ? `AskAntigravity thinking=${next.defaultThinking}` : null,
 			pending.bridgeTools !== undefined ? `bridge=${next.bridgeTools}` : null,
 			pending.digest !== undefined ? `digest=${next.digest ? "on" : "off"}` : null,
 			pending.systemPrompt !== undefined ? `system-prompt=${next.systemPrompt ? "on" : "off"}` : null,
@@ -809,11 +841,30 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			.filter(Boolean)
 			.join(", ");
 		ui.notify(`Saved: ${changed}`, "info");
+		if (pending.engine === "acp") {
+			// Same flow as /agy engine acp: persist the switch, then prepare
+			// the server so the restart just works.
+			ui.notify("Preparing the ACP server (binary + auth)…", "info");
+			const status = await ensureAcpReady({
+				configBin: loadConfig().acp.bin,
+				onProgress: (m) => ui.notify(m, "info"),
+			});
+			if (status.ok) {
+				saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
+				ui.notify(
+					status.needsLogin
+						? `ACP server ready. ${acpLoginPending("Your first ACP message (after the restart) opens the browser;")}`
+						: `ACP server ready (auth: ${status.auth}).`,
+					"info",
+				);
+			} else {
+				ui.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
+			}
+		}
 	} catch (err) {
 		ui.notify(
 			`Failed to save config: ${err instanceof Error ? err.message : String(err)}`,
 			"error",
 		);
 	}
-	void ctx;
 }

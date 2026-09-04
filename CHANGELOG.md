@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.3] - 2026-09-04
+
+### Changed
+
+- The bare-`/agy` settings picker gains a Turn engine row (`stream-json`/`acp`). Saving `acp` persists the switch, then runs the same self-service setup as `/agy engine acp` (binary install + auth bootstrap, `acp.bin` updated). The plan+acp RC01 guard now evaluates the effective engine AND mode after the save, so a config already in `plan` plus a fresh `acp` pick is refused instead of persisting an invalid combination (peer-review find).
+- "Tool default model/thinking" renamed to "AskAntigravity model/thinking" across the picker, `/agy status`, and toasts; descriptions and README now state the values are fallbacks that callers may override per call.
+- All ACP login-pending messages share one wording that names the antigravity-acp server and its place in Google's Antigravity suite (agy desktop, agy editor, agy cli, agy acp), and clarifies the login: same Google account as the agy CLI, separate login with its own token file.
+
 ## [1.4.2] - 2026-09-04
 
 ### Changed

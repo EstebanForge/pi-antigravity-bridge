@@ -123,8 +123,8 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
-/agy model flash|pro|gemini   default model alias for the AskAntigravity tool
-/agy thinking low|medium|high default thinking tier for the AskAntigravity tool
+/agy model flash|pro|gemini   fallback model for the AskAntigravity tool; callers may override per call
+/agy thinking low|medium|high fallback thinking tier for the AskAntigravity tool; callers may override per call
 /agy digest on|off        inject pi-side context into agy prompts (default off; see table above)
 /agy system-prompt on|off send pi's system prompt + AGENTS.md to new agy conversations (default on)
 /agy bridge all|mcp|none  which pi tools the MCP bridge exposes to agy (default all; none = bridge off)
