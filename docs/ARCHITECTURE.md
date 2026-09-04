@@ -23,10 +23,15 @@ src/patch-cleanup.ts  detects a leftover invokeTool patch from pre-1.3.0 install
 src/discovery.ts      conversation-id binding for the AskAntigravity one-shot tool (agy -p never prints its conversation id)
 src/models.ts         agy models -> pi Model projection (full catalog, per-model effort)
 src/sessions.ts       atomic JSON store: pi session -> agy conversation + watermark
-src/config.ts         persisted runtime config (bridgeTools, digest, mode, permissions, model/thinking defaults)
+src/config.ts         persisted runtime config (engine + acp block, bridgeTools, digest, mode, permissions, model/thinking defaults)
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip
-src/diff-render.ts    render agy's file edits as git diffs in pi's thinking stream
+src/diff-render.ts    stream-json: render agy's file edits as git diffs in pi's thinking stream; formatInlineDiff (no git) renders ACP's native diffs
+src/driver-types.ts   TurnDriver contract shared by both engines (request/handle/snapshot types)
+src/acp/jsonrpc.ts    NDJSON JSON-RPC 2.0 framing with line buffering and typed error results
+src/acp/connection.ts ACP server process + protocol (initialize, session/new+load, prompt with image/resource blocks, config options, cancel probing, auto permissions)
+src/acp/events.ts     session/update -> DriverActivity mapping (pure; probe-frame regressions pinned)
+src/acp/driver.ts     AcpDriver: serialized turns, remaining-budget timer pause, Gate D abort, connection-scoped exit handling, reconnect/agentInfo snapshots
 ```
 
 No generated protobuf code, no SQLite dependency.
@@ -75,6 +80,22 @@ Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/connection.ts`
 (`AcpDriver`). Both engines implement `TurnDriver`; `provider.ts` depends on
 the interface only and is otherwise unchanged.
 
+Phase-2/3 additions (all ACP-only, verified live):
+
+- **Images**: pi image attachments ride as typed content blocks in the
+  prompt array; models advertise `input: ["text","image"]` only when the
+  engine is `acp` (decided at extension load). stream-json stays text-only.
+- **Digest delivery**: with `config.digest` on, ACP ships the G1 digest as
+  a native `embeddedContext` resource block (images → resource → text);
+  stream-json keeps it inline. Same cache churn either way.
+- **Tool display (Gate C)**: ACP tool steps render as thinking labels -
+  native re-exec and wrapper replay are retired on ACP turns (the server
+  already executed the tool). Edits render their server-supplied diff
+  (`tool_call content[]` → `formatInlineDiff`, no git subprocesses).
+- **Diagnostics**: the ACP snapshot reports reconnects (connections beyond
+  the first: Gate D kills + stale-exit replacements) and the handshake
+  `agentInfo` name/title; `/agy doctor` surfaces both.
+
 Engine-specific behavior: session ids are scoped per engine
 (`sid:<x>@acp`); model/effort ship as one full slug via
 `session/set_config_option` and are RE-APPLIED after every server restart
@@ -82,4 +103,5 @@ Engine-specific behavior: session ids are scoped per engine
 live text); abort is teardown+kill+reload while `session/cancel` is
 unimplemented (RC01); usage tokens are absent (zero-usage fallback).
 Verified protocol shapes and the auth flow:
-docs/ACP-PROTOCOL-REFERENCE.md. Raw captures: `probe-logs/` (gitignored).
+docs/ACP-PROTOCOL-REFERENCE.md. Raw captures: `probe-logs/` (gitignored,
+local only).

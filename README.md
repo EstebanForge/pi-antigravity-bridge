@@ -23,6 +23,8 @@ Turns run through one of two engines behind the same provider surface (`config.e
 - **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
 - **acp**: Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Opt-in while it matures: the current build (RC01) ships no usage fields (token display shows zero) and no cancel (abort tears the server down and reloads it next turn). Everything else is parity-verified live - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery - see `scripts/parity-live.mjs`.
 
+Engine-dependent features: pi image attachments ride natively only on the ACP engine (the picker offers image attach automatically when `config.engine` is `acp`; the stream-json CLI prompt is text-only). With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text.
+
 Switch with `/agy engine acp|stream-json` (takes effect on restart). ACP needs the server binary installed locally (`AGY_ACP_BIN` or `config.acp.bin`; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)), and its own one-time credential setup: run `/agy acp-auth` for the steps. The ACP server keeps its own auth state; the token never touches this code. Sessions are engine-scoped, so switching engines never crosses conversations.
 
 ## What it cannot do

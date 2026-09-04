@@ -2,8 +2,10 @@
 
 Status of the MCP tool bridge between agy (Antigravity CLI, used as pi's Gemini
 provider) and pi's extension/builtin tools. This doc tracks **open gaps only**.
-Shipped work lives in `CHANGELOG.md` (most recently, 1.3.0: the stream-json
-engine and the no-patch toolUse round-trip that replaced `pi.invokeTool`).
+Shipped work lives in `CHANGELOG.md` (most recently: the official-server ACP
+engine as an opt-in second turn engine, with image prompts, embeddedContext
+digest delivery, and Gate C tool-display consolidation - see the
+`[Unreleased]` section).
 Ideas that were weighed and rejected are listed at the end under "Discarded
 ideas".
 
@@ -148,6 +150,10 @@ reasoning is in project memory.
   reaches and reads those files directly via the bridge's `read` tool, so
   returning image content blocks over the transport would duplicate a path
   that already works end-to-end. No agy transport change or pi patch required.
+  Update (2026-09-04): user-provided image *attachments* now ride natively on
+  the ACP engine as typed prompt content blocks (see README, Two engines);
+  the stream-json CLI prompt stays text-only, and the bridge direction above
+  is unchanged.
 - **File-watching / live state** — DECLINED. agy is request-response
   per turn, not event-reactive; nothing consumes a file-watch SSE stream, and
   re-reads are cheap and correct. Watchers would add inotify/FSEvents handles,

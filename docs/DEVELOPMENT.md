@@ -46,6 +46,17 @@ AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
 AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
   npx tsx scripts/smoke-acp-bridge.mjs
 
+# Live smoke for image prompts on the ACP engine: builds a 64x64 two-tone PNG
+# in-process and asserts the model identifies both halves through the full
+# driver stack.
+AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+  npx tsx scripts/smoke-acp-image.mjs
+
+# Live probe: thought-chunk sparsity, tool_call content[]/rawInput shapes,
+# and the /plan command flow, captured to probe-logs/ (local only).
+AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+  npx tsx scripts/probe-acp-phase2.mjs
+
 # Live parity run: the SAME scenario set (streaming, continuity, bridge
 # round-trip, effort switch, serialization, abort+recover, usage) through
 # BOTH engines. Needs the agy CLI AND the ACP binary. Spends ~13 flash-low
