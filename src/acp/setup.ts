@@ -57,6 +57,10 @@ export type AcpSetupStatus =
 	| { ok: false; stage: "install" | "auth"; error: string; manual: string };
 
 export const MANUAL_SETUP = [
+	"For some unknown reason, Google ships its ACP server as a separate",
+	"binary from the Agy CLI. So, as with any other part of its Antigravity",
+	"suite (Agy Desktop, Agy Editor, Agy CLI), you need to log in to",
+	"this one as well. Separately ¯\\_(ツ)_/¯",
 	"ACP manual setup:",
 	"1. Download the server zip for your platform from the antigravity-acp",
 	"   registry entry (github.com/agentclientprotocol/registry, folder",
@@ -68,9 +72,7 @@ export const MANUAL_SETUP = [
 	'3. Log in: put {"auth":{"type":"oauth-personal"}} in',
 	"   ~/.gemini/antigravity-acp/settings.json and complete the Google login that",
 	"   opens in your browser on your first ACP message. That login IS your",
-	"   Antigravity subscription: the same Google account and plan as the agy CLI.",
-	"   Headless alternative (metered paid API, not the plan): GEMINI_API_KEY env",
-	'   + {"auth":{"type":"gemini-api-key"}}.',
+	"   Antigravity subscription (Google AI Plus/Pro/Ultra).",
 	"Details: /agy acp-auth",
 ].join("\n");
 
