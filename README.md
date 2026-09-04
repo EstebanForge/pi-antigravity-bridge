@@ -2,7 +2,9 @@
 
 A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), both built on Google's `agy` CLI. It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
-<img width="3024" height="1774" alt="image" src="https://github.com/user-attachments/assets/9fc2f368-7292-4dde-851b-db2bd579263c" align="center" />
+<img width="2566" height="1723" alt="SCR-20260903-sefo" src="https://github.com/user-attachments/assets/20f0c04c-d622-4b11-962a-3478f64570c2" align="center"/>
+
+<img width="1272" height="842" alt="SCR-20260903-sfcu" src="https://github.com/user-attachments/assets/c483613b-10ff-4d2f-9893-027d84130ac6" align="center" />
 
 If you also have [`@estebanforge/pi-ask-antigravity`](https://github.com/EstebanForge/pi-ask-antigravity) installed, this bridge takes over: pi-ask-antigravity detects the bridge and registers nothing, so the `AskAntigravity` tool is never duplicated.
 
