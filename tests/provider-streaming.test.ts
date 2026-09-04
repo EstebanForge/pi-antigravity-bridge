@@ -141,6 +141,101 @@ test("streamSimple forwards image blocks from the user message to the driver", a
 	assert.deepEqual(seen.opts?.images, [{ data: "aGVsbG8=", mimeType: "image/png" }]);
 });
 
+/** Context with a prior foreign-provider assistant turn, so the G1 digest
+ *  has real content to deliver (buildContextDigest skips the current prompt). */
+function digestContext(): Context {
+	return {
+		systemPrompt: undefined,
+		messages: [
+			{ role: "user", content: "earlier", timestamp: Date.now() },
+			{
+				role: "assistant",
+				provider: "claude",
+				content: [{ type: "text", text: "claude says hi" }],
+				timestamp: Date.now(),
+				model: "claude-sonnet-4-6",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				api: "anthropic-messages",
+			},
+			{ role: "user", content: "current", timestamp: Date.now() },
+		],
+	} as Context;
+}
+
+test("streamSimple: acp engine ships the digest as a contextBlock, not inline", async () => {
+	process.env.AGY_ENGINE = "acp";
+	process.env.AGY_DIGEST = "1";
+	try {
+		const seen: { opts?: DriverTurnRequest } = {};
+		const driver = capturingDriver(seen);
+		const streamSimple = createStreamSimple({
+			entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
+			store: new SessionStore(tmpStorePath()),
+			driver,
+			acpDriver: driver,
+			roundTrips: new ToolRoundTrips(driver),
+		});
+		const stream = streamSimple(
+			{ ...model, id: "gemini-flash" },
+			digestContext(),
+			{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
+		);
+		for await (const ev of stream) void ev;
+		// Digest rides as the embeddedContext resource block...
+		assert.ok(seen.opts?.contextBlock, "contextBlock present");
+		assert.equal(seen.opts.contextBlock.uri, "urn:pi-bridge:context-digest");
+		assert.ok(seen.opts.contextBlock.text.includes("claude says hi"));
+		// ...and stays out of the prompt text (no inline preamble).
+		assert.equal(seen.opts.prompt, "current");
+	} finally {
+		delete process.env.AGY_ENGINE;
+		delete process.env.AGY_DIGEST;
+	}
+});
+
+test("streamSimple: stream-json engine keeps the digest inline in the prompt", async () => {
+	process.env.AGY_ENGINE = "stream-json";
+	process.env.AGY_DIGEST = "1";
+	try {
+		// Two distinct drivers: production wiring never shares one instance
+		// between the driver and acpDriver roles, and the engine heuristic
+		// keys off object identity.
+		const seen: { opts?: DriverTurnRequest } = {};
+		const legacySeen: { opts?: DriverTurnRequest } = {};
+		const legacyDriver = capturingDriver(legacySeen);
+		const acpSeen: { opts?: DriverTurnRequest } = {};
+		const acpOnlyDriver = capturingDriver(acpSeen);
+		const streamSimple = createStreamSimple({
+			entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
+			store: new SessionStore(tmpStorePath()),
+			driver: legacyDriver,
+			acpDriver: acpOnlyDriver,
+			roundTrips: new ToolRoundTrips(legacyDriver),
+		});
+		const stream = streamSimple(
+			{ ...model, id: "gemini-flash" },
+			digestContext(),
+			{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
+		);
+		for await (const ev of stream) void ev;
+		assert.match(legacySeen.opts?.prompt ?? "", /context from the broader pi session/);
+		assert.match(legacySeen.opts?.prompt ?? "", /claude says hi/);
+		assert.equal(legacySeen.opts?.contextBlock, undefined);
+		assert.equal(acpSeen.opts, undefined, "acp driver must not run");
+	} finally {
+		delete process.env.AGY_ENGINE;
+		delete process.env.AGY_DIGEST;
+	}
+});
+
 test("streamSimple forwards options.reasoning as effort for an effort-driven base", async () => {
 	const opts = await captureTurn(
 		{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] },

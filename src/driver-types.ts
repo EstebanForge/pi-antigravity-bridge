@@ -30,6 +30,10 @@ export interface DriverTurnRequest extends DriverProfile {
 	 *  content blocks (probe 2026-09-03: 64x64 two-tone PNG answered
 	 *  correctly); the legacy CLI prompt is text-only and ignores them. */
 	images?: Array<{ data: string; mimeType: string }>;
+	/** ACP only: pi-side context delivered as a native `embeddedContext`
+	 *  resource block instead of inline prompt text (G1 on ACP). Legacy
+	 *  embeds the digest in the prompt string and ignores this. */
+	contextBlock?: { uri: string; title: string; text: string };
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
 	 *  (tests use sub-minute caps). */
@@ -115,6 +119,12 @@ export interface DriverSnapshot {
 		/** null = never probed on this server process. */
 		cancelSupported: boolean | null;
 		serverVersion?: string;
+		/** Connections beyond the first this driver process made = server
+		 *  restarts (Gate D kills + stale-exit replacements). */
+		reconnects: number;
+		/** From the initialize handshake agentInfo block. */
+		agentName?: string;
+		agentTitle?: string;
 	};
 }
 

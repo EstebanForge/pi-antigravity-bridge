@@ -712,11 +712,16 @@ async function runTurnDriver(
 		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 		const watermark = existing?.lastMessageCount ?? 0;
 		const digest = config.digest ? buildContextDigest(context.messages, watermark) : "";
+		// G1 delivery per engine. stream-json: digest rides inline in the prompt
+		// (the CLI has no context channel). ACP: the server advertises
+		// `embeddedContext`, so the digest ships as a native resource block
+		// instead of prompt text (plan phase 3). Same churn either way.
+		const embeddedDigest = deps.engine === "acp" && digest ? digest : undefined;
 		// Fresh conversation only: agy stores the block in its own history, so
 		// re-sending it every turn would bloat each prompt and bust the cache.
 		const sysPrompt =
 			config.systemPrompt && !existing?.conversationId ? context.systemPrompt : undefined;
-		const fullPrompt = buildFullPrompt(sysPrompt, digest, prompt ?? "");
+		const fullPrompt = buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
 		try {
 			handle = await deps.driver.run({
 				cwd,
@@ -727,6 +732,13 @@ async function runTurnDriver(
 				conversationId: existing?.conversationId ?? null,
 				prompt: fullPrompt,
 				images: images.length > 0 ? images : undefined,
+				contextBlock: embeddedDigest
+					? {
+							uri: "urn:pi-bridge:context-digest",
+							title: "pi-side context digest",
+							text: embeddedDigest,
+						}
+					: undefined,
 				signal: options?.signal,
 			});
 		} catch (err) {

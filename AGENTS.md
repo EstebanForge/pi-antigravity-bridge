@@ -1,8 +1,3 @@
-# PROJECT KNOWLEDGE BASE
-
-**Generated:** 2026-08-31
-
-## OVERVIEW
 Project: **@estebanforge/pi-antigravity-bridge**
 Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 22+, built as a streaming Gemini provider extension for `pi` (`@earendil-works/pi-coding-agent`) interfacing with the Google Antigravity CLI (`agy`) over its stream-json protocol (persistent process).
 

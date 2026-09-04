@@ -752,10 +752,28 @@ Hard rule: Keep both engines in the extension. Default engine remains `stream-js
 Queue:
 1. [x] Gate C evaluation: `native-tools.ts` + `WrapperReplay` retired on the ACP engine (retained for legacy `stream-json` engine). ACP turns emit thinking labels for tool executions without parking turns for synthetic re-execution or wrapper cards; bridge MCP tools (`bridge_call`) continue parking natively. Verified: live parity 14/14 held.
 2. [x] Retire `diff-render.ts` (git path) on the ACP engine — DONE 2026-09-04. The phase-2 probe proved ACP surfaces edit diffs natively (`tool_call` `content[]` `{type:"diff", path, oldText?, newText}`), which is richer AND cheaper than the git-sourced path: implemented as (a) `events.ts` extracts the first diff entry into the `tool_done` activity (`AcpEditDiff`); (b) `provider.ts` renders it on ACP turns via the new `formatInlineDiff` (in-memory `generateDiffString`, same line-numbered format, ZERO git subprocesses) instead of `TurnDiffContext.diffEdit`; (c) `diff-render.ts` git machinery remains solely for the `stream-json` engine. Tests: diff extraction (with/without `oldText`), ACP thinking-stream rendering (`+2 B` line-numbered), label-only fallback, no parking, legacy path unchanged. Verified: 165/165 vitest, tsc clean, live parity 14/14.
-3. [ ] `/agy doctor` diagnostics expansion on connection events: state, session ids, prompt count, reconnects, lifecycle log, server version from `agentInfo`.
-4. [ ] Optional: G1 digest via `embeddedContext` resource blocks instead of inline text on ACP (keep inline default for stream-json; digest churns cache either way).
+3. [x] `/agy doctor` diagnostics expansion — DONE 2026-09-04. The ACP
+      snapshot now carries `reconnects` (connections beyond the first =
+      Gate D kills + stale-exit replacements) and the handshake `agentInfo`
+      name/title; `/agy doctor` surfaces both (reconnects in the stats line,
+      agent title next to the server version). Regression test pins
+      `reconnects = 1` on the stale-exit flow.
+4. [x] G1 digest via `embeddedContext` resource blocks — DONE 2026-09-04
+      (the optional enhancement, adopted as the ACP delivery path). On the
+      ACP engine the digest ships as a native `{type:"resource"}` block in
+      the prompt array (`connection.prompt` builds images → resource →
+      text) instead of inline prompt text; `stream-json` keeps the inline
+      default. Verified live: a resource block with a secret word was read
+      and answered correctly by RC01 (`promptCapabilities.embeddedContext`
+      is functional, not just advertised).
 
 Acceptance: parity suite remains 14/14, doctor parity, no breakage to stream-json default.
+
+Status: 🚧 Phase 3 remaining items are COMPLETE (2026-09-04): 168/168 tests,
+tsc clean, live parity 14/14, embeddedContext verified live (resource block
+with a secret word answered correctly). Remaining phase-3 acceptance:
+deleted-code census lands with phase 4's deletions (nothing deletes in
+phase 3 — the legacy modules stay for the `stream-json` engine).
 
 ### Phase 4: default flip and legacy deletion (deferred, next month)
 

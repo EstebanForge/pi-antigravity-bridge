@@ -112,6 +112,7 @@ export class AcpDriver implements TurnDriver {
 	#serverVersion: string | undefined;
 	#lastSessionId: string | undefined;
 	#lastCancelSupported: boolean | null = null;
+	#agentInfo: { name?: string; title?: string } | undefined;
 
 	constructor(opts: AcpDriverOptions) {
 		this.#opts = opts;
@@ -278,7 +279,7 @@ export class AcpDriver implements TurnDriver {
 		try {
 			// Nothing to cancel before the prompt RPC exists; see promptStarted.
 			turn.promptStarted = true;
-			const result = await conn.prompt(turn.sessionId, request.prompt, request.images);
+			const result = await conn.prompt(turn.sessionId, request.prompt, request.images, request.contextBlock);
 			if (turn.closed) return;
 			turn.sawResult = true;
 			const mapped = mapStopReason(result.stopReason);
@@ -415,6 +416,11 @@ export class AcpDriver implements TurnDriver {
 			.start()
 			.then(() => {
 				this.#serverVersion = conn.serverVersion();
+				const info = conn.agentInfo as { name?: unknown; title?: unknown } | undefined;
+				this.#agentInfo = {
+					name: typeof info?.name === "string" ? info.name : undefined,
+					title: typeof info?.title === "string" ? info.title : undefined,
+				};
 				this.#state = "ready";
 				return conn;
 			})
@@ -671,6 +677,11 @@ export class AcpDriver implements TurnDriver {
 				kills: this.#stats.kills,
 				cancelSupported: this.#conn?.cancelSupported ?? this.#lastCancelSupported,
 				serverVersion: this.#serverVersion,
+				// Connections beyond the first are server restarts (Gate D kills,
+				// stale-exit replacements) = reconnects.
+				reconnects: Math.max(0, this.#stats.spawns - 1),
+				agentName: this.#agentInfo?.name,
+				agentTitle: this.#agentInfo?.title,
 			},
 		};
 	}

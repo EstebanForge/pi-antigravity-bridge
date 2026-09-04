@@ -205,13 +205,26 @@ export class AcpConnection {
 		sessionId: string,
 		text: string,
 		images: Array<{ data: string; mimeType: string }> = [],
+		contextBlock?: { uri: string; title: string; text: string },
 	): Promise<{ stopReason: string }> {
-		// Image blocks first, text last (probe 2026-09-03: mixed blocks answered
-		// correctly; the text question rides after the image it refers to).
-		const blocks: Array<Record<string, string>> = [
+		// Block order: images, then the embedded-context resource (pi-side
+		// digest), then the text question last (it refers to everything before
+		// it). Shapes per the ACP v1 content-block schema; embeddedContext is
+		// advertised in promptCapabilities (verified run 5).
+		const blocks: Array<Record<string, unknown>> = [
 			...images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
-			{ type: "text", text },
 		];
+		if (contextBlock) {
+			blocks.push({
+				type: "resource",
+				resource: {
+					uri: contextBlock.uri,
+					mimeType: "text/markdown",
+					text: contextBlock.text,
+				},
+			});
+		}
+		blocks.push({ type: "text", text });
 		const result = (await this.request("session/prompt", {
 			sessionId,
 			prompt: blocks,

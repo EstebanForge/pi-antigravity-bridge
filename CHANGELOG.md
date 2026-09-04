@@ -20,6 +20,8 @@ All notable changes to this project will be documented in this file.
 - `tool_call_update` display: the completed call's output now prefers the `content[]` text over `rawOutput`, which the server fills with a display title ("Call bridge_echo") rather than the result. The result itself reaches the model out-of-band; only the activity display was wrong.
 - Tool-frame mapping fixes from the phase-2 probe: MCP `rawInput` args unwrap the `arguments` envelope, and the tool name prefers `_meta.mcp.tool` over the "<server>_<tool>" title.
 - Gate C consolidation on the ACP engine: `native-tools.ts` re-exec and `WrapperReplay` parking are retired for ACP turns (tool steps render as thinking labels; `bridge_call` round-trips unaffected); ACP-native edit diffs from `tool_call` `content[]` render directly into the thinking stream via the new in-memory `formatInlineDiff` (same line-numbered format, zero git subprocesses). The git-sourced `diff-render.ts` path remains solely for the `stream-json` engine.
+- G1 digest delivery split by engine: on ACP the digest ships as a native `embeddedContext` resource block in the prompt array (`promptCapabilities.embeddedContext` verified live: a resource block with a secret word was read and answered correctly); `stream-json` keeps the inline text default.
+- `/agy doctor` (ACP): shows server reconnects (connections beyond the first = Gate D kills + replacements) and the handshake `agentInfo` name/title next to the server version.
 
 ### Known limitations of the ACP engine (current build, RC01)
 

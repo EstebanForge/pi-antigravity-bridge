@@ -31,6 +31,7 @@ async function runDriver(
 	opts: {
 		prompt?: string;
 		images?: Array<{ data: string; mimeType: string }>;
+		contextBlock?: { uri: string; title: string; text: string };
 		conversationId?: string | null;
 		timeoutMin?: number;
 		signal?: AbortSignal;
@@ -56,6 +57,7 @@ async function runDriver(
 		conversationId: opts.conversationId ?? null,
 		prompt: opts.prompt ?? "hi",
 		images: opts.images,
+		contextBlock: opts.contextBlock,
 		timeoutMin: opts.timeoutMin,
 		signal: opts.signal ?? controller.signal,
 	});
@@ -266,6 +268,11 @@ describe("acp/driver timers", () => {
 		const o2 = await h2.outcome;
 		assert.equal(o2.status, "OK");
 		assert.match(o2.response, /P2/);
+		// Two spawns across the flow = one server reconnect (Gate D kill +
+		// replacement). The doctor surfaces this count.
+		const acpSnap = driver.snapshot().acp;
+		assert.ok(acpSnap, "acp snapshot block present");
+		assert.equal(acpSnap.reconnects, 1);
 	});
 
 	test("images ride as typed content blocks ahead of the text", async () => {
@@ -282,6 +289,33 @@ describe("acp/driver timers", () => {
 		assert.equal(blocks[0].type, "image");
 		assert.equal(blocks[0].mimeType, "image/png");
 		assert.equal(blocks[blocks.length - 1].type, "text");
+		run.cleanup();
+	});
+
+	test("contextBlock rides as an embeddedContext resource block before the text", async () => {
+		const run = await runDriver("happy", {
+			prompt: "What is the digest?",
+			contextBlock: {
+				uri: "urn:pi-bridge:context-digest",
+				title: "pi-side context digest",
+				text: "[assistant turn from claude]\nclaude says hi",
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		const promptReq = sentRequests(run._logPath).find((r) => r.method === "session/prompt") as {
+			params: { prompt: Array<Record<string, unknown>> };
+		};
+		assert.ok(promptReq, "session/prompt in the request log");
+		// Resource block sits between any images and the text question.
+		const kinds = promptReq.params.prompt.map((b) => b.type);
+		assert.deepEqual(kinds, ["resource", "text"]);
+		const resource = promptReq.params.prompt[0] as {
+			resource: { uri: string; mimeType: string; text: string };
+		};
+		assert.equal(resource.resource.uri, "urn:pi-bridge:context-digest");
+		assert.equal(resource.resource.mimeType, "text/markdown");
+		assert.ok(resource.resource.text.includes("claude says hi"));
 		run.cleanup();
 	});
 
