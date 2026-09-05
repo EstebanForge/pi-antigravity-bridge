@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.7] - 2026-09-05
+
+### Added
+
+- Daily debug log on disk, sorted by day: `~/.pi/extensions-data/estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson`, one JSON record per line, 14-day retention. Built for support: when something breaks, the last days' files replay the failure (engine, session, bridge call, error) without reproducing it. Both engines and everything around them feed it: turn start/outcome with error text, driver failures (stall, abort, timeout, nonzero exit), ACP session load/new and connection exits, bridge tool calls and round-trip failures, AskAntigravity runs, `/agy` commands, ACP setup/self-heal/auth, and the login URL (query string stripped). Secret-shaped values (tokens, API keys, credentials, header blocks) are redacted; prompt text, tool arguments, and tool output never land in the log; an unwritable directory is skipped silently and retried. `/agy doctor` prints the directory.
+- Two verbosity tiers keep the disk cost negligible: by default only the info/warn/error skeleton is written (a handful of records per turn). `AGY_DEBUG=1` (or `true`/`on`) restores the full per-event trail: spawn/exit, session load/new, unparks, recycle causes, raw bridge chatter. Turn it on to reproduce, then off.
+- Pre-dispatch turn errors now reach the log (previously they only surfaced as a one-line pi error and were lost): driver start failures, stray tool results with no active turn, the ACP plan-mode refusal, and a miswired extension.
+- The engine capabilities comparison table in the README: 20 rows comparing `stream-json` vs `acp` (thinking text, token usage, image/audio input, plan mode, slash-command handling, model/effort switching, process lifecycle, session resume, abort, bridge routing, edit diffs, permissions, digest and system-prompt delivery, auth, wire protocol, doctor diagnostics), peer-reviewed against the code and the live probes.
+
+### Changed
+
+- `/agy doctor` prints the log directory with a hint to attach recent days' files when reporting issues.
+- README, architecture module map, and the regression-test list document the logger, its support flow, and the `AGY_DEBUG` gate.
+
 ## [1.4.6] - 2026-09-04
 
 ### Added
