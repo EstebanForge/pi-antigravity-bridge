@@ -1,5 +1,6 @@
 // /agy auth tests against the scripted fake ACP server (authenticate ->
-// {}), plus a failure path with a nonexistent binary. Fully offline.
+// {}), plus failure paths: dead binary, concurrent run, missing token.
+// Fully offline; the token directory is a fixture, never the real one.
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -15,18 +16,31 @@ function tmpDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "agy-acp-auth-"));
 }
 
+/** Wire a fake-server run whose token directory is a fixture under `dir`. */
+function authOpts(dir: string) {
+	return {
+		bin: process.execPath,
+		binArgs: [FAKE_SERVER],
+		cwd: dir,
+		extraEnv: { ACP_FAKE_SCENARIO: "happy", ACP_FAKE_LOG: path.join(dir, "fake-log.jsonl") },
+		tokenDir: path.join(dir, "token-fixture"),
+		tokenGraceMs: 200,
+		timeoutMs: 15_000,
+	};
+}
+
+function seedToken(dir: string): void {
+	const tokenDir = path.join(dir, "token-fixture");
+	fs.mkdirSync(tokenDir, { recursive: true });
+	fs.writeFileSync(path.join(tokenDir, "acp_token.json"), "{}");
+}
+
 describe("acp/auth runAcpAuth", () => {
-	test("sends authenticate with the oauth-personal method and succeeds", async () => {
+	test("sends authenticate with the oauth-personal method and succeeds when the token is present", async () => {
 		const dir = tmpDir();
 		const logPath = path.join(dir, "fake-log.jsonl");
-		const r = await runAcpAuth({
-			bin: process.execPath,
-			binArgs: [FAKE_SERVER],
-			cwd: dir,
-			extraEnv: { ACP_FAKE_SCENARIO: "happy", ACP_FAKE_LOG: logPath },
-			timeoutMs: 15_000,
-			tokenGraceMs: 200,
-		});
+		seedToken(dir);
+		const r = await runAcpAuth(authOpts(dir));
 		assert.equal(r.ok, true);
 		assert.equal(r.error, undefined);
 		const requests = fs
@@ -41,33 +55,26 @@ describe("acp/auth runAcpAuth", () => {
 	});
 
 	test("a dead binary fails with an error, not a hang", async () => {
-		const r = await runAcpAuth({
-			bin: path.join(tmpDir(), "no-such-server.par"),
-			timeoutMs: 5_000,
-		});
+		const r = await runAcpAuth({ bin: path.join(tmpDir(), "no-such-server.par"), timeoutMs: 5_000, tokenDir: path.join(tmpDir(), "t") });
 		assert.equal(r.ok, false);
 		assert.ok(r.error && r.error.length > 0);
 	});
 
 	test("a second concurrent run fails fast instead of racing the token write", async () => {
 		const dir = tmpDir();
-		const first = runAcpAuth({
-			bin: process.execPath,
-			binArgs: [FAKE_SERVER],
-			cwd: dir,
-			extraEnv: { ACP_FAKE_SCENARIO: "happy" },
-			timeoutMs: 15_000,
-			tokenGraceMs: 200,
-		});
-		const second = await runAcpAuth({
-			bin: process.execPath,
-			binArgs: [FAKE_SERVER],
-			cwd: dir,
-			timeoutMs: 15_000,
-		});
+		seedToken(dir);
+		const first = runAcpAuth(authOpts(dir));
+		const second = await runAcpAuth(authOpts(dir));
 		const a = await first;
 		assert.equal(a.ok, true);
 		assert.equal(second.ok, false);
 		assert.match(second.error ?? "", /already running/);
+	});
+
+	test("authenticate resolving without a token file is a distinct failure", async () => {
+		// Empty fixture dir: the RPC replies ok, but the token never lands.
+		const r = await runAcpAuth(authOpts(tmpDir()));
+		assert.equal(r.ok, false);
+		assert.match(r.error ?? "", /token file appeared/);
 	});
 });

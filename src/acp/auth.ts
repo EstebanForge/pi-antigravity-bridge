@@ -18,10 +18,14 @@ export interface AcpAuthOptions {
 	cwd?: string;
 	extraEnv?: Record<string, string>;
 	authUrlFile?: string;
+	/** Directory holding acp_token.json. Default: ~/.gemini/antigravity-acp.
+	 *  Tests point this at a fixture dir; production callers use the default. */
+	tokenDir?: string;
 	/** The server is expected to have written acp_token.json by the time
 	 *  authenticate replies, but write-after-reply is unverified; after a
 	 *  successful reply the run polls for the token up to this long before
-	 *  SIGTERM, so a laggard write is never killed mid-flight. */
+	 *  SIGTERM, so a laggard write is never killed mid-flight. A token that
+	 *  never appears is a distinct failure, not silent success. */
 	tokenGraceMs?: number;
 	timeoutMs?: number;
 	log?: (msg: string, data?: unknown) => void;
@@ -53,7 +57,13 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 			await conn.start();
 			await conn.request("authenticate", { methodId: "oauth-personal" }, opts.timeoutMs ?? AUTH_TIMEOUT_MS);
 			const deadline = Date.now() + grace;
-			while (!hasAcpToken() && Date.now() < deadline) await sleep(200);
+			while (!hasAcpToken(opts.tokenDir) && Date.now() < deadline) await sleep(200);
+			if (!hasAcpToken(opts.tokenDir)) {
+				return {
+					ok: false,
+					error: `the server accepted the sign-in, but no token file appeared in ${opts.tokenDir ?? "~/.gemini/antigravity-acp"} within ${Math.round(grace / 1000)}s`,
+				};
+			}
 			return { ok: true };
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };
