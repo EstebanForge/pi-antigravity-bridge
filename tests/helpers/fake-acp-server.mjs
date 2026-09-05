@@ -63,7 +63,6 @@ function sleep(ms) {
 }
 
 const logPath = process.env.ACP_FAKE_LOG || null;
-const logPath = process.env.ACP_FAKE_LOG || null;
 function logReq(obj) {
 	// Synchronous append, never a buffered WriteStream: the driver tears the
 	// connection down right after a probe reply (Gate D -32601), and the
