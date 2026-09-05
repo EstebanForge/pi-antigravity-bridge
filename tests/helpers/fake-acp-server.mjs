@@ -118,7 +118,7 @@ async function handle(msg) {
 
     case "session/new":
       if (scenario === "auth-required") {
-        error(id, -32000, "Authentication required", { message: "run /agy acp-auth" });
+        error(id, -32000, "Authentication required", { message: "run /agy auth-manual" });
         return;
       }
       result(id, {

@@ -478,7 +478,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		row("digest:", config.digest ? "on" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
 		"",
-		"Subcommands: /agy auth, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
+		"Subcommands: /agy auth, /agy auth-manual, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy patch-cleanup, /agy clear",
 	].join("\n");
 }
 
@@ -486,7 +486,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -589,7 +589,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				if (r.ok) {
 					ui?.notify("Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).", "info");
 				} else {
-					ui?.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy acp-auth has manual steps.`, "warning");
+					ui?.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
 				}
 				return;
 			}
@@ -611,7 +611,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				return;
 			}
-			if (sub === "acp-auth") {
+			if (sub === "auth-manual") {
 				ui?.notify(
 					[
 						"ACP engine authentication (one-time; usually automatic -",

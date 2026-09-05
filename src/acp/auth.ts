@@ -1,4 +1,5 @@
 import { AcpConnection } from "./connection.js";
+import { hasAcpToken } from "./setup.js";
 
 // Explicit sign-in (/agy auth): spawn a short-lived server, send
 // `authenticate` (the RPC that fires the loopback listener + browser OAuth
@@ -17,15 +18,22 @@ export interface AcpAuthOptions {
 	cwd?: string;
 	extraEnv?: Record<string, string>;
 	authUrlFile?: string;
+	/** The server is expected to have written acp_token.json by the time
+	 *  authenticate replies, but write-after-reply is unverified; after a
+	 *  successful reply the run polls for the token up to this long before
+	 *  SIGTERM, so a laggard write is never killed mid-flight. */
+	tokenGraceMs?: number;
 	timeoutMs?: number;
 	log?: (msg: string, data?: unknown) => void;
 }
 
 export interface AcpAuthResult {
 	ok: boolean;
-	/** Failure reason (spawn, timeout, -32000 family). Absent when ok. */
+	/** Failure reason (spawn, timeout, -32000 family, concurrent run). Absent when ok. */
 	error?: string;
 }
+
+let authInFlight: Promise<AcpAuthResult> | null = null;
 
 export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 	const conn = new AcpConnection({
@@ -38,15 +46,26 @@ export function runAcpAuth(opts: AcpAuthOptions): Promise<AcpAuthResult> {
 		onUpdate: () => {},
 		onExit: () => {},
 	});
-	return (async () => {
+	const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+	const grace = opts.tokenGraceMs ?? 5_000;
+	const run = async (): Promise<AcpAuthResult> => {
 		try {
 			await conn.start();
 			await conn.request("authenticate", { methodId: "oauth-personal" }, opts.timeoutMs ?? AUTH_TIMEOUT_MS);
+			const deadline = Date.now() + grace;
+			while (!hasAcpToken() && Date.now() < deadline) await sleep(200);
 			return { ok: true };
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };
 		} finally {
 			conn.kill();
 		}
-	})();
+	};
+	// One sign-in at a time: two concurrent runs would race the OAuth loopback
+	// and the token write. A second invocation fails fast instead.
+	if (authInFlight) return Promise.resolve({ ok: false, error: "a sign-in is already running; wait for it to finish" });
+	authInFlight = run();
+	return authInFlight.finally(() => {
+		authInFlight = null;
+	});
 }

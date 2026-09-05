@@ -48,8 +48,8 @@ export type AcpSetupStatus =
 			bin: string;
 			binarySource: "env" | "config" | "installed" | "existing";
 			auth: string;
-			/** True when auth was just set to oauth-personal: the server opens
-			 *  Google login in the browser on the first ACP message. */
+			/** True when auth was just set to oauth-personal: /agy auth opens
+			 *  the Google login in the browser. */
 			needsLogin: boolean;
 			/** Human-readable actions taken (empty when everything was ready). */
 			actions: string[];
@@ -70,10 +70,10 @@ export const MANUAL_SETUP = [
 	"   (~/.local/opt/agy-acp/current/agy_acp_server.par works; 'current' is a",
 	"   symlink to the build dir).",
 	'3. Log in: put {"auth":{"type":"oauth-personal"}} in',
-	"   ~/.gemini/antigravity-acp/settings.json and complete the Google login that",
-	"   opens in your browser on your first ACP message. That login IS your",
+	"   ~/.gemini/antigravity-acp/settings.json and run /agy auth, then complete",
+	"   the Google login that opens in your browser. That login IS your",
 	"   Antigravity subscription (Google AI Plus/Pro/Ultra).",
-	"Details: /agy acp-auth",
+	"Details: /agy auth-manual",
 ].join("\n");
 
 export function platformKey(): string {
@@ -239,6 +239,11 @@ function tokenPresent(target: string): boolean {
 	}
 }
 
+/** Whether a login token exists (default dir, or an explicit one). */
+export function hasAcpToken(dir?: string): boolean {
+	return tokenPresent(dir ?? path.join(os.homedir(), ".gemini", "antigravity-acp"));
+}
+
 /** Auth state WITHOUT reading any credential value: settings.json carries
  *  only auth.type (+ non-secret gcp placement), acp_token.json is stat()ed. */
 export function readAuthState(dir?: string): AuthState {
@@ -334,7 +339,7 @@ export async function ensureAcpReady(opts: SetupOptions = {}): Promise<AcpSetupS
 	// before the first spawn, so a fresh write takes effect. oauth-personal is
 	// THE default: it is the Antigravity subscription (same Google account and
 	// plan as the agy CLI login). gemini-api-key (metered paid API) stays a
-	// manual option for headless boxes (/agy acp-auth); never the default.
+	// manual option for headless boxes (/agy auth-manual); never the default.
 	const gdir = defaultGeminiDir(opts);
 	const auth = readAuthState(gdir);
 	if (!auth.configured) {

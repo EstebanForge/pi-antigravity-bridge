@@ -37,7 +37,7 @@ AGY_LIVE=1 node --experimental-strip-types scripts/smoke-stream-json.mjs
 
 # Live smoke for the ACP engine through OUR driver stack. OPT-IN: spends a
 # little quota. Needs AGY_ACP_BIN (or acp on PATH) and a one-time
-# /agy acp-auth credential setup.
+# /agy auth-manual credential setup.
 AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
   npx tsx scripts/smoke-acp.mjs
 

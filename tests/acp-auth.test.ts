@@ -25,6 +25,7 @@ describe("acp/auth runAcpAuth", () => {
 			cwd: dir,
 			extraEnv: { ACP_FAKE_SCENARIO: "happy", ACP_FAKE_LOG: logPath },
 			timeoutMs: 15_000,
+			tokenGraceMs: 200,
 		});
 		assert.equal(r.ok, true);
 		assert.equal(r.error, undefined);
@@ -46,5 +47,27 @@ describe("acp/auth runAcpAuth", () => {
 		});
 		assert.equal(r.ok, false);
 		assert.ok(r.error && r.error.length > 0);
+	});
+
+	test("a second concurrent run fails fast instead of racing the token write", async () => {
+		const dir = tmpDir();
+		const first = runAcpAuth({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			cwd: dir,
+			extraEnv: { ACP_FAKE_SCENARIO: "happy" },
+			timeoutMs: 15_000,
+			tokenGraceMs: 200,
+		});
+		const second = await runAcpAuth({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			cwd: dir,
+			timeoutMs: 15_000,
+		});
+		const a = await first;
+		assert.equal(a.ok, true);
+		assert.equal(second.ok, false);
+		assert.match(second.error ?? "", /already running/);
 	});
 });

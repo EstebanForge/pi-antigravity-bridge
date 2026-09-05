@@ -2,11 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.4.4] - 2026-09-04
+## [1.4.5] - 2026-09-04
 
 ### Added
 
-- `/agy auth` subcommand: runs the antigravity-acp sign-in on demand (spawns the server, sends `authenticate`, waits for the browser round-trip to complete; minutes-scale). Signing in no longer rides the first Antigravity message, and both login-pending moments now point at `/agy auth`. The sign-in URL toast (and its ssh port-forward hint) fires during `/agy auth` exactly as it does during turns.
+- `/agy auth` subcommand: runs the antigravity-acp sign-in on demand (spawns the server, sends `authenticate`, waits for the browser round-trip to complete; minutes-scale). Signing in no longer rides the first Antigravity message, and both login-pending moments now point at `/agy auth`. The sign-in URL toast (and its ssh port-forward hint) fires during `/agy auth` exactly as it does during turns. After the authenticate reply the run waits up to 5 s for `acp_token.json` before killing the sign-in server, and a second concurrent `/agy auth` fails fast instead of racing the token write.
+
+### Changed
+
+- `/agy acp-auth` renamed to `/agy auth-manual` (no alias): it prints the manual credential setup for those who want it. Auth-error remediation, MANUAL_SETUP, README, and docs now point at `/agy auth` / `/agy auth-manual`, and the stale first-message login wording is gone from the manual steps.
+
+## [1.4.4] - 2026-09-04
+
+### Added
 
 - The Google sign-in URL now surfaces in pi. The ACP server hands the OAuth URL only to the browser-open call (nothing on stdout/stderr, headless or not), so a `BROWSER` wrapper script records the URL and forwards to the real opener; the connection watches the record file and logs it as an `auth-url` event. The extension toasts it at warning level with the ssh port-forward command for the redirect port, so logins work from SSH sessions on remote machines; local users keep the automatic browser open and get the URL as a fallback. An existing `BROWSER` setting is chained, not replaced.
 

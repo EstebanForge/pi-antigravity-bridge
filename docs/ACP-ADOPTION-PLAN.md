@@ -325,7 +325,7 @@ Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
 | Human decision latency on parked G9 tool round-trips exceeds the 10m overall-turn cap | Turn killed mid-wait | `AcpDriver` pauses the overall timer while parked, re-armed with REMAINING budget; every park carries its own timeout (9.3) |
 | Binary size (1.5 GB + 117 MB) | Disk + update churn | Pinned install layout (section 12), registry pin by build id |
 | aarch64 TCMalloc startup failure (forum report, Chromebook) | arch-specific | x86_64 unaffected; gate install per-arch, link the forum issue in README |
-| Separate auth state from `agy` CLI | First-run auth friction | `/agy acp-auth` prints exact instructions; `gemini-api-key` path works headless via `GEMINI_API_KEY`. The agent never writes credentials |
+| Separate auth state from `agy` CLI | First-run auth friction | `/agy auth-manual` prints exact instructions; `gemini-api-key` path works headless via `GEMINI_API_KEY`. The agent never writes credentials |
 | Thought text changes rendering volume | Noisy transcript | Route through the existing thinking block pipeline, close-on-switch unchanged; no new block types |
 | Two engines drift on behavior | Confusing support surface | Shared provider layer + shared parity suite run against both engines in CI |
 
@@ -827,7 +827,7 @@ Install layout:
   request (issue) once we depend on this.
 - `--uid=` from the linux registry entry: the server ran without it here.
   Treat as a launcher artifact; revisit if a future build refuses to start.
-- Auth onboarding: `/agy acp-auth` prints the four methods with exact
+- Auth onboarding: `/agy auth-manual` prints the four methods with exact
   `settings.json` shapes (source: official Zed docs, section 2.3). Headless
   path: `GEMINI_API_KEY` + `auth.type: "gemini-api-key"`. The agent NEVER
   writes or reads credentials; it prints instructions and verifies by

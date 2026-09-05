@@ -393,6 +393,6 @@ describe("acp/driver auth", () => {
 		const run = await tracked("auth-required", { prompt: "hi" });
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "ERROR");
-		assert.match(outcome.error ?? "", /acp-auth/);
+		assert.match(outcome.error ?? "", /auth-manual/);
 	});
 });

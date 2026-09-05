@@ -38,7 +38,7 @@ export interface AcpSessionInfo {
 }
 
 /** Auth failed (-32000 family). Message carries the remediation the server
- *  provided plus the /agy acp-auth pointer. */
+ *  provided plus the /agy auth-manual pointer. */
 export class AcpAuthError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -424,7 +424,7 @@ export function translateError(method: string, err: unknown): Error {
 		if (err.code === -32000) {
 			const detail = typeof err.data === "object" && err.data !== null ? (err.data as { message?: unknown }).message : undefined;
 			const detailText = typeof detail === "string" ? `: ${detail}` : `: ${err.message}`;
-			return new AcpAuthError(`ACP authentication required for ${method}${detailText}. Run /agy acp-auth for setup instructions.`);
+			return new AcpAuthError(`ACP authentication required for ${method}${detailText}. Run /agy auth to sign in; /agy auth-manual has manual steps.`);
 		}
 		// Typed protocol errors survive: callers probe .code (-32601 cancel-
 		// unsupported, -32602 param shape). The method prefix is lost — describe()

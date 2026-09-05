@@ -20,7 +20,7 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
     *   `mcp-server.ts`: Internal bridge HTTP/MCP server lifecycle and capability gating; `tools/call` parks into the provider round-trip. Shared-secret `x-bridge-token`; handle exposes `token` for ACP `mcpServers` headers.
     *   `models.ts`: Antigravity model catalog loading and background cache refreshing; `toPiModel(entry, input)` advertises text+image input only when the engine is `acp`.
     *   `sessions.ts`: Persisted mapping of `pi` session IDs to agy conversation/session IDs. Engine-scoped KEYS (`sid:<x>` streaming, `sid:<x>@acp`) so engine switches never cross conversations.
-*   `extensions/`: `pi` extension entry point (`index.ts`): provider registration, dual-driver wiring, bridge `mcpServers` registration with the token header, `/agy` command (engine, acp-auth, doctor), bridge lifecycle notices.
+*   `extensions/`: `pi` extension entry point (`index.ts`): provider registration, dual-driver wiring, bridge `mcpServers` registration with the token header, `/agy` command (engine, auth, auth-manual, doctor), bridge lifecycle notices.
 *   `scripts/`: Utility scripts for development (`smoke-in-pi.sh`, `smoke-stream-json.mjs`, `smoke-acp.mjs`, `smoke-acp-bridge.mjs`, `smoke-acp-image.mjs`, `parity-live.mjs`, `probe-acp-phase2.mjs`, `test-provider.ts`, `test-extension.ts`).
 *   `tests/`: Test suite run by Vitest (168 tests). ACP suites: `acp-jsonrpc` (framing), `acp-events` (mapping incl. probe-frame regressions), `acp-driver` (fake server in `tests/helpers/fake-acp-server.mjs`), `acp-config` (engine narrowing).
 
