@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.8] - 2026-09-05
+
+### Added
+
+- Early-ack + poll for long bridge calls. agy's MCP client abandons a `tools/call` request at a flat ~180s (observed twice at exactly 180.000s), so any pi tool that ran longer died with "agy disconnected before the tool result arrived": the 225.7s `AskClaude` peer review that exposed it never reached agy, and agy salvaged its turn without the result. Now a call still running after ~20 seconds settles the HTTP request with a `STILL RUNNING` answer carrying a `callId`, and the new bridge-local `bridge_poll_result` tool returns the result when it lands (or "still running" on the way). pi keeps executing the whole time; fast calls never see any of this. An escalated park re-arms its own timeout to 30 minutes, so human-gated tools (commit previews, permission dialogs) can take as long as the human takes.
+- Late tool-result delivery as a backstop: a park that does fail (abort, timeout, recycle) leaves a bounded tombstone, and when the toolResult arrives anyway the provider re-routes it to agy as a new prompt in the same conversation ("Late tool delivery: ...") instead of erroring the turn. A late result that lands while another park still anchors the pass is deferred to the next pass (`late-result-deferred`), never dropped.
+- A `progress-token` probe in the bridge server: if agy's requests ever carry `_meta.progressToken`, MCP progress notifications become a testable zero-UX fix for the deadline. The exact-180s signature says it likely never fires; one log line settles it.
+
+### Fixed
+
+- A toolResult whose park already died no longer misclassifies the turn as "No user message to send to agy." That was the second half of the incident, and it turned a recoverable late delivery into a hard error.
+- `failAll` (fired on every turn end, OK turns included) no longer marks escalated calls failed: an escalated call outlives its agy turn by design, and the poll handle must not lie about a still-running tool (peer-review blocker).
+- `EscalationRegistry` eviction can no longer strand a running call: only settled entries evict, so a saturated cap grows instead of losing an in-flight result.
+
+### Changed
+
+- The tool-priority note now also teaches the poll pattern: long bridge calls answer `STILL RUNNING` + `bridge_poll_result`, and work that is known-long should use `exec_command`'s session output or background agents.
+- New daily-log events: `call-tool-escalated`, `poll-tool`, `late-result` (with a `freshConversation` flag), `late-result-deferred`, `progress-token`. Docs: README bridge section, ACP-PROTOCOL-REFERENCE timing table.
+
 ## [1.4.7] - 2026-09-05
 
 ### Added
