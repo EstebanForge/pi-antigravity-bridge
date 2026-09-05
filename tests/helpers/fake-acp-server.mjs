@@ -63,9 +63,13 @@ function sleep(ms) {
 }
 
 const logPath = process.env.ACP_FAKE_LOG || null;
-const logStream = logPath ? fs.createWriteStream(logPath) : null;
+const logPath = process.env.ACP_FAKE_LOG || null;
 function logReq(obj) {
-  if (logStream) logStream.write(JSON.stringify(obj) + "\n");
+	// Synchronous append, never a buffered WriteStream: the driver tears the
+	// connection down right after a probe reply (Gate D -32601), and the
+	// default SIGTERM exit drops unflushed stream data. Lossy log lines made
+	// the "driver should have probed session/cancel" assertion flake ~1-in-3.
+	if (logPath) fs.appendFileSync(logPath, JSON.stringify(obj) + "\n");
 }
 
 const rl = readline.createInterface({ input: process.stdin });
