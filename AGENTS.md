@@ -3,7 +3,7 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
 
 ## STRUCTURE
 *   `src/`: Core implementation modules
-    *   `provider.ts`: Main `pi` custom provider: streaming event loop, G9 no-patch round-trip store, G1 context digest (off by default; inline on stream-json, `embeddedContext` resource block on ACP). Consumes the `TurnDriver` interface only; engine selection is per-call from config.
+    *   `provider.ts`: Main `pi` custom provider: streaming event loop, G9 no-patch round-trip store (escalation-aware: slow bridge calls early-ack with a poll handle at ~20s and re-arm to a 30 min TTL; failed parks leave tombstones for late-delivery re-routing), G1 context digest (off by default; inline on stream-json, `embeddedContext` resource block on ACP). Consumes the `TurnDriver` interface only; engine selection is per-call from config.
     *   `driver-types.ts`: Engine-agnostic `TurnDriver` contract (request/handle/snapshot types). Everything above the drivers depends on this only.
     *   `driver.ts`: Stream-json driver (DEFAULT engine): one persistent `agy --input-format stream-json --output-format stream-json` process, turn serialization, recycle on profile drift, conversation binding, idle/abort timers.
     *   `daily-log.ts`: Daily NDJSON support log (`~/.pi/extensions-data/estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson`): two verbosity tiers (info/warn/error always; debug needs `AGY_DEBUG`), 14-day retention, secret redaction, never throws. Fed by both drivers, the bridge, round-trips, `/agy`, and `ask-tool`.
@@ -18,7 +18,7 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
     *   `ask-tool.ts`: The `AskAntigravity` one-shot delegation tool (model/thinking defaults). Stays on `agy -p` until phase 4; `mode: "plan"` keeps that path permanently (ACP has no review-only mode).
     *   `config.ts`: Configuration defaults (engine, acp.bin, bridgeTools, askTool, digest, systemPrompt), directory resolution, and environment parsing.
     *   `diff-render.ts`: `stream-json` only: git-sourced edit diffs into pi's thinking stream. `formatInlineDiff` (no git) renders ACP's native diffs. ACP edits arrive as diffs in `tool_call content[]`.
-    *   `mcp-server.ts`: Internal bridge HTTP/MCP server lifecycle and capability gating; `tools/call` parks into the provider round-trip. Shared-secret `x-bridge-token`; handle exposes `token` for ACP `mcpServers` headers.
+    *   `mcp-server.ts`: Internal bridge HTTP/MCP server lifecycle and capability gating; `tools/call` parks into the provider round-trip. Shared-secret `x-bridge-token`; handle exposes `token` for ACP `mcpServers` headers. Logs a `progress-token` probe when a request carries `_meta.progressToken`.
     *   `models.ts`: Antigravity model catalog loading and background cache refreshing; `toPiModel(entry, input)` advertises text+image input only when the engine is `acp`.
     *   `sessions.ts`: Persisted mapping of `pi` session IDs to agy conversation/session IDs. Engine-scoped KEYS (`sid:<x>` streaming, `sid:<x>@acp`) so engine switches never cross conversations.
 *   `extensions/`: `pi` extension entry point (`index.ts`): provider registration, dual-driver wiring, bridge `mcpServers` registration with the token header, `/agy` command (engine, auth, auth-manual, doctor), bridge lifecycle notices.

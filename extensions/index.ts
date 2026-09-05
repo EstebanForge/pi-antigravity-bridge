@@ -37,7 +37,14 @@ import {
 	type AgyModelEntry,
 } from "../src/models.js";
 import { SessionStore } from "../src/sessions.js";
-import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
+import {
+	POLL_TOOL_NAME,
+	ToolRoundTrips,
+	WrapperReplay,
+	createStreamSimple,
+	formatEscalatedAck,
+	formatPollAnswer,
+} from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
@@ -459,6 +466,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					inputSchema: activateSkillSchema(skills) as object,
 				});
 			}
+			// Bridge-local, like activate_skill: answered from the escalation
+			// registry without a pi round-trip. Pairs with the STILL RUNNING
+			// early-ack that keeps slow calls under agy's ~180s request deadline.
+			tools.push({
+				name: POLL_TOOL_NAME,
+				description:
+					"Fetch the result of a long-running bridge tool call that answered STILL RUNNING with a callId. Poll again if it still reports running; the result or an error arrives here.",
+				inputSchema: {
+					type: "object",
+					properties: { callId: { type: "string", description: "callId from the STILL RUNNING answer" } },
+					required: ["callId"],
+				},
+			});
 			return tools;
 		};
 		// activate_skill never round-trips through pi: the bridge answers it
@@ -469,7 +489,22 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			args: Record<string, unknown>,
 			signal: AbortSignal,
 		) => {
-			if (name !== ACTIVATE_SKILL_TOOL_NAME) return roundTrips.onToolCall(callId, name, args, signal);
+			// Bridge-local, like activate_skill: answered from the escalation
+			// registry, never parked into pi.
+			if (name === POLL_TOOL_NAME) {
+				const wanted = typeof args.callId === "string" ? args.callId : "";
+				mcpLog("poll-tool", { callId: wanted });
+				return Promise.resolve(formatPollAnswer(wanted, roundTrips.poll(wanted)));
+			}
+			if (name !== ACTIVATE_SKILL_TOOL_NAME) {
+				return roundTrips.onToolCall(callId, name, args, signal).then((r) => {
+					// Early-ack: answer the HTTP request before agy's ~180s client
+					// deadline with a poll handle; pi keeps executing meanwhile.
+					if (!("escalated" in r)) return r;
+					mcpLog("call-tool-escalated", { name, callId: r.callId });
+					return formatEscalatedAck(r);
+				});
+			}
 			const wanted = typeof args.name === "string" ? args.name : "";
 			const skill = findSkillByName(skills, wanted);
 			const body = skill ? readSkillBody(skill) : `unknown skill: ${wanted || "(none given)"}`;

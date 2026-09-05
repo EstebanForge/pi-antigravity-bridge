@@ -349,6 +349,7 @@ or `terminal/*` delegation occurred with capabilities off.
 | set_config_option response | < 1 s |
 | Prompt first chunk | ~1-2 s (Flash, low effort) |
 | OAuth onboarding window | minutes-scale; one timeout observed at ~8.5 min |
+| Bridge `tools/call` HTTP request | agy's MCP client abandons the request at ~180s (observed twice at exactly 180.000s on 2026-09-05: AskClaude at 225.7s, then a follow-up exec_command). Mitigations: the bridge early-acks any call still running after ~20s with a poll handle (`bridge_poll_result`, `call-tool-escalated` log event) so the request never reaches the deadline; escalated parks re-arm at 30 min for human-gated latency; a result that outlives polling is re-delivered as a new same-conversation prompt (late delivery, `late-result` log event). `mcp-server` logs `progress-token` when a request carries `_meta.progressToken`: if agy ever sends one, progress notifications become a testable zero-UX fix |
 | Steady RSS | ~327 MB (5 min mixed load; VSZ ~5.3 GB is TCMalloc reservation) |
 
 ## Run 6 findings (2026-09-03, post-restart session; raw traffic

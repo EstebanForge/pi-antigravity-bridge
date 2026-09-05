@@ -68,6 +68,8 @@ The bridge starts a localhost MCP server inside pi's process. `tools/list` retur
 
 **No patch required.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call. This is the same mechanism tianzuo/pi-antigravity uses; upstream pi APIs only.
 
+**Long calls don't die.** agy's MCP client abandons a `tools/call` request at a flat ~180s, which used to kill any pi tool that ran longer (a long peer review, a build, a commit preview waiting for you). A call still running after ~20 seconds now settles its HTTP request with a `STILL RUNNING` answer carrying a `callId` while pi keeps executing; agy fetches the result through the bridge-local `bridge_poll_result` tool and polls until it lands. Escalated calls get their own 30-minute budget, so human-gated tools can take as long as the human takes. Fast calls stay fully synchronous and never see any of this. If a park does fail (abort, timeout, recycle), the late result is re-routed to agy as a follow-up prompt in the same conversation instead of being lost.
+
 **Recursion safety.** Only the provider's agy receives the extra `--add-dir`. The `AskAntigravity` tool spawns its own agy with just the workspace, so that inner agy starts plain (no pi tools) and cannot re-enter. `AskAntigravity` is also filtered from the exposed tool list. Standalone agy is unaffected because nothing is written to its global config.
 
 **Cost / fan-out.** Every registered pi tool except builtins (and `AskAntigravity`) is exposed, including other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a new cost/time fan-out vector that did not exist before this feature.
@@ -196,7 +198,7 @@ The extension keeps a daily log on your machine, sorted by day:
 ~/.pi/extensions-data/estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson
 ```
 
-One JSON record per line. Two verbosity tiers keep the disk cost negligible for regular users: by default only `info`/`warn`/`error` records land on disk, which is the useful skeleton: turn starts and outcomes with error text (both engines), bridge tool calls and round-trip failures, `AskAntigravity` runs, `/agy` commands, ACP setup/self-heal, auth URLs, and every driver failure (stall, abort, timeout, nonzero exit). Set `AGY_DEBUG=1` before reproducing a problem for the full trail: per-event driver lifecycle (spawn, exit, session load/new, unparks), list-tools traffic, recycle causes, and the raw bridge chatter. `/agy doctor` prints the log directory.
+One JSON record per line. Two verbosity tiers keep the disk cost negligible for regular users: by default only `info`/`warn`/`error` records land on disk, which is the useful skeleton: turn starts and outcomes with error text (both engines), bridge tool calls, escalations and poll traffic, late deliveries, and round-trip failures, `AskAntigravity` runs, `/agy` commands, ACP setup/self-heal, auth URLs, and every driver failure (stall, abort, timeout, nonzero exit). Set `AGY_DEBUG=1` before reproducing a problem for the full trail: per-event driver lifecycle (spawn, exit, session load/new, unparks), list-tools traffic, recycle causes, and the raw bridge chatter. `/agy doctor` prints the log directory.
 
 Notes:
 

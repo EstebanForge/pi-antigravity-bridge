@@ -256,6 +256,14 @@ export async function startMcpServer(
 
 	const callHandler = async (request: { params: { name: string; arguments?: unknown } }, signal?: AbortSignal) => {
 		const { name, arguments: args } = request.params;
+		// Progress probe: agy's MCP client killed long bridge calls at exactly
+		// ~180s (see ACP-PROTOCOL-REFERENCE). If its requests ever carry a
+		// progressToken, MCP progress notifications become a testable zero-UX
+		// fix for that deadline; log presence to find out.
+		const meta = (request.params as { _meta?: { progressToken?: unknown } })._meta;
+		if (meta && meta.progressToken !== undefined) {
+			log("progress-token", { name, token: String(meta.progressToken) });
+		}
 		const callId = crypto.randomUUID();
 		log("call-tool", { name, callId });
 		try {

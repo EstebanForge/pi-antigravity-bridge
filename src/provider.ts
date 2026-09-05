@@ -119,7 +119,7 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
  *  and the question never displayed. Rides the systemPrompt gate: the note
  *  ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -385,10 +385,123 @@ export function toAgyEffort(
 // agy continues its still-running turn. No pi patch, no privileged API.
 
 const BRIDGE_TIMEOUT_MS = 480_000;
+/** Bounded memory of failed bridge parks (late-delivery tombstones). */
+const MAX_PARK_TOMBSTONES = 64;
 
 export interface BridgeCallResultShape {
 	content: Array<{ type: string; text?: string }>;
 	isError: boolean;
+}
+
+/** Early-ack sentinel: onToolCall settles with this when the pi tool is still
+ *  running after escalateAfterMs (~20s). agy's MCP client abandons a
+ *  tools/call HTTP request at ~180s (observed; see ACP-PROTOCOL-REFERENCE), so
+ *  slow calls must not hold the request. The bridge answers with
+ *  formatEscalatedAck and the real result arrives via bridge_poll_result (or,
+ *  if agy never polls, the late-delivery path). */
+export interface BridgeEscalation {
+	escalated: true;
+	callId: string;
+	name: string;
+}
+
+export const POLL_TOOL_NAME = "bridge_poll_result";
+
+/** Default quiet period before a park escalates to a poll handle. Well under
+ *  agy's ~180s request deadline; fast tools never see it. */
+export const ESCALATE_AFTER_MS = 20_000;
+/** Escalated parks carry a longer TTL: human-gated tools (commit previews,
+ *  permission dialogs) legitimately block for many minutes. */
+export const ESCALATED_TIMEOUT_MS = 1_800_000;
+
+export interface PollView {
+	state: "running" | "done" | "failed";
+	name: string;
+	text?: string;
+	isError?: boolean;
+	reason?: string;
+}
+
+/** Escalated bridge calls. Bounded: past the cap, oldest settled entries
+ *  evict first (a running call is never evicted while a newer one is). */
+export class EscalationRegistry {
+	#calls = new Map<string, PollView>();
+	#trim(): void {
+		// Soft cap: only settled entries evict. Evicting a RUNNING call would
+		// strand its result (settle becomes a no-op, poll reports unknown), so
+		// saturating the cap with in-flight calls grows the map instead.
+		while (this.#calls.size > MAX_PARK_TOMBSTONES) {
+			const victim = [...this.#calls.entries()].find(([, e]) => e.state !== "running")?.[0];
+			if (victim === undefined) break;
+			this.#calls.delete(victim);
+		}
+	}
+	escalate(callId: string, name: string): void {
+		this.#calls.set(callId, { name, state: "running" });
+		this.#trim();
+	}
+	settleDone(callId: string, text: string, isError: boolean): void {
+		const e = this.#calls.get(callId);
+		if (!e) return;
+		e.state = "done";
+		e.text = text;
+		e.isError = isError;
+		this.#trim();
+	}
+	settleFailed(callId: string, reason: string): void {
+		const e = this.#calls.get(callId);
+		if (!e) return;
+		e.state = "failed";
+		e.reason = reason;
+		this.#trim();
+	}
+	poll(callId: string): PollView | undefined {
+		const e = this.#calls.get(callId);
+		return e ? { ...e } : undefined;
+	}
+}
+
+export function formatEscalatedAck(e: BridgeEscalation): BridgeCallResultShape {
+	return {
+		content: [
+			{
+				type: "text",
+				text: [
+					`STILL RUNNING: the pi tool "${e.name}" has not finished yet.`,
+					`Call ${POLL_TOOL_NAME} with callId "${e.callId}" to get the result. Poll again if it still reports running; you may do other work between polls.`,
+					"This is not an error and nothing is lost: if you stop polling, the bridge re-delivers the result in a later turn.",
+				].join("\n"),
+			},
+		],
+		isError: false,
+	};
+}
+
+export function formatPollAnswer(callId: string, view: PollView | undefined): BridgeCallResultShape {
+	if (!view) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: `Error: no escalated bridge call "${callId}". It either finished within the first seconds (its result is in your original tool result) or the callId is wrong.`,
+				},
+			],
+			isError: true,
+		};
+	}
+	if (view.state === "running") {
+		return {
+			content: [{ type: "text", text: `STILL RUNNING: "${view.name}" (callId ${callId}) has not finished. Poll again later.` }],
+			isError: false,
+		};
+	}
+	if (view.state === "failed") {
+		return {
+			content: [{ type: "text", text: `Error: bridge call "${view.name}" (callId ${callId}) failed: ${view.reason}` }],
+			isError: true,
+		};
+	}
+	return { content: [{ type: "text", text: view.text || "(no output)" }], isError: view.isError ?? false };
 }
 
 interface PendingRoundTrip {
@@ -397,9 +510,13 @@ interface PendingRoundTrip {
 	 *  toolResult only confirms continuation, nothing remote to settle. */
 	kind: "bridge" | "rt";
 	name: string;
-	resolve?: (r: BridgeCallResultShape) => void;
+	resolve?: (r: BridgeCallResultShape | BridgeEscalation) => void;
 	reject?: (e: Error) => void;
 	timer?: NodeJS.Timeout;
+	/** Set when the early-ack fired: the HTTP request was answered with a poll
+	 *  handle, so the settling value must go to the registry, not the socket. */
+	escalated?: boolean;
+	escalateTimer?: NodeJS.Timeout;
 	onAbort?: () => void;
 	signal?: AbortSignal;
 }
@@ -430,23 +547,61 @@ export class WrapperReplay {
 
 export class ToolRoundTrips {
 	#pending = new Map<string, PendingRoundTrip>();
+	/** Failed bridge parks: the pi tool keeps running and its toolResult will
+	 *  arrive with the park already gone. Bounded; consumed by the
+	 *  late-delivery path (see buildLateResultPrompt). */
+	#dead = new Map<string, { name: string; reason: string }>();
+	#escalations = new EscalationRegistry();
+	#escalateAfterMs: number;
 	#getDriver: () => TurnDriver;
 	#log: (s: string, d?: unknown) => void;
 
 	/** Accepts a driver or a getter: with two engines wired, the ACTIVE driver
 	 *  is resolved at call time from config (plan §9.5). */
-	constructor(driver: TurnDriver | (() => TurnDriver), log?: (s: string, d?: unknown) => void) {
+	constructor(
+		driver: TurnDriver | (() => TurnDriver),
+		log?: (s: string, d?: unknown) => void,
+		opts: { escalateAfterMs?: number } = {},
+	) {
 		this.#getDriver = typeof driver === "function" ? driver : () => driver;
 		this.#log = log ?? (() => {});
+		this.#escalateAfterMs = opts.escalateAfterMs ?? ESCALATE_AFTER_MS;
 	}
 
 	get pendingIds(): string[] {
 		return [...this.#pending.keys()];
 	}
 
-	/** Fail all pending calls (driver recycle/shutdown path). */
+	/** Call ids whose park already failed (tombstones). */
+	get deadIds(): string[] {
+		return [...this.#dead.keys()];
+	}
+
+	/** Take and clear the tombstone for a failed park, if any. */
+	consumeDead(toolCallId: string): { name: string; reason: string } | undefined {
+		const dead = this.#dead.get(toolCallId);
+		if (!dead) return undefined;
+		this.#dead.delete(toolCallId);
+		return dead;
+	}
+
+	/** Poll view for an escalated call (undefined when the id never escalated:
+	 *  fast calls settle synchronously and need no handle). */
+	poll(callId: string): PollView | undefined {
+		return this.#escalations.poll(callId);
+	}
+
+	/** Fail all pending calls (driver recycle/shutdown path). Escalated bridge
+	 *  calls are skipped: their HTTP request was already answered with a poll
+	 *  handle, and the agy turn ending does NOT make the still-running pi tool
+	 *  a failure. They settle through resolve(), their own 30m timer, or an
+	 *  abort signal on the pi tool call. */
 	failAll(reason: string): void {
-		for (const id of [...this.#pending.keys()]) this.#fail(id, reason);
+		for (const id of [...this.#pending.keys()]) {
+			const entry = this.#pending.get(id);
+			if (entry?.kind === "bridge" && entry.escalated) continue;
+			this.#fail(id, reason);
+		}
 	}
 
 	#fail(callId: string, reason: string): void {
@@ -459,20 +614,33 @@ export class ToolRoundTrips {
 		}
 		this.#pending.delete(callId);
 		clearTimeout(entry.timer);
+		if (entry.escalateTimer) clearTimeout(entry.escalateTimer);
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
+		this.#dead.set(callId, { name: entry.name, reason });
+		while (this.#dead.size > MAX_PARK_TOMBSTONES) {
+			const oldest = this.#dead.keys().next().value;
+			if (oldest === undefined) break;
+			this.#dead.delete(oldest);
+		}
+		if (entry.escalated) this.#escalations.settleFailed(callId, reason);
 		entry.reject!(new Error(reason));
 		this.#getDriver().kickIdle();
 		this.#log("round-trip-fail", { callId, name: entry.name, reason });
 	}
 
-	/** Park the MCP call: inject into the live agy turn; the promise settles
-	 *  when pi's toolResult lands (resolve) or fail-closed (timeout/abort). */
+	/** Park the MCP call: inject into the live agy turn. Fast calls settle
+	 *  with the real BridgeCallResultShape. Calls still running after
+	 *  escalateAfterMs settle with a BridgeEscalation sentinel instead: the
+	 *  bridge answers the HTTP request with a poll handle while pi keeps
+	 *  executing, so agy's ~180s request deadline is never hit. The real
+	 *  result reaches agy via bridge_poll_result, or via the late-delivery
+	 *  path if agy never polls. Fail-closed: timeout/abort still reject. */
 	onToolCall = (
 		callId: string,
 		name: string,
 		args: Record<string, unknown>,
 		signal: AbortSignal,
-	): Promise<BridgeCallResultShape> => {
+	): Promise<BridgeCallResultShape | BridgeEscalation> => {
 		const handle = this.#getDriver().activeHandle;
 		if (!handle) {
 			return Promise.reject(
@@ -481,13 +649,32 @@ export class ToolRoundTrips {
 				),
 			);
 		}
-		return new Promise<BridgeCallResultShape>((resolve, reject) => {
+		return new Promise<BridgeCallResultShape | BridgeEscalation>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.#fail(callId, `pi tool round-trip timed out after ${BRIDGE_TIMEOUT_MS / 1000}s`);
 			}, BRIDGE_TIMEOUT_MS);
 			const onAbort = () => this.#fail(callId, "agy disconnected before the tool result arrived");
 			signal.addEventListener("abort", onAbort, { once: true });
-			this.#pending.set(callId, { kind: "bridge", name, resolve, reject, timer, onAbort, signal });
+			const entry: PendingRoundTrip = { kind: "bridge", name, resolve, reject, timer, onAbort, signal };
+			if (this.#escalateAfterMs > 0) {
+				entry.escalateTimer = setTimeout(() => {
+					const e = this.#pending.get(callId);
+					// Resolved (or failed) between arm and fire: nothing to escalate.
+					if (!e || e.kind !== "bridge") return;
+					e.escalated = true;
+					// Human-gated calls (commit previews, permission dialogs) can
+					// block far longer than the standard park TTL; re-arm generously.
+					if (e.timer) {
+						clearTimeout(e.timer);
+						e.timer = setTimeout(() => {
+							this.#fail(callId, `escalated bridge call timed out after ${ESCALATED_TIMEOUT_MS / 60_000} minutes`);
+						}, ESCALATED_TIMEOUT_MS);
+					}
+					this.#escalations.escalate(callId, e.name);
+					resolve({ escalated: true, callId, name: e.name });
+				}, this.#escalateAfterMs);
+			}
+			this.#pending.set(callId, entry);
 			handle.pushExternal({ type: "bridge_call", callId, name, args });
 		});
 	};
@@ -505,12 +692,21 @@ export class ToolRoundTrips {
 		if (!entry) return false;
 		this.#pending.delete(toolCallId);
 		clearTimeout(entry.timer);
+		if (entry.escalateTimer) clearTimeout(entry.escalateTimer);
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
 		if (entry.kind === "rt") {
 			this.#log("round-trip-rt-done", { callId: toolCallId, name: entry.name, isError });
 			return true;
 		}
-		entry.resolve!({ content: [{ type: "text", text }], isError });
+		// Escalated call: the HTTP response already carried the poll handle, so
+		// the result lands in the registry for the next bridge_poll_result. The
+		// original promise settled with the sentinel; re-resolving is a silent
+		// no-op, so gate it to keep that explicit.
+		if (entry.escalated) {
+			this.#escalations.settleDone(toolCallId, text, isError);
+		} else {
+			entry.resolve!({ content: [{ type: "text", text }], isError });
+		}
 		this.#getDriver().kickIdle();
 		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
 		return true;
@@ -532,6 +728,29 @@ export function collectToolResults(
 		out.push({ toolCallId: id, text: blocksToText(m.content).trim(), isError: m.isError === true });
 	}
 	return out;
+}
+
+export interface LateToolResult {
+	name: string;
+	reason: string;
+	text: string;
+	isError: boolean;
+}
+
+/** Frame late tool results so agy treats them as the results its bridge calls
+ *  never received (the round-trip died while the pi tool was still running,
+ *  e.g. agy's ~180s MCP client timeout on tools/call). */
+export function buildLateResultPrompt(late: LateToolResult[], userPrompt?: string): string {
+	const blocks = late.map((r) =>
+		[
+			`pi tool "${r.name}": the bridge round-trip expired before this result reached you (${r.reason}).`,
+			r.isError ? "The tool reported an error:" : "Result:",
+			r.text.trim() || "(no output)",
+		].join("\n"),
+	);
+	const header = "Late tool delivery: treat the following as the results of your earlier tool calls.";
+	const body = [header, ...blocks].join("\n\n");
+	return userPrompt ? `${body}\n\n${userPrompt}` : body;
 }
 
 // --- stream-json engine -------------------------------------------------------
@@ -739,12 +958,47 @@ async function runTurnDriver(
 	// agy receives the result via the bridge's MCP HTTP response.
 	const results = collectToolResults(context.messages, deps.roundTrips.pendingIds);
 	const isContinuation = results.length > 0;
+	// Escalated calls answer through bridge_poll_result, not through an agy
+	// turn waiting on the park, so note them before resolving.
+	const escalatedNames = results
+		.map((r) => deps.roundTrips.poll(r.toolCallId)?.name)
+		.filter((n): n is string => Boolean(n));
 	for (const r of results) deps.roundTrips.resolve(r.toolCallId, r.text, r.isError);
+
+	// Late delivery: a toolResult whose park already failed (the abort/timeout
+	// path failed the park while the pi tool kept running). The work is done,
+	// so re-route the result to agy as a new prompt in the same conversation
+	// instead of dropping it. Both drivers serialize run(), so delivery queues
+	// behind agy's own salvaged turn when one is still active.
+	// A pass that anchors a still-pending park (isContinuation) has nowhere to
+	// put a late result: it can neither ride the pending call's HTTP response
+	// nor start a new prompt. Leave the tombstone for the next fresh pass
+	// instead of consuming it blind.
+	const late: LateToolResult[] = [];
+	if (!isContinuation) {
+		for (const r of collectToolResults(context.messages, deps.roundTrips.deadIds)) {
+			const dead = deps.roundTrips.consumeDead(r.toolCallId);
+			if (dead) late.push({ name: dead.name, reason: dead.reason, text: r.text, isError: r.isError });
+		}
+		if (late.length > 0) {
+			deps.log?.("late-result", { tools: late.map((l) => l.name), freshConversation: !existing?.conversationId }, "info");
+		}
+	} else if (deps.roundTrips.deadIds.length > 0) {
+		deps.log?.("late-result-deferred", { count: deps.roundTrips.deadIds.length }, "info");
+	}
 
 	let handle: TurnHandle;
 	if (isContinuation) {
 		const active = deps.driver.reentry();
 		if (!active) {
+			// Escalated calls have no turn to re-enter BY DESIGN: agy already
+			// got the poll handle and the result lives in the registry. Settle
+			// quietly instead of erroring the turn.
+			if (escalatedNames.length > 0) {
+				appendText(stream, blocks, `[bridge] ${escalatedNames.join(", ")} finished; the result is available via ${POLL_TOOL_NAME}.`);
+				finalize(stream, blocks, "stop");
+				return;
+			}
 			deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
 			finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
 			return;
@@ -754,8 +1008,9 @@ async function runTurnDriver(
 		const prompt = extractUserPrompt(context);
 		const images = extractImages(context);
 		// An image-only message (no text) is valid on the ACP engine; only fail
-		// when there is nothing at all to send.
-		if (!prompt && images.length === 0) {
+		// when there is nothing at all to send (no text, no images, no late
+		// tool results to deliver).
+		if (!prompt && images.length === 0 && late.length === 0) {
 			deps.log?.("turn-error", { reason: "no-user-message" }, "debug");
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
@@ -764,7 +1019,9 @@ async function runTurnDriver(
 		const agyModel = entry?.full ?? model.id;
 		const effort = entry?.efforts?.length ? toAgyEffort(options?.reasoning, entry.efforts) : undefined;
 		const watermark = existing?.lastMessageCount ?? 0;
-		const digest = config.digest ? buildContextDigest(context.messages, watermark) : "";
+		// Late turns re-open the conversation with a synthetic prompt; the digest
+		// would re-send context agy already holds, so skip it.
+		const digest = config.digest && late.length === 0 ? buildContextDigest(context.messages, watermark) : "";
 		// G1 delivery per engine. stream-json: digest rides inline in the prompt
 		// (the CLI has no context channel). ACP: the server advertises
 		// `embeddedContext`, so the digest ships as a native resource block
@@ -778,7 +1035,10 @@ async function runTurnDriver(
 		// re-sending it every turn would bloat each prompt and bust the cache.
 		const sysPrompt =
 			config.systemPrompt && !existing?.conversationId ? context.systemPrompt : undefined;
-		const fullPrompt = buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
+		const fullPrompt =
+			late.length > 0
+				? buildLateResultPrompt(late, prompt || undefined)
+				: buildFullPrompt(sysPrompt, embeddedDigest ? "" : digest, prompt ?? "");
 		try {
 			handle = await deps.driver.run({
 				cwd,

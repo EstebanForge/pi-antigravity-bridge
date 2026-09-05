@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { parseAgyLine, toPiUsage, type AgyUsage } from "../src/stream-events.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
 import { AgyDriver, type DriverActivity } from "../src/driver.js";
-import { ToolRoundTrips } from "../src/provider.js";
+import { ToolRoundTrips, type BridgeCallResultShape } from "../src/provider.js";
 
 test("parser: init carries conversation id", () => {
 	const e = parseAgyLine('{"event":"init","init":{"conversation_id":"abc-123"}}');
@@ -105,7 +105,7 @@ test("round-trips: parks, injects bridge_call into the active driver handle, res
 		assert.deepEqual(rt.pendingIds, ["c1"]);
 		// pi's toolResult completes the parked MCP response.
 		assert.equal(rt.resolve("c1", "found it", false), true);
-		const res = await p;
+		const res = (await p) as BridgeCallResultShape;
 		assert.equal(res.isError, false);
 		assert.equal(res.content[0].text, "found it");
 		assert.equal(rt.resolve("c1", "again", false), false);
