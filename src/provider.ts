@@ -108,9 +108,18 @@ const DIGEST_PREAMBLE =
 // afterwards, and agy's server-side prompt cache keeps hitting.
 
 export const SYSTEM_PROMPT_PREAMBLE =
-	"[The following is the system prompt of the pi session that spawned this conversation: operating instructions plus project context (AGENTS.md files). Apply it for this whole conversation. Tool guidance may reference pi-side tools; use your own tools or the pi tool bridge for those actions.]";
+	"[The following is the system prompt of the pi session that spawned this conversation: operating instructions plus project context (AGENTS.md files). Apply it for this whole conversation.]";
 
 export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
+
+/** Brief tool-priority note appended inside every system prompt block: agy
+ *  runs embedded in pi, so its native interactive tools never reach the
+ *  user. Equivalent Pi Bridge tools must win. Concrete clash observed live:
+ *  agy picked its native ask_question over the bridge's ask_user_question
+ *  and the question never displayed. Rides the systemPrompt gate: the note
+ *  ships only when the system prompt ships. */
+export const TOOL_PRIORITY_NOTE =
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
@@ -122,7 +131,7 @@ export function buildFullPrompt(
 ): string {
 	const parts: string[] = [];
 	if (systemPrompt) {
-		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${SYSTEM_PROMPT_END}`);
+		parts.push(`${SYSTEM_PROMPT_PREAMBLE}\n\n${systemPrompt}\n\n${TOOL_PRIORITY_NOTE}\n\n${SYSTEM_PROMPT_END}`);
 	}
 	if (digest) {
 		parts.push(`${DIGEST_PREAMBLE}\n\n${digest}`);

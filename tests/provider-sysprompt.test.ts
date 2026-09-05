@@ -13,6 +13,7 @@ import type { Api, Context, Model, SimpleStreamOptions } from "@earendil-works/p
 import {
 	SYSTEM_PROMPT_END,
 	SYSTEM_PROMPT_PREAMBLE,
+	TOOL_PRIORITY_NOTE,
 	ToolRoundTrips,
 	buildFullPrompt,
 	createStreamSimple,
@@ -36,6 +37,15 @@ test("no system prompt: plain passthrough (disabled or absent)", () => {
 	// The call site passes undefined when config.systemPrompt is off or the
 	// conversation is already bound.
 	assert.equal(buildFullPrompt(undefined, "", "hello"), "hello");
+});
+
+test("tool priority note rides the system prompt gate, before END", () => {
+	const out = buildFullPrompt(SYS, "", "hello");
+	const iNote = out.indexOf(TOOL_PRIORITY_NOTE);
+	assert.ok(iNote > out.indexOf(SYS), "note comes after the user's system prompt");
+	assert.ok(iNote < out.indexOf(SYSTEM_PROMPT_END), "note stays inside the delimited block");
+	// Same gate: no system prompt, no note.
+	assert.equal(buildFullPrompt(undefined, "", "hello").includes(TOOL_PRIORITY_NOTE), false);
 });
 
 test("empty-string system prompt is treated as absent", () => {

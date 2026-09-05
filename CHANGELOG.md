@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Tool-priority note in the system prompt block (`systemPrompt` setting, on by default): agy runs embedded in pi, so its native interactive tools (the live example was `ask_question` vs the bridge's `ask_user_question`) never reach the user. The note tells agy to always prefer the Pi Bridge tool when one covers the same purpose. The old preamble sentence that allowed "your own tools or the pi tool bridge" is gone, since that ambiguity was the cause.
+
 - `/agy auth` subcommand: runs the antigravity-acp sign-in on demand (spawns the server, sends `authenticate`, waits for the browser round-trip to complete; minutes-scale). Signing in no longer rides the first Antigravity message, and both login-pending moments now point at `/agy auth`. The sign-in URL toast (and its ssh port-forward hint) fires during `/agy auth` exactly as it does during turns. After the authenticate reply the run waits up to 5 s for `acp_token.json` before killing the sign-in server, and a second concurrent `/agy auth` fails fast instead of racing the token write.
 
 ### Changed
