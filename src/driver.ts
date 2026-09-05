@@ -137,6 +137,9 @@ export class AgyDriver implements TurnDriver {
 	// it ate large tool frames and could hide the result frame of a turn.
 	#stdoutBuf = "";
 	#lifecycle: string[] = [];
+	/** Optional external lifecycle sink (the extension's daily file log).
+	 *  Fire-and-forget: the ring buffer stays the source for /agy doctor. */
+	log?: (msg: string, data?: unknown) => void;
 	#onTurnEnd: ((outcome: TurnOutcome) => void) | undefined;
 	#stats = {
 		spawns: 0,
@@ -227,6 +230,13 @@ export class AgyDriver implements TurnDriver {
 		this.#active = turn;
 		this.#state = "running";
 		this.#stats.turns += 1;
+		this.#log("turn-start", {
+			model: request.model,
+			effort: request.effort,
+			mode: request.mode,
+			conversation: request.conversationId ?? null,
+			images: request.images?.length ?? 0,
+		});
 		this.#armTimers(turn);
 
 		const line = `${JSON.stringify({
@@ -628,8 +638,10 @@ export class AgyDriver implements TurnDriver {
 		}
 	}
 
-	#log(msg: string): void {
-		this.#lifecycle.push(`${nowIso()} ${msg}`);
+	#log(msg: string, data?: unknown): void {
+		const line = `${nowIso()} ${msg}${data !== undefined ? ` ${JSON.stringify(data)}` : ""}`;
+		this.#lifecycle.push(line);
 		if (this.#lifecycle.length > LIFECYCLE_LIMIT) this.#lifecycle.shift();
+		this.log?.(msg, data);
 	}
 }

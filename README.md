@@ -143,7 +143,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 ```
 /agy                      status, or open the full settings picker (TUI)
 /agy status               print current settings + session counts
-/agy doctor               bridge state, driver counters, bridge port, last lifecycle events
+/agy doctor               bridge state, driver counters, bridge port, last lifecycle events, log dir
 /agy auth                 run the antigravity-acp sign-in now (engine acp): opens the Google login in your browser, shows the URL when no browser opens
 /agy mode plan            review-only: agy plans but writes nothing
 /agy mode accept-edits    agy applies edits directly (default)
@@ -186,6 +186,26 @@ For isolation when running any agent that executes commands without a confirmati
 | `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
 | `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |
 | `AGY_DEFAULT_THINKING` | Default thinking tier for the `AskAntigravity` tool: `low`/`medium`/`high`. Anything else falls back to `medium`. Wins over the config file. |
+| `AGY_DEBUG` | `1`/`true`/`on` writes verbose debug records to the daily log (driver lifecycle, raw bridge traffic). Default off: only the light info/warn/error stream. |
+
+## Debug logs
+
+The extension keeps a daily log on your machine, sorted by day:
+
+```
+~/.pi/extensions-data/estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson
+```
+
+One JSON record per line. Two verbosity tiers keep the disk cost negligible for regular users: by default only `info`/`warn`/`error` records land on disk, which is the useful skeleton: turn starts and outcomes with error text (both engines), bridge tool calls and round-trip failures, `AskAntigravity` runs, `/agy` commands, ACP setup/self-heal, auth URLs, and every driver failure (stall, abort, timeout, nonzero exit). Set `AGY_DEBUG=1` before reproducing a problem for the full trail: per-event driver lifecycle (spawn, exit, session load/new, unparks), list-tools traffic, recycle causes, and the raw bridge chatter. `/agy doctor` prints the log directory.
+
+Notes:
+
+- Retention: 14 days. Older files are pruned automatically.
+- Privacy: prompt text, tool arguments, and tool output never land in the log. Secret-shaped values (tokens, API keys, credentials, header blocks) are redacted, and long strings are truncated. The `auth-url` record strips the login URL's query string.
+- Logging never throws: an unwritable directory is skipped silently and retried on the next record.
+- SSD wear: default volume is a handful of records per turn. Verbose mode (`AGY_DEBUG=1`) writes more; turn it off after reproducing.
+
+When you report an issue, attach the last day or two of files from that directory. For anything that needs reproduction, run with `AGY_DEBUG=1` once and attach that day's file. They usually contain the exact failure sequence (engine, session, bridge call, error) with no need to guess.
 
 ## Development
 

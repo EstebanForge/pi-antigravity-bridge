@@ -43,8 +43,9 @@ import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
-import type { TurnDriver } from "../src/driver-types.js";
-import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
+import { CONFIG_PATH, loadConfig, logsDir, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
@@ -103,6 +104,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const modelInput: Array<"text" | "image"> = engine === "acp" ? ["text", "image"] : ["text"];
 	const models = entries.map((e) => toPiModel(e, modelInput));
 
+	// Daily file log: every sink below feeds ~/.pi/extensions-data/
+	// estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson (see
+	// src/daily-log.ts). Fire-and-forget, secrets redacted, old days pruned.
+	// Support flow: "attach the last days' files from that dir".
+	const fileLog = createDailyLogger({ dir: logsDir() });
+	fileLog.log(
+		"extension-load",
+		{ engine, models: models.length, fallback: usingFallback, bridge: loadConfig().bridgeTools, askTool: loadConfig().askTool },
+		"info",
+	);
+
 	const store = new SessionStore();
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
@@ -136,9 +148,41 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		"unsupported-server-request",
 	]);
 	const legacyDriver = new AgyDriver();
+	// Mirror the legacy driver's lifecycle ring into the daily file log
+	// (spawn/exit/abort/stall/recycle). The ACP driver reaches the same file
+	// through acpLog below.
+	legacyDriver.log = (msg, data) => {
+		// Level classification mirrors acpLog's failure set: stalls, aborts,
+		// timeouts and nonzero exits are the "what broke" greps (warn);
+		// turn-start is the per-turn skeleton (info); everything else is
+		// verbose-only (debug, needs AGY_DEBUG).
+		const failed =
+			msg.startsWith("timeout:") ||
+			msg.startsWith("stall:") ||
+			msg.startsWith("abort:") ||
+			(msg.startsWith("exit:") && msg !== "exit:0");
+		const level = failed ? "warn" : msg === "turn-start" ? "info" : "debug";
+		fileLog.log(msg, data, level);
+	};
 	// Shared ACP log sink (driver turns AND /agy auth): the login URL event
 	// toasts so SSH users can copy it; genuine failures reach stderr.
 	const acpLog = (msg: string, data?: unknown): void => {
+		// The daily file log gets EVERY driver event (auth-url stripped of its
+		// query string - it carries one-time login state); the filters below
+		// only decide what reaches the user.
+		const fileData =
+			msg === "auth-url"
+				? { port: (data as { port?: number | null } | undefined)?.port ?? null, url: String((data as { url?: string } | undefined)?.url ?? "").split("?")[0] }
+				: data;
+		// Failures warn; turn-start + auth-url are the always-on skeleton;
+		// routine per-event lifecycle (spawn, session-load, unparked, ...) is
+		// verbose-only.
+		const level = acpFailures.has(msg)
+			? "warn"
+			: msg === "turn-start" || msg === "auth-url"
+				? "info"
+				: "debug";
+		fileLog.log(msg, fileData, level);
 		if (msg === "auth-url") {
 			const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
 			if (!url) return;
@@ -190,7 +234,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// The no-patch pi-tool round-trip store: the MCP bridge parks calls here;
 	// the provider emits them as real pi toolUse turns and completes them from
 	// the next call's toolResult.
-	const roundTrips = new ToolRoundTrips(activeDriver);
+	const roundTrips = new ToolRoundTrips(activeDriver, (s, d) => fileLog.log(s, d, s === "round-trip-fail" ? "warn" : "debug"));
 	const replay = new WrapperReplay();
 	// Native re-exec only emits for builtins actually active in the session;
 	// anything else (or an unknown name) falls back to the wrapper card.
@@ -204,7 +248,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	};
 	// A settled turn cannot answer its parked calls; the driver never sees
 	// ToolRoundTrips, so the provider bridges the two here (both engines).
-	const onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
+	// The file log records the outcome first: ERROR/aborted turns are the
+	// single most useful support signal.
+	const onTurnEnd = (outcome: TurnOutcome) => {
+		fileLog.log(
+			"turn-end",
+			// Error text can embed the child's stderr tail; cap it in line with
+			// the ACP driver's 200-char stderr slices.
+			{ status: outcome.status, error: outcome.error?.slice(0, 500), aborted: outcome.aborted },
+			outcome.status === "OK" ? "info" : "warn",
+		);
+		roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
+	};
 	legacyDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
 	const streamSimple = createStreamSimple({
@@ -216,6 +271,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		replay,
 		nativeActive,
 		engine,
+		log: fileLog.log.bind(fileLog),
 	});
 
 	pi.registerProvider("antigravity", {
@@ -246,6 +302,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		engine,
 		getMcpPort: () => mcpHandle?.port ?? null,
 		acpLog,
+		fileLog,
 		authCapture: authCapture ?? null,
 	});
 
@@ -258,7 +315,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Note: the active flag below is set regardless of askTool, so
 	// pi-ask-antigravity keeps deferring even then: off means NO delegation
 	// tool from either package, not a fallback to pi-ask-antigravity.
-	if (loadConfig().askTool) await registerAskAntigravityTool(pi, toolModels);
+	if (loadConfig().askTool) await registerAskAntigravityTool(pi, toolModels, fileLog.log.bind(fileLog));
 
 	// Display-only wrapper tool: the provider emits mutating agy steps as
 	// toolCalls against it (never re-executed - execute() replays the output
@@ -309,6 +366,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (engine === "acp" && !acpSelfHealRan) {
 			acpSelfHealRan = true;
 			void ensureAcpReady({ configBin: loadConfig().acp.bin }).then((status) => {
+				fileLog.log(
+					"acp-self-heal",
+					status.ok
+						? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
+						: { ok: false, error: status.error },
+					status.ok ? "info" : "warn",
+				);
 				if (status.ok) {
 					if (status.binarySource === "installed" || status.binarySource === "existing") {
 						saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
@@ -332,17 +396,28 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// warning toast (ctx.ui.notify, ephemeral) or stderr when headless.
 		// Per-turn success events (list-tools / call-tool) stay silent.
 		const mcpLog = (s: string, d?: unknown) => {
+			const failures = new Set([
+				"http-error", "bridge-config-write-failed", "call-tool-fail",
+				"transport-error", "handleRequest-error", "request-error",
+				"request-handler-error", "unauthorized",
+			]);
+			// Daily file log gets every bridge event (call-tool/list-tools
+			// traffic included - it is how a parked round-trip is traced); the
+			// filters below only decide what reaches the user. Bridge calls
+			// start/end at info (one record per tool call, the fragile-path
+			// skeleton); list-tools and startup chatter stay verbose.
+			const level = failures.has(s)
+				? "warn"
+				: s === "call-tool" || s === "call-tool-ok"
+					? "info"
+					: "debug";
+			fileLog.log(s, d, level);
 			// Routine abort traffic: failAll fires on turn end / session shutdown
 			// and the bridge answers every parked call with an error. Not a fault.
 			if (s === "call-tool-fail") {
 				const detail = (d as { msg?: string } | undefined)?.msg ?? "";
 				if (detail.includes("unresolved pi tool call") || detail.includes("session shut down")) return;
 			}
-			const failures = new Set([
-				"http-error", "bridge-config-write-failed", "call-tool-fail",
-				"transport-error", "handleRequest-error", "request-error",
-				"request-handler-error", "unauthorized",
-			]);
 			if (!failures.has(s)) return;
 			const msg = `[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
@@ -449,6 +524,8 @@ interface AgyCommandCtx {
 	getMcpPort: () => number | null;
 	/** Shared ACP log sink (login URL surfacing + failure events). */
 	acpLog: (msg: string, data?: unknown) => void;
+	/** Daily file logger (src/daily-log.ts); command + doctor surfacing. */
+	fileLog: DailyLogger;
 	/** BROWSER-capture handles; null when unavailable (Windows, unwritable
 	 *  data dir). /agy auth passes them to the sign-in process. */
 	authCapture: { browserEnv: Record<string, string>; file: string } | null;
@@ -502,6 +579,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 			const mode = cmdCtx.mode;
 			const sub = (args ?? "").trim().split(/\s+/)[0]?.toLowerCase();
 			const val = (args ?? "").trim().split(/\s+/)[1]?.toLowerCase();
+			ctx.fileLog.log("agy-command", { args }, "info");
 
 			// Direct subcommands work everywhere (headless + TUI).
 			if (sub === "clear") {
@@ -548,6 +626,13 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						configBin: loadConfig().acp.bin,
 						onProgress: (m) => ui?.notify(m, "info"),
 					});
+					ctx.fileLog.log(
+						"acp-setup",
+						status.ok
+							? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
+							: { ok: false, error: status.error },
+						status.ok ? "info" : "warn",
+					);
 					if (!status.ok) {
 						ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
 						return;
@@ -576,6 +661,13 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				}
 				ui?.notify("Preparing the ACP server (binary + auth settings)…", "info");
 				const status = await ensureAcpReady({ configBin: loadConfig().acp.bin, onProgress: (m) => ui?.notify(m, "info") });
+				ctx.fileLog.log(
+					"acp-setup",
+					status.ok
+						? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
+						: { ok: false, error: status.error },
+					status.ok ? "info" : "warn",
+				);
 				if (!status.ok) {
 					ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
 					return;
@@ -595,6 +687,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					authUrlFile: ctx.authCapture?.file,
 					log: ctx.acpLog,
 				});
+				ctx.fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
 				if (r.ok) {
 					ui?.notify("Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).", "info");
 				} else {
@@ -665,6 +758,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  config:        ${CONFIG_PATH}`,
+					`  logs:          ${logsDir()} (attach recent days' files when reporting issues)`,
 				];
 				if (snap.engine === "acp" && snap.acp) {
 					lines.push(

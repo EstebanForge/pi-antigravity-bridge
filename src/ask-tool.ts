@@ -266,6 +266,10 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 export async function registerAskAntigravityTool(
 	pi: ExtensionAPI,
 	entries: ModelEntry[],
+	/** Daily file log sink (src/daily-log.ts). Records lifecycle, never
+	 *  prompt text. Level matches DailyLogger: debug is the AGY_DEBUG-only
+	 *  verbose tier; info/warn/error always land. */
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void,
 ): Promise<void> {
 	pi.registerTool({
 		name: "AskAntigravity",
@@ -469,6 +473,11 @@ export async function registerAskAntigravityTool(
 				: finalPrompt;
 
 			const args: string[] = ["--add-dir", cwd];
+			log?.(
+				"ask-start",
+				{ model: resolved.model, thinking: resolved.effort ?? config.defaultThinking, mode, digest: useDigest, continue: isContinuation, timeoutMin },
+				"info",
+			);
 			const extra = extraArgs();
 			if (extra.length) args.push(...extra);
 			if (resolved.model) args.push("--model", resolved.model);
@@ -625,6 +634,11 @@ export async function registerAskAntigravityTool(
 				details.aborted = outcome.aborted;
 				details.timedOut = outcome.timedOut;
 				details.durationMs = Date.now() - start;
+				log?.(
+					"ask-end",
+					{ exitCode: outcome.exitCode, aborted: outcome.aborted, timedOut: outcome.timedOut, durationMs: details.durationMs, conversationId: details.conversationId },
+					outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut ? "warn" : "info",
+				);
 
 				if (!isContinuation && !details.conversationId && snapshot) {
 					for (let attempt = 0; attempt < DISCOVERY_POLL_ATTEMPTS; attempt++) {
@@ -680,6 +694,7 @@ export async function registerAskAntigravityTool(
 				if (statusInterval) clearInterval(statusInterval);
 				details.durationMs = Date.now() - start;
 				const msg = err instanceof Error ? err.message : String(err);
+				log?.("ask-fail", { error: msg, durationMs: details.durationMs }, "error");
 				return { content: [{ type: "text", text: `failed to run agy: ${msg}` }], details };
 			}
 			finally {

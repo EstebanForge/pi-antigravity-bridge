@@ -22,6 +22,21 @@ const CONFIG_PATH = path.join(
 	"config.json",
 );
 
+/** Daily debug logs land here, sorted by day, for post-mortems and user
+ *  support (see src/daily-log.ts). Same homedir convention as CONFIG_PATH;
+ *  lives under the scoped extensions-data convention shared with other
+ *  EstebanForge extensions. */
+export function logsDir(): string {
+	return path.join(
+		os.homedir(),
+		".pi",
+		"extensions-data",
+		"estebanforge",
+		"pi-antigravity-bridge",
+		"logs",
+	);
+}
+
 /** Which turn engine drives turns. "stream-json" is the tested default;
  *  "acp" is the official-server engine, opt-in (plan §9.5). */
 export type Engine = "stream-json" | "acp";

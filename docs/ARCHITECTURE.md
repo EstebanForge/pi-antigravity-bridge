@@ -24,6 +24,7 @@ src/discovery.ts      conversation-id binding for the AskAntigravity one-shot to
 src/models.ts         agy models -> pi Model projection (full catalog, per-model effort)
 src/sessions.ts       atomic JSON store: pi session -> agy conversation + watermark
 src/config.ts         persisted runtime config (engine + acp block, bridgeTools, digest, mode, permissions, model/thinking defaults)
+src/daily-log.ts      daily NDJSON support log (one file per day, 14-day retention, secret redaction, AGY_DEBUG verbose gate); fed by both drivers, the bridge, round-trips, /agy, and ask-tool
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip
 src/diff-render.ts    stream-json: render agy's file edits as git diffs in pi's thinking stream; formatInlineDiff (no git) renders ACP's native diffs

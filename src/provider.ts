@@ -329,6 +329,9 @@ export interface StreamSimpleDeps {
 	 *  read decides (tests); production wiring always passes it so a
 	 *  mid-session config flip cannot move one side of a parked turn. */
 	engine?: "stream-json" | "acp";
+	/** Daily file log sink (src/daily-log.ts). Records pre-dispatch turn
+	 *  errors that never create a driver turn (and so never reach onTurnEnd). */
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 }
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
@@ -540,6 +543,8 @@ export interface DriverDeps {
 	nativeActive?: (name: string) => boolean;
 	/** Active engine (config), for engine-scoped session keys. */
 	engine: "stream-json" | "acp";
+	/** Daily file log sink for pre-dispatch errors (see StreamSimpleDeps). */
+	log?: (event: string, data?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
 }
 
 /** Map one DriverActivity onto the open pi stream. Returns "parked" when the
@@ -740,6 +745,7 @@ async function runTurnDriver(
 	if (isContinuation) {
 		const active = deps.driver.reentry();
 		if (!active) {
+			deps.log?.("turn-error", { reason: "tool-result-no-active-turn" }, "warn");
 			finalize(stream, blocks, "error", "tool result arrived but no antigravity turn is running");
 			return;
 		}
@@ -750,6 +756,7 @@ async function runTurnDriver(
 		// An image-only message (no text) is valid on the ACP engine; only fail
 		// when there is nothing at all to send.
 		if (!prompt && images.length === 0) {
+			deps.log?.("turn-error", { reason: "no-user-message" }, "debug");
 			finalize(stream, blocks, "error", "No user message to send to agy.");
 			return;
 		}
@@ -792,6 +799,7 @@ async function runTurnDriver(
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			deps.log?.("turn-error", { reason: "driver-start-failed", error: msg }, "error");
 			finalize(stream, blocks, "error", `agy failed to start: ${msg}`);
 			return;
 		}
@@ -860,6 +868,7 @@ export function createStreamSimple(
 		if (selected === deps.acpDriver && config.mode === "plan") {
 			const partial = newAssistant(model);
 			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			deps.log?.("turn-error", { reason: "acp-plan-refused" }, "warn");
 			finalize(stream, blocks, "error", "ACP engine has no plan mode. /agy mode accept-edits, or /agy engine stream-json.");
 			return stream;
 		}
@@ -874,12 +883,14 @@ export function createStreamSimple(
 				// and keying the session as @acp would store a legacy
 				// conversationId under the wrong engine scope.
 				engine: selected === deps.acpDriver ? "acp" : "stream-json",
+				log: deps.log,
 			});
 		} else {
 			// Miswired extension: no driver means no engine. Fail the turn visibly
 			// instead of silently producing an empty assistant message.
 			const partial = newAssistant(model);
 			const blocks: BlockState = { partial, textIdx: null, thinkingIdx: null, started: false };
+			deps.log?.("turn-error", { reason: "driver-not-configured" }, "warn");
 			finalize(stream, blocks, "error", "antigravity driver not configured");
 		}
 		return stream;

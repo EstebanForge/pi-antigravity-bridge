@@ -197,6 +197,14 @@ export class AcpDriver implements TurnDriver {
 		this.#active = turn;
 		this.#state = "running";
 		this.#stats.turns += 1;
+		this.#log("turn-start", {
+			model: request.model,
+			effort: request.effort,
+			mode: request.mode,
+			conversation: request.conversationId ?? null,
+			images: request.images?.length ?? 0,
+			contextBlock: request.contextBlock ? true : undefined,
+		});
 
 		// Abort wiring first: a kill during session setup must still settle the
 		// turn (Gate D teardown applies from the first request).
