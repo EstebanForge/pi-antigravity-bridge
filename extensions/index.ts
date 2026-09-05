@@ -142,8 +142,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (msg === "auth-url") {
 			const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
 			if (!url) return;
-			const ssh = port ? `\nSSH session? Forward the port on your machine first:\n  ssh -N -L ${port}:127.0.0.1:${port} <user@host>` : "";
-			const text = `Google sign-in URL for the ACP engine:\n${url}${ssh}`;
+			// Blank lines fence the URL off from the rest of the text: it is long
+			// and wraps, so separation keeps it readable and copyable.
+			const parts = ["Google sign-in URL for the ACP engine:", "", url];
+			if (port) {
+				parts.push(
+					"",
+					"SSH session? Forward the port on your machine first:",
+					`  ssh -N -L ${port}:127.0.0.1:${port} <user@host>`,
+				);
+			}
+			const text = parts.join("\n");
 			if (activeUi) activeUi.notify(text, "warning");
 			else console.error(`[antigravity-bridge acp] ${text}`);
 			return;
