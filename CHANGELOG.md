@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `/agy auth` subcommand: runs the antigravity-acp sign-in on demand (spawns the server, sends `authenticate`, waits for the browser round-trip to complete; minutes-scale). Signing in no longer rides the first Antigravity message, and both login-pending moments now point at `/agy auth`. The sign-in URL toast (and its ssh port-forward hint) fires during `/agy auth` exactly as it does during turns.
+
 - The Google sign-in URL now surfaces in pi. The ACP server hands the OAuth URL only to the browser-open call (nothing on stdout/stderr, headless or not), so a `BROWSER` wrapper script records the URL and forwards to the real opener; the connection watches the record file and logs it as an `auth-url` event. The extension toasts it at warning level with the ssh port-forward command for the redirect port, so logins work from SSH sessions on remote machines; local users keep the automatic browser open and get the URL as a fallback. An existing `BROWSER` setting is chained, not replaced.
 
 ### Fixed

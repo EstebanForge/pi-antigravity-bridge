@@ -40,6 +40,7 @@ import { SessionStore } from "../src/sessions.js";
 import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
+import { runAcpAuth } from "../src/acp/auth.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver } from "../src/driver-types.js";
@@ -135,24 +136,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		"unsupported-server-request",
 	]);
 	const legacyDriver = new AgyDriver();
+	// Shared ACP log sink (driver turns AND /agy auth): the login URL event
+	// toasts so SSH users can copy it; genuine failures reach stderr.
+	const acpLog = (msg: string, data?: unknown): void => {
+		if (msg === "auth-url") {
+			const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
+			if (!url) return;
+			const ssh = port ? `\nSSH session? Forward the port on your machine first:\n  ssh -N -L ${port}:127.0.0.1:${port} <user@host>` : "";
+			const text = `Google sign-in URL for the ACP engine:\n${url}${ssh}`;
+			if (activeUi) activeUi.notify(text, "warning");
+			else console.error(`[antigravity-bridge acp] ${text}`);
+			return;
+		}
+		if (!acpFailures.has(msg)) return;
+		console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`);
+	};
 	const acpDriver = new AcpDriver({
 		// Resolved per connection: the setup flow can install the binary and
 		// update acp.bin mid-session; the next turn picks it up (no restart).
 		bin: () => loadConfig().acp.bin,
 		...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
-		log: (msg, data) => {
-			if (msg === "auth-url") {
-				const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
-				if (!url) return;
-				const ssh = port ? `\nSSH session? Forward the port on your machine first:\n  ssh -N -L ${port}:127.0.0.1:${port} <user@host>` : "";
-				const text = `Google sign-in URL for the ACP engine:\n${url}${ssh}`;
-				if (activeUi) activeUi.notify(text, "warning");
-				else console.error(`[antigravity-bridge acp] ${text}`);
-				return;
-			}
-			if (!acpFailures.has(msg)) return;
-			console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`);
-		},
+		log: acpLog,
 		mcpServers: () => {
 			const handle = mcpHandle;
 			if (!handle) return [];
@@ -232,6 +236,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		acpDriver,
 		engine,
 		getMcpPort: () => mcpHandle?.port ?? null,
+		acpLog,
+		authCapture: authCapture ?? null,
 	});
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
@@ -299,7 +305,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 						saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
 					}
 					if (status.needsLogin) {
-						const msg = acpLoginPending("Your next Antigravity message opens the Google sign-in page in your browser.");
+						const msg = acpLoginPending();
 						if (ctx.hasUI) ctx.ui.notify(msg, "warning");
 						else console.error(`[antigravity-bridge] ${msg}`);
 					}
@@ -416,11 +422,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 // --- /agy command -----------------------------------------------------------
 
 /** Shared body for every ACP-login-pending moment (session_start self-heal,
- *  /agy engine acp, picker). End-user simple: what happens, when, which
- *  account. The server opens the browser itself, so there is no URL to
- *  open manually. `browserTrigger` says when that happens. */
-function acpLoginPending(browserTrigger: string): string {
-	return `One-time sign-in needed to finish ACP setup. ${browserTrigger} Use the Google account of your Antigravity subscription (the same account as your agy CLI login). If no browser opens, pi shows the sign-in URL to copy. The token stays on your machine; this extension never sees it.`;
+ *  /agy engine acp). End-user simple: what to run, what happens, which
+ *  account. Sign-in is explicit (/agy auth); it never rides the first
+ *  message. */
+function acpLoginPending(): string {
+	return `One-time sign-in needed to finish ACP setup. Run /agy auth: the Google sign-in opens in your browser. Use the Google account of your Antigravity subscription (the same account as your agy CLI login). If no browser opens, pi shows the sign-in URL to copy. The token stays on your machine; this extension never sees it.`;
 }
 
 interface AgyCommandCtx {
@@ -432,6 +438,11 @@ interface AgyCommandCtx {
 	/** Engine latched at extension load (see the provider wiring note). */
 	engine: Engine;
 	getMcpPort: () => number | null;
+	/** Shared ACP log sink (login URL surfacing + failure events). */
+	acpLog: (msg: string, data?: unknown) => void;
+	/** BROWSER-capture handles; null when unavailable (Windows, unwritable
+	 *  data dir). /agy auth passes them to the sign-in process. */
+	authCapture: { browserEnv: Record<string, string>; file: string } | null;
 }
 
 interface PendingConfig {
@@ -467,7 +478,7 @@ function statusText(ctx: AgyCommandCtx): string {
 		row("digest:", config.digest ? "on" : "off"),
 		row("system prompt:", config.systemPrompt ? "on" : "off"),
 		"",
-		"Subcommands: /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
+		"Subcommands: /agy auth, /agy engine stream-json|acp, /agy mode plan|accept-edits, /agy permissions on|off, /agy ask on|off, /agy model <alias>, /agy thinking low|medium|high, /agy bridge all|mcp|none, /agy digest on|off, /agy system-prompt on|off, /agy acp-bin <path|auto>, /agy acp-auth, /agy patch-cleanup, /agy clear",
 	].join("\n");
 }
 
@@ -475,7 +486,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|acp-auth|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -535,7 +546,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
 					if (status.needsLogin) {
 						ui?.notify(
-							`ACP engine set. ${acpLoginPending("After the restart (pi restart or /reload), your first Antigravity message opens the Google sign-in page in your browser.")}`,
+							`ACP engine set. ${acpLoginPending()}`,
 							"warning",
 						);
 					} else {
@@ -543,6 +554,42 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					}
 				} else {
 					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
+				}
+				return;
+			}
+			if (sub === "auth") {
+				// Gate on the CONFIGURED engine (disk + env), not the latched one:
+				// /agy engine acp followed by /agy auth in the same session works,
+				// no restart needed before signing in.
+				if (loadConfig().engine !== "acp") {
+					ui?.notify(`the selected engine is ${loadConfig().engine}. /agy engine acp first, then /agy auth.`, "warning");
+					return;
+				}
+				ui?.notify("Preparing the ACP server (binary + auth settings)…", "info");
+				const status = await ensureAcpReady({ configBin: loadConfig().acp.bin, onProgress: (m) => ui?.notify(m, "info") });
+				if (!status.ok) {
+					ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
+					return;
+				}
+				saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
+				if (!status.needsLogin) {
+					ui?.notify(`Already signed in (auth: ${status.auth}). Nothing to do.`, "info");
+					return;
+				}
+				ui?.notify(
+					"Signing in: the Google sign-in opens in your browser and completes when you finish it (minutes-scale). If no browser opens, pi shows the sign-in URL to copy.",
+					"info",
+				);
+				const r = await runAcpAuth({
+					bin: status.bin,
+					extraEnv: ctx.authCapture?.browserEnv,
+					authUrlFile: ctx.authCapture?.file,
+					log: ctx.acpLog,
+				});
+				if (r.ok) {
+					ui?.notify("Signed in. The ACP engine is ready; takes effect on the next pi start (or /reload).", "info");
+				} else {
+					ui?.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy acp-auth has manual steps.`, "warning");
 				}
 				return;
 			}
@@ -580,16 +627,16 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						"1. Server binary: auto-setup installs it. Manual: agy_acp_server.par from",
 						"   the antigravity-acp registry; point acp.bin or AGY_ACP_BIN at it.",
 						'2. Default: put {"auth":{"type":"oauth-personal"}} in',
-						"   ~/.gemini/antigravity-acp/settings.json, run one turn, and complete the",
-						"   Google login that opens in your browser. No browser (SSH session)?",
-						"   pi shows the sign-in URL to copy; forward the redirect port over ssh",
-						"   (ssh -N -L <port>:127.0.0.1:<port> <user@host>), then open the URL",
-						"   on your machine.",
+						"   ~/.gemini/antigravity-acp/settings.json, run /agy auth, and complete",
+						"   the Google login that opens in your browser. No browser (SSH",
+						"   session)? pi shows the sign-in URL to copy; forward the redirect",
+						"   port over ssh (ssh -N -L <port>:127.0.0.1:<port> <user@host>), then",
+						"   open the URL on your machine.",
 						'   Headless alternative: GEMINI_API_KEY + {"auth":{"type":"gemini-api-key"}}',
 						"   (metered paid API - not your Antigravity plan). The key is used only",
 						"   when that type is selected; with the default oauth-personal in place,",
 						"   an exported key is ignored.",
-						"3. Run one turn; /agy doctor shows the server version when auth is OK.",
+						"3. /agy doctor shows the server version when auth is OK.",
 					].join("\n"),
 					"info",
 				);
