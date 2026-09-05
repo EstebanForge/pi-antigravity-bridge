@@ -2,13 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.6] - 2026-09-04
+
+### Added
+
+- Tool-priority note in the system prompt block (`systemPrompt` setting, on by default): agy runs embedded in pi, so its native interactive tools (the live example was `ask_question` vs the bridge's `ask_user_question`) never reach the user. The note tells agy to always prefer the Pi Bridge tool when one covers the same purpose. The old preamble sentence that allowed "your own tools or the pi tool bridge" is gone, since that ambiguity was the cause.
+
+### Fixed
+
+- `/agy auth` reports a distinct failure instead of a false "Signed in." when the server accepts the sign-in but `acp_token.json` never appears within the 5 s post-authenticate grace window (peer-review find; the poll result was never read).
+- Test-infra: the fake ACP server's request log was lost on SIGTERM (buffered write stream + Gate D teardown), which flaked the Gate D abort test ~1-in-3 suite runs; the log now appends synchronously.
+
+### Changed
+
+- The sign-in URL toast fences the URL with blank lines so it stays readable and copyable next to the ssh port-forward hint.
+
 ## [1.4.5] - 2026-09-04
 
 ### Added
 
 - Tool-priority note in the system prompt block (`systemPrompt` setting, on by default): agy runs embedded in pi, so its native interactive tools (the live example was `ask_question` vs the bridge's `ask_user_question`) never reach the user. The note tells agy to always prefer the Pi Bridge tool when one covers the same purpose. The old preamble sentence that allowed "your own tools or the pi tool bridge" is gone, since that ambiguity was the cause.
 
-- `/agy auth` subcommand: runs the antigravity-acp sign-in on demand (spawns the server, sends `authenticate`, waits for the browser round-trip to complete; minutes-scale). Signing in no longer rides the first Antigravity message, and both login-pending moments now point at `/agy auth`. The sign-in URL toast (and its ssh port-forward hint) fires during `/agy auth` exactly as it does during turns. After the authenticate reply the run waits up to 5 s for `acp_token.json` before killing the sign-in server (a token that never appears is a distinct failure instead of a false "Signed in."), and a second concurrent `/agy auth` fails fast instead of racing the token write.
+- `/agy auth` subcommand: runs the antigravity-acp sign-in on demand (spawns the server, sends `authenticate`, waits for the browser round-trip to complete; minutes-scale). Signing in no longer rides the first Antigravity message, and both login-pending moments now point at `/agy auth`. The sign-in URL toast (and its ssh port-forward hint) fires during `/agy auth` exactly as it does during turns, and a second concurrent `/agy auth` fails fast instead of racing the token write.
 
 ### Changed
 
