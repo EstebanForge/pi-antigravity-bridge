@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.9] - 2026-09-05
+
+### Added
+
+- Warn toasts in the pi UI: bridge tool failures, stalls, timeouts, process exits, and other warnings surface as native warning notifications the moment they happen, so users see them and can report them. Over SSH or without a UI the same text falls back to stderr. Deliberate aborts, connection exits (the turn's own error block carries real crashes), and `call-tool-fail` (same-instant duplicate of `round-trip-fail`) stay silent.
+- Gate B watch in `/agy doctor`: the ACP connection latches the first `session/update` payload that carries usage/token fields, and doctor prints one "acp tokens: AVAILABLE" line when that happens. Silent until then; the day the line appears, wiring real token counts becomes a small mapping job. Auth-style string `"token"` keys inside tool frames cannot trip the latch.
+
+### Fixed
+
+- Esc-abort on the ACP engine no longer dumps the dying server's raw stderr tail (a google3 stack trace) into the transcript. Teardown exits (abort kill, shutdown, idle recycle) are marked expected and never render; a genuine mid-turn crash surfaces as the turn's own clean error block instead. Raw tails still land in the file log for post-mortems.
+
+### Changed
+
+- Daily log volume: the default tier now writes ONLY errors, so a regular session costs the disk nothing. Warns live in the UI (see above); `AGY_DEBUG=1` restores the full debug/info/warn/error trail for reproducing a problem. Docs: README debug-logs section, `/agy doctor` hint.
+- The tool-priority note now steers agy's native `view_file` (artifact-sandboxed on RC01) to the Pi Bridge file tools (`read`, `ls`, `grep`, `find`, `edit`, `execute`) for any real filesystem path. Observed live: repeated `invalid_args` rejections on `operator/pkg/tmux/client.go` before the model fell back to `edit`.
+
 ## [1.4.8] - 2026-09-05
 
 ### Added
