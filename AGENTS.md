@@ -49,7 +49,7 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
 *   **ACP plan + protocol truth**: [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md) & [docs/ACP-PROTOCOL-REFERENCE.md](docs/ACP-PROTOCOL-REFERENCE.md)
 
 ## NOTES
-*   **Two engines**: default `stream-json` (persistent `agy` CLI process); `acp` opt-in via `config.engine` / `AGY_ENGINE` / `/agy engine acp` (requires restart). Both implement `TurnDriver`; the provider layer (G1 digest, G10 system prompt, G9 round-trips) is shared.
+*   **Two engines**: default `stream-json` (persistent `agy` CLI process); `acp` (beta) opt-in via `config.engine` / `AGY_ENGINE` / `/agy engine acp` (requires restart). Both implement `TurnDriver`; the provider layer (G1 digest, G10 system prompt, G9 round-trips) is shared.
 *   **ACP limitations (RC01)**: no usage fields (Gate B — stream-json stays default until upstream ships them), no `session/cancel` (Gate D teardown+reload abort), no review-only mode (modes are permission modes only; plan delegations keep `agy -p --mode plan`).
 *   **ACP-only features**: pi image attachments ride as typed content blocks; the G1 digest ships as an `embeddedContext` resource block; edit diffs from `tool_call content[]` render in the thinking stream with no git subprocesses (native re-exec and wrapper replay are retired on ACP turns).
 *   **Sessions**: engine-scoped keys (`sid:<x>` streaming, `sid:<x>@acp`) — engine switches never cross conversations and rollback preserves both bindings.

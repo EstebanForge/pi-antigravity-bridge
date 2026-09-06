@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- The ACP engine is now beta. Parity is verified live against RC01 (text streaming, multi-turn resume, bridge tools, effort switching, serialization, abort recovery - see `scripts/parity-live.mjs`), so it graduates from opt-in-experimental to a supported alternative engine. It stays behind `config.engine` for now; the two known RC01 gaps (no usage fields, kill+reload abort) are documented in the README.
 - Daily log volume: the default tier now writes ONLY errors, so a regular session costs the disk nothing. Warns live in the UI (see above); `AGY_DEBUG=1` restores the full debug/info/warn/error trail for reproducing a problem. Docs: README debug-logs section, `/agy doctor` hint.
 - The tool-priority note now steers agy's native `view_file` (artifact-sandboxed on RC01) to the Pi Bridge file tools (`read`, `ls`, `grep`, `find`, `edit`, `execute`) for any real filesystem path. Observed live: repeated `invalid_args` rejections on `operator/pkg/tmux/client.go` before the model fell back to `edit`.
 
