@@ -248,3 +248,20 @@ export class TextAccumulator {
 		return this.#acc;
 	}
 }
+
+const USAGE_KEY = /usage|tokens?/i;
+
+/** Gate B watch: true when a server payload carries usage/token fields.
+ *  Key-name based so future shapes (usage blocks, _meta.tokenCount, top-level
+ *  token totals) all trip it. String values are exempt so auth-style "token"
+ *  args inside tool-call frames cannot false-positive the latch; depth-capped
+ *  so the walk stays cheap on every frame until it latches. */
+export function frameCarriesUsage(value: unknown, depth = 0): boolean {
+	if (depth > 8 || typeof value !== "object" || value === null) return false;
+	if (Array.isArray(value)) return value.some((v) => frameCarriesUsage(v, depth + 1));
+	for (const [key, v] of Object.entries(value)) {
+		if (USAGE_KEY.test(key) && (typeof v === "number" || typeof v === "object")) return true;
+		if (frameCarriesUsage(v, depth + 1)) return true;
+	}
+	return false;
+}

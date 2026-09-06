@@ -409,7 +409,12 @@ export class AcpDriver implements TurnDriver {
 		const turn = this.#active;
 		this.#conn = undefined;
 		this.#state = "dead";
-		this.#log("connection-exited", { tail: info.stderrTail.slice(-200) });
+		// Teardown exits (abort kill, shutdown, idle recycle) are deliberate:
+		// their stderr tail must never reach the UI. Only a live turn dying
+		// mid-flight is user-reportable, and it surfaces as a normal turn
+		// error, not as raw console noise.
+		const turnActive = Boolean(turn && !turn.closed && !turn.aborted && !turn.sawResult);
+		this.#log("connection-exited", { expected: !turnActive, tail: info.stderrTail.slice(-200) });
 		if (!turn || turn.closed) return;
 		if (turn.aborted || turn.sawResult) {
 			this.#settle(turn, {
@@ -421,7 +426,7 @@ export class AcpDriver implements TurnDriver {
 			});
 			return;
 		}
-		this.#failTurn(turn, info.stderrTail.trim() || "ACP server exited mid-turn");
+		this.#failTurn(turn, "Antigravity session exited unexpectedly; it restarts on the next turn");
 	}
 
 	#ensureConnection(request: DriverTurnRequest): Promise<AcpConnection> {
@@ -721,6 +726,7 @@ export class AcpDriver implements TurnDriver {
 				reconnects: Math.max(0, this.#stats.spawns - 1),
 				agentName: this.#agentInfo?.name,
 				agentTitle: this.#agentInfo?.title,
+				usageSeen: this.#conn?.usageSeen ?? false,
 			},
 		};
 	}

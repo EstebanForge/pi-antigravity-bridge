@@ -24,6 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseAuthPort, readLastUrl } from "./browser-capture.js";
+import { frameCarriesUsage } from "./events.js";
 import { JsonRpcResponseError, JsonRpcSession } from "./jsonrpc.js";
 
 export interface AcpMcpServer {
@@ -80,6 +81,7 @@ export class AcpConnection {
 	#child: ChildProcess | undefined;
 	#rpc: JsonRpcSession | undefined;
 	#stderrTail = "";
+	#usageSeen = false;
 	#exited = false;
 	#killed = false;
 	#suppressUpdates = false;
@@ -104,6 +106,13 @@ export class AcpConnection {
 
 	get stderrTail(): string {
 		return this.#stderrTail;
+	}
+
+	/** Gate B watch: latched true once any session/update frame carried
+	 *  usage/token fields. /agy doctor surfaces it the day upstream starts
+	 *  sending token counts; silent until then. */
+	get usageSeen(): boolean {
+		return this.#usageSeen;
 	}
 
 	/** While true, session/update notifications are dropped: they are the
@@ -299,6 +308,9 @@ export class AcpConnection {
 
 	#onNotification(method: string, params: unknown): void {
 		if (method === "session/update") {
+			// Latched before the suppression gate: history-replay frames are the
+			// server's payloads too, and they are the cheapest signal source.
+			if (!this.#usageSeen && frameCarriesUsage(params)) this.#usageSeen = true;
 			if (this.#suppressUpdates) return; // load replay: history, not live text
 			const p = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
 			const sessionId = typeof p.sessionId === "string" ? p.sessionId : this.#updateSessionId;

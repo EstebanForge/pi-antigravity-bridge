@@ -4,7 +4,27 @@
 
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
-import { mapStopReason, mapUpdate, TextAccumulator, toolName } from "../src/acp/events.js";
+import { frameCarriesUsage, mapStopReason, mapUpdate, TextAccumulator, toolName } from "../src/acp/events.js";
+
+
+describe("acp/events frameCarriesUsage", () => {
+	test("flags usage and token keys at any depth", () => {
+		assert.equal(frameCarriesUsage({ sessionId: "s", update: { sessionUpdate: "completed", usage: { totalTokens: 12 } } }), true);
+		assert.equal(frameCarriesUsage({ _meta: { tokenCount: 5 } }), true);
+		assert.equal(frameCarriesUsage({ a: [{ b: { outputTokens: 1 } }] }), true);
+		assert.equal(frameCarriesUsage({ cacheReadTokens: 3 }), true);
+	});
+
+	test("clean frames, string token values, and primitives stay false", () => {
+		assert.equal(frameCarriesUsage({ sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hi" } } }), false);
+		// A tool-call arg like { token: "secret" } must not latch the latch:
+		// string values are exempt from the key-name match.
+		assert.equal(frameCarriesUsage({ toolCall: { arguments: { token: "secret" } } }), false);
+		assert.equal(frameCarriesUsage({ update: { stopReason: "end_turn" } }), false);
+		assert.equal(frameCarriesUsage("plain string"), false);
+		assert.equal(frameCarriesUsage(null), false);
+	});
+});
 
 describe("acp/events mapUpdate", () => {
 	test("agent_message_chunk maps to a text delta", () => {

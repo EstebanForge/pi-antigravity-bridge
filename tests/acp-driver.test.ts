@@ -219,6 +219,54 @@ describe("acp/driver Gate D abort", () => {
 		assert.ok(cancel, "driver should have probed session/cancel first");
 		run.cleanup();
 	});
+
+	test("abort teardown exit logs connection-exited as expected", async () => {
+		// Regression pin: the Gate D kill used to emit a bare connection-exited
+		// whose stderr tail the extension sink console.error'd into the pi UI
+		// (raw google3 stack dump on every Esc). The driver must mark teardown
+		// exits expected so the sink keeps them out of the transcript.
+		const exits: Array<Record<string, unknown> | undefined> = [];
+		const dir = tmpDir();
+		const driver = new AcpDriver({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			extraEnv: {
+				ACP_FAKE_SCENARIO: "park",
+				ACP_FAKE_CANCEL_UNSUPPORTED: "1",
+				ACP_FAKE_LOG: path.join(dir, "log.jsonl"),
+			},
+			log: (msg, data) => {
+				if (msg === "connection-exited") exits.push(data as Record<string, unknown>);
+			},
+		});
+		cleanups.push(() => {
+			void driver.close("shutdown");
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+		const controller = new AbortController();
+		const handle = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "park me",
+			signal: controller.signal,
+		});
+		await new Promise((r) => setTimeout(r, 400));
+		controller.abort();
+		const outcome = await handle.outcome;
+		assert.equal(outcome.aborted, true);
+		// The teardown SIGTERM lands shortly after the abort; wait for it.
+		for (let i = 0; i < 40 && exits.length === 0; i++) {
+			await new Promise((r) => setTimeout(r, 50));
+		}
+		assert.ok(exits.length > 0, "connection-exited logged");
+		assert.ok(
+			exits.every((e) => e?.expected === true),
+			"every teardown exit must carry expected: true",
+		);
+	});
 });
 
 describe("acp/driver timers", () => {

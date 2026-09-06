@@ -116,6 +116,36 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// src/daily-log.ts). Fire-and-forget, secrets redacted, old days pruned.
 	// Support flow: "attach the last days' files from that dir".
 	const fileLog = createDailyLogger({ dir: logsDir() });
+	// Warn tier = user-facing: the default file log keeps ONLY errors (zero
+	// routine disk traffic), so a warn that never reaches the UI is lost.
+	// Every warn toasts here instead; AGY_DEBUG=1 restores the full file
+	// trail. Silent exceptions: deliberate aborts (pi already shows
+	// "Operation aborted"), connection exits (the turn's own error block
+	// carries real crashes), and call-tool-fail (same-instant duplicate of
+	// round-trip-fail). No UI (headless): warn text falls back to stderr.
+	const rawFileLog = fileLog.log.bind(fileLog);
+	fileLog.log = (event, data, level) => {
+		rawFileLog(event, data, level);
+		if (level !== "warn") return;
+		if (event.startsWith("abort:") || event === "connection-exited" || event === "call-tool-fail") return;
+		const d = (data ?? {}) as Record<string, unknown>;
+		let text: string;
+		if (event === "round-trip-fail") {
+			text = `Bridge tool call failed: ${String(d.name ?? "tool")} (${String(d.reason ?? "unknown")})`;
+		} else if (event.startsWith("stall:")) {
+			text = "Antigravity stalled with no output; the turn was stopped";
+		} else if (event.startsWith("timeout:")) {
+			text = "Antigravity turn timed out";
+		} else if (event.startsWith("exit:") && event !== "exit:0") {
+			text = "Antigravity process exited unexpectedly";
+		} else if (event === "turn-error") {
+			text = `Antigravity turn issue: ${String(d.reason ?? "unknown")}`;
+		} else {
+			text = `Antigravity warning: ${event}`;
+		}
+		if (activeUi) activeUi.notify(text, "warning");
+		else console.error(`[antigravity-bridge] ${text}`);
+	};
 	fileLog.log(
 		"extension-load",
 		{ engine, models: models.length, fallback: usingFallback, bridge: loadConfig().bridgeTools, askTool: loadConfig().askTool },
@@ -183,12 +213,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				: data;
 		// Failures warn; turn-start + auth-url are the always-on skeleton;
 		// routine per-event lifecycle (spawn, session-load, unparked, ...) is
-		// verbose-only.
-		const level = acpFailures.has(msg)
-			? "warn"
-			: msg === "turn-start" || msg === "auth-url"
-				? "info"
-				: "debug";
+		// verbose-only. Deliberate teardown exits (Esc abort kill, shutdown,
+		// idle recycle) demote to debug: routine, and the warn tier stays the
+		// "what broke" grep.
+		const expectedExit =
+			msg === "connection-exited" &&
+			(data as { expected?: boolean } | undefined)?.expected === true;
+		const level = expectedExit
+			? "debug"
+			: acpFailures.has(msg)
+				? "warn"
+				: msg === "turn-start" || msg === "auth-url"
+					? "info"
+					: "debug";
 		fileLog.log(msg, fileData, level);
 		if (msg === "auth-url") {
 			const { url, port } = (data ?? {}) as { url?: string; port?: number | null };
@@ -209,7 +246,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			return;
 		}
 		if (!acpFailures.has(msg)) return;
-		console.error(`[antigravity-bridge acp] ${msg}${data !== undefined ? " " + JSON.stringify(data) : ""}`);
+		// Console noise is gone: warns toast through the fileLog wrapper (with
+		// a stderr fallback when no UI exists), and raw tails stay in the file
+		// log behind AGY_DEBUG.
 	};
 	const acpDriver = new AcpDriver({
 		// Resolved per connection: the setup flow can install the binary and
@@ -793,7 +832,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					`  sessions:      ${ctx.store.size} bound`,
 					`  models:        ${ctx.entries.length} ${ctx.usingFallback ? "FALLBACK (agy models failed)" : "discovered"}`,
 					`  config:        ${CONFIG_PATH}`,
-					`  logs:          ${logsDir()} (attach recent days' files when reporting issues)`,
+					`  logs:          ${logsDir()} (attach recent days' files when reporting issues; set AGY_DEBUG=1 to capture details)`,
 				];
 				if (snap.engine === "acp" && snap.acp) {
 					lines.push(
@@ -801,6 +840,11 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						`  acp server:    ${snap.acp.serverVersion ?? "unknown"}${snap.acp.agentTitle ? ` (${snap.acp.agentTitle})` : ""}`,
 						`  acp stats:     prompts=${snap.acp.prompts} created=${snap.acp.sessionsCreated} loaded=${snap.acp.sessionsLoaded} kills=${snap.acp.kills} reconnects=${snap.acp.reconnects} cancel=${snap.acp.cancelSupported === null ? "unprobed" : snap.acp.cancelSupported ? "supported" : "unsupported (kill+reload)"}`,
 					);
+					// Gate B watch: silent while the server offers no token counts; one
+					// line the day it starts (then real usage mapping is worth wiring).
+					if (snap.acp.usageSeen) {
+						lines.push("  acp tokens:    AVAILABLE in server payloads (wire real usage mapping next)");
+					}
 				}
 				if (snap.lifecycle.length > 0) {
 					lines.push("  lifecycle (last 5):");

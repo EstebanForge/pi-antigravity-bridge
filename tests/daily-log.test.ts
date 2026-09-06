@@ -106,16 +106,17 @@ test("daily log: redacts secret-shaped keys and truncates long strings", async (
 	assert.ok(String(record.data.big).endsWith("(truncated)"));
 });
 
-test("daily log: drops debug records unless verbose", async () => {
+test("daily log: default tier keeps only errors", async () => {
 	const dir = tmpDir();
 	const log = createDailyLogger({ dir, now: () => new Date(2026, 1, 5) });
 	log.log("verbose-event"); // default level: debug -> dropped
 	log.log("warn-event", undefined, "warn");
 	log.log("info-event", undefined, "info");
+	log.log("error-event", undefined, "error");
 	await log.flush();
 
 	const events = readLines(dir, "2026-02-05.ndjson").map((l) => l.event);
-	assert.deepEqual(events, ["warn-event", "info-event"]);
+	assert.deepEqual(events, ["error-event"]);
 });
 
 test("daily log: AGY_DEBUG env or debug option restores the verbose tier", async () => {

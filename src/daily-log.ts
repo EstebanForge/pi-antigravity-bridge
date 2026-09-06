@@ -15,10 +15,10 @@
 //     redacted and long strings are truncated before they reach disk.
 //   - Retention: files older than `retentionDays` are pruned once per
 //     process, so the dir cannot grow unbounded.
-//   - Two tiers, to keep SSD wear negligible for regular users: only
-//     info/warn/error records (failures, turn/tool boundaries, commands,
-//     setup) are written by default. Full verbose trails (per-event driver
-//     lifecycle, raw bridge traffic) require AGY_DEBUG=1.
+//   - Volume tiers: default installs write ONLY errors — routine logging
+//     costs the disk nothing. Warns surface as UI toasts instead (the
+//     extension wraps this logger); AGY_DEBUG=1 restores the full trail
+//     (debug/info/warn/error).
 
 import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -30,9 +30,9 @@ export interface DailyLoggerOptions {
 	dir: string;
 	/** Files older than this many days are pruned once per process. Default 14. */
 	retentionDays?: number;
-	/** Verbose gate. When false (default), debug-level records are dropped:
-	 *  only info/warn/error land on disk, the light stream regular users
-	 *  keep. AGY_DEBUG=1 (or this option) restores the full trail. */
+	/** Verbose gate. When false (default), only error-level records land on
+	 *  disk; debug/info/warn are dropped so regular users write nothing
+	 *  routine. AGY_DEBUG=1 (or this option) restores the full trail. */
 	debug?: boolean;
 	/** Injectable clock for tests. */
 	now?: () => Date;
@@ -166,9 +166,10 @@ export function createDailyLogger(opts: DailyLoggerOptions): DailyLogger {
 
 	return {
 		log(event, data, level = "debug") {
-			// Volume gate: debug is the verbose tier. Default installs write
-			// only info/warn/error so the disk cost stays negligible.
-			if (level === "debug" && !verbose) return;
+			// Volume gate: default installs write only errors so routine disk
+			// traffic is zero for regular users; the extension toasts warns
+			// instead. AGY_DEBUG=1 restores the full trail.
+			if (!verbose && level !== "error") return;
 			write(level, event, data);
 		},
 		flush() {

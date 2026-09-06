@@ -125,6 +125,10 @@ export interface DriverSnapshot {
 		/** From the initialize handshake agentInfo block. */
 		agentName?: string;
 		agentTitle?: string;
+		/** Gate B watch: true once this server process sent usage/token fields
+		 *  in any session/update frame. /agy doctor surfaces it when true and
+		 *  stays silent otherwise. */
+		usageSeen: boolean;
 	};
 }
 
