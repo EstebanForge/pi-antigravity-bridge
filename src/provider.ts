@@ -114,12 +114,14 @@ export const SYSTEM_PROMPT_END = "[END SYSTEM PROMPT]";
 
 /** Brief tool-priority note appended inside every system prompt block: agy
  *  runs embedded in pi, so its native interactive tools never reach the
- *  user. Equivalent Pi Bridge tools must win. Concrete clash observed live:
- *  agy picked its native ask_question over the bridge's ask_user_question
- *  and the question never displayed. Rides the systemPrompt gate: the note
- *  ships only when the system prompt ships. */
+ *  user. Equivalent Pi Bridge tools must win. Concrete clashes observed
+ *  live: agy picked its native ask_question over the bridge's
+ *  ask_user_question and the question never displayed; on ACP its native
+ *  view_file rejects real filesystem paths (artifact sandbox), so reads of
+ *  the user's machine must go through the bridge. Rides the systemPrompt
+ *  gate: the note ships only when the system prompt ships. */
 export const TOOL_PRIORITY_NOTE =
-	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
+	"[Tool priority: this conversation runs inside pi, not as a standalone agy session; the user only sees what surfaces in pi. Native interactive tools, for example ask_question, never reach the user. When a Pi Bridge tool covers the same purpose, always use the Pi Bridge tool; for user questions use ask_user_question. Your native file tools such as view_file only read brain artifacts and reject real filesystem paths; for any path on the user's machine use the Pi Bridge tools (read, ls, grep, find, edit, execute). Long-running bridge calls do not fail: after ~20 seconds the bridge answers STILL RUNNING with a callId; fetch the result with bridge_poll_result and poll until it lands. For work you already know is long, prefer exec_command's session-output pattern or background agents so you keep working while it runs.]";
 
 /** Assemble the full agy prompt: system prompt block, pi-side digest, user
  *  prompt. Empty parts are dropped. Pure; exported for unit testing.
