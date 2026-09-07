@@ -177,19 +177,21 @@ Every parked approval writes to `src/daily-log.ts`: timestamp, engine, conversat
 
 ### 2.8 Work items, in order
 
-Verification first (cheap and load-bearing):
+Verification first (cheap and load-bearing): DONE 2026-09-07.
 
-- [ ] **V1 - Shadowing pin test.** Unit-test the shadow factory: marker branch returns the synthetic result without executing; non-marker delegates to the captured builtin; schema passes through unchanged. Plus a manual smoke in pi: register a trivial `bash` shadow via a scratch extension; confirm builtin behavior survives for normal calls.
-- [ ] **V2 - ACP deny-semantics probe.** Copy `~/tmp/pi-antigravity-bridge-probes/probe-acp-customizations.mjs`; change the hook to return `{"decision":"deny","reason":"gate-test"}` on `create_file`; run one live turn asking agy to create a file. PASS = file NOT created AND `reason` visible to the model (response text / conversation DB). Run the timeout case (V3) in the same harness.
-- [ ] **V3 - Hook timeout behavior.** Hook sleeps past its `timeout`; observe what agy/ACP does (proceed, deny, or error surface). The early-ack/poll design must be validated against the observed behavior.
+- [x] **V1 - Shadowing pin test.** `src/approval-gate.ts` + `tests/approval-gate.test.ts`: 10 pins. Key type facts: `AgentToolResult` = `{content, details (required), usage?, terminate?}` (pi-agent-core), NO `isError`; denials THROW (`new Error(reason)`), pi converts to error tool results (builtins do the same). 258/258 suite green, tsc clean.
+- [x] **V2 - ACP deny-semantics probe.** PASS. Live (`probe-acp-deny.mjs`, traffic `~/tmp/pi-antigravity-bridge-probes/deny-probe-traffic.jsonl`): model attempted `create_file`; hook returned `{"decision":"deny","reason":"gate-test-deny: ..."}`; file NOT created; the model's visible reply quotes the reason verbatim ("denied by the environment hook: gate-test-deny: ..."). Deny on ACP is honored and the reason reaches the model.
+- [x] **V3 - Hook timeout behavior.** Hook `sleep 6` with `timeout: 2`: agy PROCEEDED and the file was created (turn completed normally, tool completed). Timeout = soft-pass, NOT fail-closed. Consequences: staged hooks.json `timeout` must exceed the whole park budget (human latency) with large margin; the early-ack/poll hook script is mandatory; residual risk (hook killed past timeout -> ungated proceed) is real and mitigated only by a generous timeout plus PostToolUse audit. Never rely on timeout as a deny.
 
 Implementation:
 
-- [ ] `src/approval-hook.ts`: hooks.json staging (merge-safe, backup-on-clobber), hook script bundling, cleanup on disable.
-- [ ] `POST /approval` + `GET /approval/<id>` in `src/mcp-server.ts` (token auth, ticket park, early-ack).
-- [ ] Shadow tool factory + registration (`bash`, `write`, `edit`), builtin capture + delegation, `__agyGate` branch.
-- [ ] Provider wiring: parked approval -> toolUse turn -> result -> park completion (mirror the G9 park plumbing).
-- [ ] Config plumbing (`approvals.gateMode`, `approvals.mode`) in `src/config.ts`.
+- [x] `src/approval-gate.ts`: shadow factory (`createShadowTool`) + schema injection + fail-closed policy contract. Pinned (V1).
+- [x] `src/config.ts`: `approvals: {gateMode: "auto|shadow|dedicated|off" (default auto), mode: "ask|allow|deny" (default ask)}`, env `AGY_APPROVALS` / `AGY_APPROVALS_MODE`. Pinned.
+- [x] `src/approval-detect.ts`: `detectPermissionGateExtensions` (settings packages name-match + audited config-file markers) + `resolveGateMode` (auto -> shadow on detection, else off). Pinned.
+- [x] `src/approval-hook.ts`: merge-safe `stageGateHooks`/`removeGateHooks` (foreign groups preserved, backup on first foreign modification, refuse unparseable), `buildGateGroup` (matcher = agy mutating tools, staged timeout = park budget + 60s margin, min 60s), `hookScriptSource` (POST /approval early-ack + poll, fail-closed prints on unreachable/deadline). Pinned.
+- [ ] `POST /approval` + `GET /approval/<id>` in `src/mcp-server.ts` (token auth, ticket park, early-ack). Wire alongside the G9 park store. Peer review 2026-09-07 additions, REQUIRED: (a) ticket binding - the shadow factory must verify `__agyTicket` against the bridge's pending set (HMAC or registry lookup); an unrecognized ticket denies. A model-set `__agyGate:true` must never produce a fake-approved result. (b) the round-trip composer must STRIP incoming `__agy*` fields from real agy tool-call args before building a G9 toolUse. (c) the generated script file must be written 0600 (the token is embedded in it).
+- [ ] Provider wiring: parked approval -> interrupt agy turn -> toolUse for the SHADOW tool -> tool result -> park completion (mirror the G9 round-trip plumbing in `src/provider.ts`: escalation registry, budget pause on `AcpDriver`, late-delivery tombstones).
+- [ ] Extension registration: capture real builtins via `pi.getAllTools()`, `pi.registerTool(createShadowTool(...))` for bash/write/edit when `resolveGateMode(...) !== "off"`; call `stageGateHooks` per session workspace; `removeGateHooks` on disable. Policy implementation: ask -> `ctx.ui.confirm` guarded by `ctx.hasUI`; headless deny.
 - [ ] `daily-log.ts` audit entries (2.7).
 - [ ] Tests on the fake ACP server harness (`tests/helpers/fake-acp-server.mjs`): PreToolUse-shaped frames, park/toolUse/decision round-trip, extension-block path, timeout-deny path.
 - [ ] Docs: README user section + sample gate extension snippet (2.5).

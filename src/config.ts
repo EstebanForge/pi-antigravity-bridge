@@ -44,6 +44,27 @@ export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
 export type BridgeTools = "none" | "mcp" | "all";
 
+/** How the approval gate activates (docs/TODO.md section 2.5).
+ *
+ *  "auto" (default): OFF until a third-party pi permission extension is
+ *  detected (src/approval-detect.ts). When one is found, the gate runs in
+ *  "shadow" mode so that extension gates agy's native tool calls with zero
+ *  configuration on its side.
+ *
+ *  "shadow" / "dedicated": force the gate on in that shape. "off": never
+ *  gate, even when a permission extension is installed. */
+export type GateMode = "auto" | "shadow" | "dedicated" | "off";
+
+/** Fallback decision when no extension blocked a gated call: "ask" uses
+ *  ctx.ui.confirm (headless = deny, fail-closed), "allow" auto-approves,
+ *  "deny" auto-rejects. */
+export type GateAskMode = "ask" | "allow" | "deny";
+
+export interface GateConfig {
+	gateMode: GateMode;
+	mode: GateAskMode;
+}
+
 export interface AcpConfig {
 	/** Path to agy_acp_server.par. Empty = env AGY_ACP_BIN > PATH. */
 	bin: string;
@@ -108,6 +129,11 @@ export interface AgyConfig {
 	 *  digest (per-turn) is not. Turn off for agy-native behavior (agy's own
 	 *  system prompt only). */
 	systemPrompt: boolean;
+	/** Approval gate over agy NATIVE tool calls (create_file, run_command,
+	 *  ...). pi tools agy calls already pass through pi's gates via the G9
+	 *  round-trip; this covers the rest. Default auto (off until a
+	 *  third-party permission extension is detected). See docs/TODO.md 2.5. */
+	approvals: GateConfig;
 }
 
 const DEFAULTS: AgyConfig = {
@@ -120,6 +146,7 @@ const DEFAULTS: AgyConfig = {
 	bridgeTools: "all",
 	digest: false,
 	systemPrompt: true,
+	approvals: { gateMode: "auto", mode: "ask" },
 	acp: { bin: "", permissions: "auto" },
 };
 
@@ -189,6 +216,19 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		? ["1", "true", "on"].includes(envSys.toLowerCase())
 		: file.systemPrompt ?? DEFAULTS.systemPrompt;
 
+	// Approval gate (docs/TODO.md 2.5). Unknown values fall back to "auto"
+	// so a typo can never silently force the gate on.
+	const gateRaw = (process.env.AGY_APPROVALS ?? file.approvals?.gateMode ?? DEFAULTS.approvals.gateMode).toLowerCase();
+	const gateMode: GateMode =
+		gateRaw === "shadow" || gateRaw === "dedicated" || gateRaw === "off"
+			? gateRaw
+			: "auto";
+	const askRaw = (process.env.AGY_APPROVALS_MODE ?? file.approvals?.mode ?? DEFAULTS.approvals.mode).toLowerCase();
+	const gateAskMode: GateAskMode =
+		askRaw === "allow" || askRaw === "deny"
+			? askRaw
+			: "ask";
+
 	const fileAcp = (typeof file.acp === "object" && file.acp !== null ? file.acp : {}) as Partial<AcpConfig>;
 	const acp: AcpConfig = {
 		bin:
@@ -208,6 +248,7 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		bridgeTools,
 		digest,
 		systemPrompt,
+		approvals: { gateMode, mode: gateAskMode },
 		patchCleanupNotified: file.patchCleanupNotified === true,
 	};
 }
