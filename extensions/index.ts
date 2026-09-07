@@ -572,8 +572,16 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		mcpHandle = null;
 		await h?.close();
 		roundTrips.failAll("antigravity session shut down");
-		await legacyDriver.close("shutdown");
-		await acpDriver.close("shutdown");
+		// "recycle", NOT "shutdown": pi fires session_shutdown on /new, /resume
+		// and /fork (docs/extensions.md session lifecycle), not only on process
+		// exit. The drivers are process-lifetime singletons; closing them with
+		// "shutdown" latched them permanently and every later turn failed with
+		// "ACP driver is shut down." (regression 2026-09-07). Recycle kills the
+		// connection now; the next turn respawns it. event.reason is
+		// deliberately ignored: recycle is correct even on real process exit
+		// ("quit") - the connection kill is identical and nothing runs after.
+		await legacyDriver.close("recycle", "session shutdown");
+		await acpDriver.close("recycle", "session shutdown");
 	});
 }
 

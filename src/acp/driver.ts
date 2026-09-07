@@ -110,7 +110,6 @@ export class AcpDriver implements TurnDriver {
 	#generation = 0;
 	#active: ActiveTurn | undefined;
 	#queueTail: Promise<void> = Promise.resolve();
-	#shutdown = false;
 	#lifecycle: string[] = [];
 	#onTurnEnd: ((outcome: TurnOutcome) => void) | undefined;
 	#stats = {
@@ -190,7 +189,10 @@ export class AcpDriver implements TurnDriver {
 	}
 
 	#runExclusive(request: DriverTurnRequest): Promise<TurnHandle> {
-		if (this.#shutdown) return Promise.reject(new Error("ACP driver is shut down."));
+		// No shutdown latch here: pi fires session_shutdown on /new, /resume and
+		// /fork (not only process exit), so a closed driver must respawn on the
+		// next turn instead of rejecting forever. Regression 2026-09-07:
+		// /compact after a model switch failed with "ACP driver is shut down."
 		if (request.signal?.aborted) return Promise.reject(new Error("aborted before start"));
 
 		const turn = this.#createTurn(request);
@@ -679,7 +681,6 @@ export class AcpDriver implements TurnDriver {
 	// --- TurnDriver surface ----------------------------------------------------
 
 	async close(reason: "recycle" | "shutdown", cause?: string): Promise<void> {
-		if (reason === "shutdown") this.#shutdown = true;
 		this.#log(`close:${reason}${cause ? `:${cause}` : ""}`);
 		const turn = this.#active;
 		if (turn && !turn.closed) {
@@ -687,7 +688,7 @@ export class AcpDriver implements TurnDriver {
 				conversationId: turn.sessionId,
 				status: "ERROR",
 				response: turn.response.text,
-				error: `ACP driver ${reason}ed mid-turn${cause ? ` (${cause})` : ""}`,
+				error: `ACP driver ${reason === "recycle" ? "recycled" : "shut down"} mid-turn${cause ? ` (${cause})` : ""}`,
 				finished: true,
 				aborted: false,
 			});

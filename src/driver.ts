@@ -130,7 +130,6 @@ export class AgyDriver implements TurnDriver {
 	#boundConversation: string | undefined;
 	#active: ActiveTurn | undefined;
 	#queueTail: Promise<void> = Promise.resolve();
-	#shutdown = false;
 	#stderrTail = "";
 	// Frames can split across pipe chunks; the trailing partial line lives here
 	// until its newline arrives (same scheme as JsonRpcSession.feed). Dropping
@@ -218,7 +217,10 @@ export class AgyDriver implements TurnDriver {
 	}
 
 	async #runExclusive(request: DriverTurnRequest): Promise<TurnHandle> {
-		if (this.#shutdown) throw new Error("agy driver is shut down.");
+		// No shutdown latch: pi fires session_shutdown on /new, /resume and
+		// /fork (not only process exit), so a closed driver must respawn on the
+		// next turn instead of rejecting forever. Parity with the ACP driver
+		// fix (regression 2026-09-07).
 		if (request.signal?.aborted) throw new Error("aborted before start");
 
 		const cause = this.#recycleCause(request);
@@ -588,7 +590,6 @@ export class AgyDriver implements TurnDriver {
 	}
 
 	async close(reason: "recycle" | "shutdown", cause?: string): Promise<void> {
-		if (reason === "shutdown") this.#shutdown = true;
 		const child = this.#child;
 		if (!child) {
 			this.#state = reason === "shutdown" ? "dead" : "idle";
@@ -602,7 +603,7 @@ export class AgyDriver implements TurnDriver {
 		this.#log(`close:${reason}${cause ? `:${cause}` : ""}`);
 		const turn = this.#active;
 		if (turn && !turn.closed) {
-			this.#failTurn(turn, `agy driver ${reason}ed mid-turn${cause ? ` (${cause})` : ""}`);
+			this.#failTurn(turn, `agy driver ${reason === "recycle" ? "recycled" : "shut down"} mid-turn${cause ? ` (${cause})` : ""}`);
 		}
 		this.#killChild();
 		this.#state = reason === "shutdown" ? "dead" : "idle";

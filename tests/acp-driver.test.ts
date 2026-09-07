@@ -36,7 +36,10 @@ async function runDriver(
 		timeoutMin?: number;
 		skipPermissions?: boolean;
 		signal?: AbortSignal;
-		onHandle?: (handle: Awaited<ReturnType<AcpDriver["run"]>>) => void;
+		onHandle?: (
+			handle: Awaited<ReturnType<AcpDriver["run"]>>,
+			driver: AcpDriver,
+		) => void;
 	} = {},
 ): Promise<DriverRun> {
 	const dir = tmpDir();
@@ -69,7 +72,7 @@ async function runDriver(
 			activities.push(activity);
 		}
 	})();
-	opts.onHandle?.(handle);
+	opts.onHandle?.(handle, driver);
 	const outcome = await handle.outcome;
 	await collecting;
 	return {
@@ -442,5 +445,45 @@ describe("acp/driver auth", () => {
 		const outcome = await run.handle.outcome;
 		assert.equal(outcome.status, "ERROR");
 		assert.match(outcome.error ?? "", /auth-manual/);
+	});
+});
+
+describe("acp/driver shutdown latch", () => {
+	// pi fires session_shutdown on /new, /resume and /fork (docs/extensions.md
+	// session lifecycle) - not only on process exit. The extension closes both
+	// process-lifetime drivers there; a permanent latch would brick every
+	// later turn ("ACP driver is shut down.") until pi restarts. Regression:
+	// /compact after a model switch failed exactly this way (2026-09-07).
+	test("a turn after close('shutdown') respawns instead of rejecting forever", async () => {
+		const first = await tracked("happy", { prompt: "hi" });
+		const firstOutcome = await first.handle.outcome;
+		assert.equal(firstOutcome.status, "OK");
+
+		await first.driver.close("shutdown");
+
+		const second = await tracked("happy", { prompt: "hi again" });
+		const outcome = await second.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.error, undefined);
+	});
+
+	test("close('recycle') mid-turn settles the turn with a clean error", async () => {
+		let recycled = false;
+		const run = await tracked("slow", {
+			prompt: "hang",
+			timeoutMin: 10,
+			onHandle: (_handle, driver) => {
+				// Mid-turn (silent server, turn running): recycle exactly once.
+				if (!recycled) {
+					recycled = true;
+					void driver.close("recycle", "session switch");
+				}
+			},
+		});
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /recycled mid-turn \(session switch\)/);
+		// Respawn-after-close is pinned by the shutdown-latch test above: the
+		// same #ensureConnection path brings the connection back on the next turn.
 	});
 });

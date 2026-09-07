@@ -47,3 +47,53 @@ describe("stream-json driver stdout framing (H1)", () => {
 		assert.equal(text, "HALF-ONE-HALF-TWO");
 	});
 });
+
+describe("stream-json driver shutdown latch", () => {
+	// Parity with the ACP driver fix: pi fires session_shutdown on /new,
+	// /resume and /fork, so a closed driver must respawn on the next turn
+	// instead of rejecting forever (regression 2026-09-07).
+	test("a turn after close('shutdown') respawns instead of rejecting forever", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new AgyDriver();
+		const opts = {
+			prompt: "hi",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits" as const,
+			skipPermissions: true,
+			timeoutMin: 0.5,
+			inactivityMin: 0.5,
+		};
+		const h1 = await driver.run(opts);
+		assert.equal((await h1.outcome).status, "OK");
+
+		await driver.close("shutdown");
+
+		const h2 = await driver.run(opts);
+		const o2 = await h2.outcome;
+		assert.equal(o2.status, "OK");
+		assert.equal(o2.error, undefined);
+	});
+
+	test("close('recycle') mid-turn settles the turn with a clean error", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new AgyDriver();
+		const handle = await driver.run({
+			prompt: "please HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 10,
+			inactivityMin: 10,
+		});
+		for (let i = 0; i < 80 && driver.state !== "running"; i++) {
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		assert.equal(driver.state, "running", "turn should be running before the recycle");
+		driver.close("recycle", "session switch");
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.match(outcome.error ?? "", /recycled mid-turn \(session switch\)/);
+	});
+});

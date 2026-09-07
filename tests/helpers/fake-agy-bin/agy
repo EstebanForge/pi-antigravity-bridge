@@ -3,6 +3,14 @@
 # agent_response frame is deliberately SPLIT across two stdout writes,
 # simulating a pipe boundary landing mid-line.
 read -r _line
+case "$_line" in
+  *HANG*)
+    # Deterministic hang for mid-turn close tests: init, then never finish.
+    printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-hang"}}'
+    sleep 30
+    exit 0
+    ;;
+esac
 printf '%s\n' '{"event":"init","init":{"conversation_id":"conv-777"}}'
 sleep 0.15
 printf '%s' '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"HALF-ONE-'
