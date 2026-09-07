@@ -4,14 +4,24 @@ Pending work, two streams. Evidence dates: 2026-09-05 (stream-json thread), 2026
 
 ## State (handoff, end of session 2026-09-07)
 
-- Committed and pushed through `efd1964` ("refactor(agy): drop the legacy label"). Naming convention is BINDING: the two engines are the **stream(-json) driver** (class `StreamDriver`, src/driver.ts) and the **ACP driver** (`AcpDriver`, src/acp/driver.ts). "legacy" refers only to the deleted pre-1.3.2 patch-based/sqlite engine.
-- UNCOMMITTED at reset: `src/mcp-registration.ts`, `tests/mcp-registration.test.ts`, `extensions/index.ts` (registration lifecycle wiring), `docs/TODO.md` (this update). All green: 286/286 tests, tsc clean.
-- Next action: commit the registration work, then section 1 step 3 (stream-json image forwarding) from this file.
-- Probe artifacts live outside the repo: `~/tmp/pi-antigravity-bridge-probes/` (run scripts via `npx tsx` from the repo cwd - they import src/*.ts). Findings also mirrored in agentmemory.
+- Registration work committed as `f7f001d` and pushed. Stream 1 is DONE:
+  the stream-json image gate is widened (tool results carry image blocks on
+  both engines) after a live transport probe (see 1.3), all committed in
+  this session's image commit. Naming convention is BINDING: the two
+  engines are the **stream(-json) driver** (class `StreamDriver`,
+  src/driver.ts) and the **ACP driver** (`AcpDriver`, src/acp/driver.ts).
+  "legacy" refers only to the deleted pre-1.3.2 patch-based/sqlite engine.
+- Probe artifacts live outside the repo: `~/tmp/pi-antigravity-bridge-probes/`
+  (run scripts via `npx tsx` from the repo cwd - they import src/*.ts).
+  Findings also mirrored in agentmemory.
+- Next: section 2 remaining items (approval-gate wiring, 2.8).
 
 ## 1. Stream-json engine: bridge tools registration regression
 
-**Status: steps 1-2 DONE (2026-09-07). Remaining: image-forwarding gate + end-to-end image verification (step 3).**
+**Status: DONE (2026-09-07).** Steps 1-2 landed in `f7f001d`; step 3 (image
+forwarding) landed this session: the engine gate in `src/provider.ts` is
+widened after the live transport probe passed, `read` on an image file now
+delivers pixels on both engines.
 
 The stream-json engine registers **no bridge tools at all**. Nobody noticed because the daily engine is ACP, where `mcpServers` ride `session/new` and work. Stream-json image support stays unmeasured until tools register.
 
@@ -21,7 +31,17 @@ Fix path, in order:
 
 1. **DONE (2026-09-07): probe PASS.** `agy mcp add --type http --header "x-bridge-token: ..." pi-bridge-probe http://127.0.0.1:PORT/mcp` registers the bridge for the stream-json CLI; agy discovered the server (browsed its tool cache under `~/.gemini/antigravity-cli/mcp/pi-bridge-probe/`), called it via its native `call_mcp_tool` wrapper (ServerName/ToolName/Arguments), and got `ECHO:PROBE-1` back. Two operational facts: mcp tool calls are soft-denied headless unless allowed (matches #548 family - the provider's default `skipPermissions: true` covers it), and bridge tools do NOT appear in agy's tool list - they surface only through `call_mcp_tool` (matters later for the approval-gate matcher). Entry shape captured: `{disabled: false, headers: {"x-bridge-token": ...}, serverUrl}`. Probe: `~/tmp/pi-antigravity-bridge-probes/probe-mcp-registration.sh`.
 2. **Step 2, registration LANDED (2026-09-07):** `src/mcp-registration.ts` (`registerBridgeServer`/`unregisterBridgeServer`/`sweepStaleBridgeServers`, exact agy entry shape, foreign servers preserved, corrupt file refused, atomic writes) wired into the extension lifecycle: session start sweeps stale per-pid entries and registers the live one; session_shutdown unregisters. Pinned in `tests/mcp-registration.test.ts`. REMAINING: image forwarding gate (step 3 below) and the end-to-end image verification probe.
-3. **Remaining (the actual image work)**: (a) find and widen the image-drop gate in `src/provider.ts` / `src/mcp-server.ts` - `BridgeContentBlock` already carries `data`/`mimeType`, but the stream-json path still flattens image blocks to text (look at `blocksToText` and the engine image gate); (b) end-to-end verification: bridge tool returning a two-tone PNG (top red / bottom blue, builder in `scripts/probe-acp-phase2.mjs`) on stream-json; PASS = agy names both colors, frame trail only, no decoders; (c) docs.
+3. **DONE (2026-09-07): image forwarding.** (a) The engine image gate in
+`src/provider.ts` (continuation path) forwards `r.images` on both engines;
+`BridgeContentBlock` `data`/`mimeType` already rode the MCP response. (b)
+Transport probe PASS (`scripts/probe-stream-json-image.mjs`, traffic in
+gitignored `probe-logs/stream-json-image-traffic.log`): the stream-json CLI's
+MCP client delivers tool-result image content to the model — the model named
+the two-tone PNG's halves (LEFT=green RIGHT=yellow) from the result alone;
+the bridge tool was called exactly once; the frame trail shows no decoders
+(one `find` file-hunt, one shell `mcp-cli-ent` attempt). Deliberately still
+text-only: the late-delivery prompt and stream-json prompt attachments. (c)
+Docs updated (PI-BRIDGE-GAPS, this file).
 
 Operational gotchas for any live stream-json probe (learned 2026-09-07): `--print-timeout` needs a duration unit (`90s`, bare `90` = usage error exit 2); mcp tool calls soft-deny headless without an allow rule (#548 family) - the provider's default `skipPermissions: true` covers it; bridge tools never appear in agy's init `tools[]` array, they surface only through agy's native `call_mcp_tool` wrapper (ServerName pi-bridge-<pid>); the mcp_config entry shape agy writes is `{disabled: false, headers: {...}, serverUrl}`; probe scripts import `src/*.ts` and must run via `npx tsx` from the repo cwd.
 

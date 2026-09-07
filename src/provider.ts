@@ -391,10 +391,9 @@ const BRIDGE_TIMEOUT_MS = 480_000;
 const MAX_PARK_TOMBSTONES = 64;
 
 /** One MCP tool-result content block: text always; image blocks carry base64
- *  pixels and ride to the model on the ACP engine (probe 2026-09-05: the ACP
- *  server delivers tool-result image content to the model). The stream-json
- *  CLI is text-only: its native-tool path re-executes pi's read natively, so
- *  image results never traverse the transport there. */
+ *  pixels and ride to the model on BOTH engines (ACP probe 2026-09-05;
+ *  stream-json probe 2026-09-07: the CLI's MCP client delivers tool-result
+ *  image content to the model). */
 export interface BridgeContentBlock {
 	type: string;
 	text?: string;
@@ -708,8 +707,9 @@ export class ToolRoundTrips {
 	}
 
 	/** Complete a parked call from a pi toolResult message. Returns false when
-	 *  the id matches nothing pending. Image blocks ride the result on the ACP
-	 *  engine; the late-delivery path stays text-only (see PI-BRIDGE-GAPS). */
+	 *  the id matches nothing pending. Image blocks ride the result on both
+	 *  engines (probe-verified on each); the late-delivery prompt stays
+	 *  text-only (see PI-BRIDGE-GAPS). */
 	resolve(
 		toolCallId: string,
 		text: string,
@@ -748,9 +748,9 @@ export class ToolRoundTrips {
 }
 
 /** Image blocks of a tool result (pi's read on an image file, screenshots).
- *  Forwarded to agy as MCP image content (see BridgeContentBlock); text-only
- *  consumers (stream-json native re-exec) never see this shape. Size relies
- *  on pi's own inline-image resize cap upstream; no second cap here. */
+ *  Forwarded to agy as MCP image content (see BridgeContentBlock) on both
+ *  engines. Size relies on pi's own inline-image resize cap upstream; no
+ *  second cap here. */
 function extractResultImages(content: unknown): Array<{ data: string; mimeType: string }> {
 	if (!Array.isArray(content)) return [];
 	return content
@@ -763,7 +763,7 @@ function extractResultImages(content: unknown): Array<{ data: string; mimeType: 
 }
 
 /** Extract toolResult messages whose toolCallId is still parked, as text plus
- *  any image blocks (forwarded as MCP image content on the ACP engine). */
+ *  any image blocks (forwarded as MCP image content on both engines). */
 export function collectToolResults(
 	messages: Message[],
 	pendingIds: readonly string[],
@@ -1018,12 +1018,13 @@ async function runTurnDriver(
 	const escalatedNames = results
 		.map((r) => deps.roundTrips.poll(r.toolCallId)?.name)
 		.filter((n): n is string => Boolean(n));
-	// Images ride tool results only on the ACP engine (probe 2026-09-05: its
-	// MCP client delivers tool-result image content to the model). The
-	// stream-json CLI is text-only with a history of broken image handling, so
-	// it keeps the pre-1.4.9 text-only result there.
+	// Images ride tool results on BOTH engines (ACP probe 2026-09-05;
+	// stream-json probe 2026-09-07: the CLI's MCP client delivers tool-result
+	// image content to the model — two-tone PNG named from the result alone,
+	// no decoders in the frame trail). The late-delivery prompt and the
+	// stream-json prompt attachments stay text-only by design.
 	for (const r of results)
-		deps.roundTrips.resolve(r.toolCallId, r.text, r.isError, deps.engine === "acp" ? r.images : []);
+		deps.roundTrips.resolve(r.toolCallId, r.text, r.isError, r.images);
 
 	// Late delivery: a toolResult whose park already failed (the abort/timeout
 	// path failed the park while the pi tool kept running). The work is done,

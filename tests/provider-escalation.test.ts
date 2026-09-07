@@ -304,9 +304,12 @@ async function driveContinuation(engine: "stream-json" | "acp"): Promise<BridgeC
 	return (await p) as BridgeCallResultShape;
 }
 
-test("bridge images: engine gate drops pixels on stream-json", async () => {
+test("bridge images: forwarded on stream-json (probe 2026-09-07: transport delivers pixels)", async () => {
 	const res = await driveContinuation("stream-json");
-	assert.deepEqual(res.content, [{ type: "text", text: "Read image file [image/png]" }]);
+	assert.deepEqual(res.content, [
+		{ type: "image", data: IMG.data, mimeType: IMG.mimeType },
+		{ type: "text", text: "Read image file [image/png]" },
+	]);
 });
 
 test("bridge images: engine gate forwards pixels on acp", async () => {

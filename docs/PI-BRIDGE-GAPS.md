@@ -73,9 +73,15 @@ Weighed and rejected; kept so they are not re-proposed.
   image in the prompt). Fix: image blocks in parked pi tool results now ride
   bridge results as MCP image content on the ACP engine (fast resolve path,
   escalation registry, and `bridge_poll_result`), so `read` on an image file
-  gives agy real pixels. Still text-only, deliberately: the stream-json
-  engine's results (upstream image handling there is unreliable) and the
-  late-delivery prompt (`buildLateResultPrompt`).
+  gives agy real pixels. DONE on stream-json too (probe
+  `scripts/probe-stream-json-image.mjs`, 2026-09-07: the CLI's MCP client
+delivers tool-result image content to the model — two-tone PNG named from
+the result alone, bridge tool called once, zero decoders in the frame
+trail). Image blocks now ride parked pi tool results on both engines
+(fast resolve path, escalation registry, and `bridge_poll_result`), so
+`read` on an image file gives agy real pixels everywhere. Still
+text-only, deliberately: the late-delivery prompt
+(`buildLateResultPrompt`), and the stream-json prompt attachments.
   Superseded verdict (kept for the record): NOT NEEDED. pi shares the path to
   any image it produces (e.g. `/tmp/pi-clipboard-<uuid>.png`), and agy
   reaches and reads those files directly via the bridge's `read` tool, so
