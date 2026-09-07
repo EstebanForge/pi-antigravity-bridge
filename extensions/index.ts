@@ -56,6 +56,11 @@ import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
+	registerBridgeServer,
+	sweepStaleBridgeServers,
+	unregisterBridgeServer,
+} from "../src/mcp-registration.js";
+import {
 	ACTIVATE_SKILL_TOOL_NAME,
 	activateSkillSchema,
 	catalogSummary,
@@ -560,6 +565,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const r = await startMcpServer({ listTools, onToolCall: bridgeOnToolCall }, { log: mcpLog });
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
+			// Stream-json engine registration: the agy CLI discovers MCP servers
+			// from ~/.gemini/config/mcp_config.json (ACP uses session/new
+			// mcpServers instead; verified live 2026-09-07). Per-pid entry,
+			// removed at session_shutdown; stale entries swept at start.
+			sweepStaleBridgeServers();
+			registerBridgeServer({
+				pid: process.pid,
+				port: r.handle.port,
+				token: r.handle.token,
+				tokenHeader: TOKEN_HEADER,
+			});
 		} else {
 			console.error(`[antigravity-bridge] MCP tool bridge disabled: ${r.reason}`);
 		}
@@ -582,6 +598,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// ("quit") - the connection kill is identical and nothing runs after.
 		await streamDriver.close("recycle", "session shutdown");
 		await acpDriver.close("recycle", "session shutdown");
+		unregisterBridgeServer(process.pid);
 	});
 }
 
