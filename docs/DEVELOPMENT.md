@@ -57,6 +57,18 @@ AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
 AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
   npx tsx scripts/probe-acp-phase2.mjs
 
+# Live probe: does the ACP server deliver MCP tool-result IMAGE content to
+# the model? One bridge tool returns a two-tone PNG in its result; the model
+# must name both halves from the tool result alone.
+AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
+  npx tsx scripts/probe-acp-image-result.mjs
+
+# Live probe: same image question for the legacy stream-json engine. AGY
+# bridge tool returns a two-tone PNG in its result; model must name both
+# halves. AGY_PROBE_REG_ONLY=1 skips the turn and dumps MCP registration
+# state (no quota).
+AGY_LIVE=1 npx tsx scripts/probe-stream-json-image.mjs
+
 # Live parity run: the SAME scenario set (streaming, continuity, bridge
 # round-trip, effort switch, serialization, abort+recover, usage) through
 # BOTH engines. Needs the agy CLI AND the ACP binary. Spends ~13 flash-low

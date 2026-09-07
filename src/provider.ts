@@ -390,8 +390,20 @@ const BRIDGE_TIMEOUT_MS = 480_000;
 /** Bounded memory of failed bridge parks (late-delivery tombstones). */
 const MAX_PARK_TOMBSTONES = 64;
 
+/** One MCP tool-result content block: text always; image blocks carry base64
+ *  pixels and ride to the model on the ACP engine (probe 2026-09-05: the ACP
+ *  server delivers tool-result image content to the model). The stream-json
+ *  CLI is text-only: its native-tool path re-executes pi's read natively, so
+ *  image results never traverse the transport there. */
+export interface BridgeContentBlock {
+	type: string;
+	text?: string;
+	data?: string;
+	mimeType?: string;
+}
+
 export interface BridgeCallResultShape {
-	content: Array<{ type: string; text?: string }>;
+	content: BridgeContentBlock[];
 	isError: boolean;
 }
 
@@ -422,6 +434,7 @@ export interface PollView {
 	text?: string;
 	isError?: boolean;
 	reason?: string;
+	images?: Array<{ data: string; mimeType: string }>;
 }
 
 /** Escalated bridge calls. Bounded: past the cap, oldest settled entries
@@ -442,12 +455,13 @@ export class EscalationRegistry {
 		this.#calls.set(callId, { name, state: "running" });
 		this.#trim();
 	}
-	settleDone(callId: string, text: string, isError: boolean): void {
+	settleDone(callId: string, text: string, isError: boolean, images: Array<{ data: string; mimeType: string }> = []): void {
 		const e = this.#calls.get(callId);
 		if (!e) return;
 		e.state = "done";
 		e.text = text;
 		e.isError = isError;
+		if (images.length > 0) e.images = images;
 		this.#trim();
 	}
 	settleFailed(callId: string, reason: string): void {
@@ -503,7 +517,13 @@ export function formatPollAnswer(callId: string, view: PollView | undefined): Br
 			isError: true,
 		};
 	}
-	return { content: [{ type: "text", text: view.text || "(no output)" }], isError: view.isError ?? false };
+	return {
+		content: [
+			...(view.images ?? []).map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+			{ type: "text", text: view.text || "(no output)" },
+		],
+		isError: view.isError ?? false,
+	};
 }
 
 interface PendingRoundTrip {
@@ -688,8 +708,14 @@ export class ToolRoundTrips {
 	}
 
 	/** Complete a parked call from a pi toolResult message. Returns false when
-	 *  the id matches nothing pending. */
-	resolve(toolCallId: string, text: string, isError: boolean): boolean {
+	 *  the id matches nothing pending. Image blocks ride the result on the ACP
+	 *  engine; the late-delivery path stays text-only (see PI-BRIDGE-GAPS). */
+	resolve(
+		toolCallId: string,
+		text: string,
+		isError: boolean,
+		images: Array<{ data: string; mimeType: string }> = [],
+	): boolean {
 		const entry = this.#pending.get(toolCallId);
 		if (!entry) return false;
 		this.#pending.delete(toolCallId);
@@ -705,9 +731,15 @@ export class ToolRoundTrips {
 		// original promise settled with the sentinel; re-resolving is a silent
 		// no-op, so gate it to keep that explicit.
 		if (entry.escalated) {
-			this.#escalations.settleDone(toolCallId, text, isError);
+			this.#escalations.settleDone(toolCallId, text, isError, images);
 		} else {
-			entry.resolve!({ content: [{ type: "text", text }], isError });
+			entry.resolve!({
+				content: [
+					...images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType })),
+					{ type: "text", text },
+				],
+				isError,
+			});
 		}
 		this.#getDriver().kickIdle();
 		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
@@ -715,19 +747,40 @@ export class ToolRoundTrips {
 	}
 }
 
-/** Extract toolResult messages whose toolCallId is still parked, as text. */
+/** Image blocks of a tool result (pi's read on an image file, screenshots).
+ *  Forwarded to agy as MCP image content (see BridgeContentBlock); text-only
+ *  consumers (stream-json native re-exec) never see this shape. Size relies
+ *  on pi's own inline-image resize cap upstream; no second cap here. */
+function extractResultImages(content: unknown): Array<{ data: string; mimeType: string }> {
+	if (!Array.isArray(content)) return [];
+	return content
+		.filter(
+			(b): b is { type: "image"; data: string; mimeType: string } =>
+				typeof b === "object" && b !== null && (b as { type?: string }).type === "image",
+		)
+		.map((b) => ({ data: b.data, mimeType: b.mimeType }))
+		.filter((i) => typeof i.mimeType === "string" && typeof i.data === "string" && i.data.length > 0);
+}
+
+/** Extract toolResult messages whose toolCallId is still parked, as text plus
+ *  any image blocks (forwarded as MCP image content on the ACP engine). */
 export function collectToolResults(
 	messages: Message[],
 	pendingIds: readonly string[],
-): Array<{ toolCallId: string; text: string; isError: boolean }> {
+): Array<{ toolCallId: string; text: string; isError: boolean; images: Array<{ data: string; mimeType: string }> }> {
 	if (pendingIds.length === 0) return [];
 	const pending = new Set(pendingIds);
-	const out: Array<{ toolCallId: string; text: string; isError: boolean }> = [];
+	const out: Array<{ toolCallId: string; text: string; isError: boolean; images: Array<{ data: string; mimeType: string }> }> = [];
 	for (const m of messages) {
 		if (m.role !== "toolResult") continue;
 		const id = (m as { toolCallId?: string }).toolCallId;
 		if (!id || !pending.has(id)) continue;
-		out.push({ toolCallId: id, text: blocksToText(m.content).trim(), isError: m.isError === true });
+		out.push({
+			toolCallId: id,
+			text: blocksToText(m.content).trim(),
+			isError: m.isError === true,
+			images: extractResultImages(m.content),
+		});
 	}
 	return out;
 }
@@ -965,7 +1018,12 @@ async function runTurnDriver(
 	const escalatedNames = results
 		.map((r) => deps.roundTrips.poll(r.toolCallId)?.name)
 		.filter((n): n is string => Boolean(n));
-	for (const r of results) deps.roundTrips.resolve(r.toolCallId, r.text, r.isError);
+	// Images ride tool results only on the ACP engine (probe 2026-09-05: its
+	// MCP client delivers tool-result image content to the model). The
+	// stream-json CLI is text-only with a history of broken image handling, so
+	// it keeps the pre-1.4.9 text-only result there.
+	for (const r of results)
+		deps.roundTrips.resolve(r.toolCallId, r.text, r.isError, deps.engine === "acp" ? r.images : []);
 
 	// Late delivery: a toolResult whose park already failed (the abort/timeout
 	// path failed the park while the pi tool kept running). The work is done,

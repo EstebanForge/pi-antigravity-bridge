@@ -61,13 +61,28 @@ Weighed and rejected; kept so they are not re-proposed.
   credentials, so agy already uses pi's creds for every tool; a
   credential never crosses the bridge. A `pi_get_setting` accessor was
   predicated on credential reuse that does not apply.
-- **Image / binary content blocks over the bridge** — NOT NEEDED. pi shares
-  the path to any image it produces (e.g. `/tmp/pi-clipboard-<uuid>.png`), and agy
+- **Image / binary content blocks over the bridge** — DONE (ACP engine).
+  Reopened 2026-09-05: the prior verdict below was falsified. On the ACP
+  engine, native `view_file` rejects real filesystem paths (artifact sandbox;
+  the tool-priority note steers agy to bridge tools), and bridge `read`
+  flattened pi's tool result with `blocksToText`, which drops the image block.
+  agy received only the label text and fell back to shell + `mcp-cli-ent
+  ai-vision`. Probe `scripts/probe-acp-image-result.mjs` (2026-09-05) proved
+  the ACP server delivers MCP tool-result image content to the model (PASS:
+  the model identified a two-tone PNG from the tool result alone, with no
+  image in the prompt). Fix: image blocks in parked pi tool results now ride
+  bridge results as MCP image content on the ACP engine (fast resolve path,
+  escalation registry, and `bridge_poll_result`), so `read` on an image file
+  gives agy real pixels. Still text-only, deliberately: the stream-json
+  engine's results (upstream image handling there is unreliable) and the
+  late-delivery prompt (`buildLateResultPrompt`).
+  Superseded verdict (kept for the record): NOT NEEDED. pi shares the path to
+  any image it produces (e.g. `/tmp/pi-clipboard-<uuid>.png`), and agy
   reaches and reads those files directly via the bridge's `read` tool, so
   returning image content blocks over the transport would duplicate a path
-  that already works end-to-end. No agy transport change or pi patch required.
-  Update (2026-09-04): user-provided image *attachments* now ride natively on
-  the ACP engine as typed prompt content blocks (see README, Two
+  that already works end-to-end. No agy transport change or pi patch
+  required. Update (2026-09-04): user-provided image *attachments* now ride
+  natively on the ACP engine as typed prompt content blocks (see README, Two
   engines); the stream-json CLI prompt stays text-only, and the bridge
   direction above is unchanged.
 - **File-watching / live state** — DECLINED. agy is request-response

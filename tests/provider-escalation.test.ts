@@ -16,6 +16,7 @@ import {
 	EscalationRegistry,
 	POLL_TOOL_NAME,
 	ToolRoundTrips,
+	collectToolResults,
 	createStreamSimple,
 	formatEscalatedAck,
 	formatPollAnswer,
@@ -215,4 +216,103 @@ test("escalation: registry soft cap never evicts running entries", () => {
 	assert.equal(reg.poll("c1")?.state, "running");
 	assert.equal(reg.poll("c70")?.state, "running");
 	assert.equal(reg.poll("missing"), undefined);
+});
+
+// --- image blocks over the bridge (ACP engine) ---------------------------------
+
+const IMG = { data: "aWNvbg==", mimeType: "image/png" };
+
+function toolResultImageMessage(callId: string, text: string): Message {
+	return {
+		role: "toolResult",
+		toolCallId: callId,
+		content: [
+			{ type: "text", text },
+			{ type: "image", data: IMG.data, mimeType: IMG.mimeType },
+			// Malformed entries must be dropped, not forwarded.
+			{ type: "image", mimeType: "image/jpeg" },
+			{ type: "image", data: "", mimeType: "image/png" },
+			{ type: "thinking", thinking: "x" },
+		],
+		isError: false,
+		timestamp: Date.now(),
+	} as unknown as Message;
+}
+
+test("bridge images: collectToolResults extracts image blocks from parked tool results", () => {
+	const msgs = [toolResultImageMessage("c1", "Read image file [image/png]")];
+	const out = collectToolResults(msgs, ["c1"]);
+	assert.equal(out.length, 1);
+	assert.equal(out[0].text, "Read image file [image/png]");
+	assert.deepEqual(out[0].images, [IMG]);
+	// No images on plain results; unknown ids never surface.
+	assert.deepEqual(collectToolResults([toolResultMessage("c2", "txt")], ["c2"])[0].images, []);
+});
+
+test("bridge images: fast (non-escalated) resolve emits image content ahead of text", async () => {
+	const d = new RecordingDriver();
+	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: 5_000 });
+	const p = rt.onToolCall("c1", "read", {}, new AbortController().signal);
+	rt.resolve("c1", "Read image file [image/png]", false, [IMG]);
+	const res = (await p) as BridgeCallResultShape;
+	assert.equal(res.isError, false);
+	assert.deepEqual(res.content[0], { type: "image", data: IMG.data, mimeType: IMG.mimeType });
+	assert.equal(res.content[1].text, "Read image file [image/png]");
+});
+
+test("bridge images: escalated resolve carries images through poll and formatPollAnswer", () => {
+	const reg = new EscalationRegistry();
+	reg.escalate("c1", "read");
+	reg.settleDone("c1", "Read image file [image/png]", false, [IMG]);
+	const view = reg.poll("c1");
+	assert.ok(view);
+	assert.deepEqual(view.images, [IMG]);
+	const res = formatPollAnswer("c1", view);
+	assert.equal(res.isError, false);
+	assert.deepEqual(res.content[0], { type: "image", data: IMG.data, mimeType: IMG.mimeType });
+	assert.equal(res.content[1].text, "Read image file [image/png]");
+});
+
+// The engine gate lives at the runTurnDriver resolve call site, not in
+// ToolRoundTrips: drive a real continuation through createStreamSimple to
+// pin it. Deleting or inverting the ternary must turn these red.
+async function driveContinuation(engine: "stream-json" | "acp"): Promise<BridgeCallResultShape> {
+	// Two DISTINCT stubs: createStreamSimple labels the engine by object
+	// identity (selected === deps.acpDriver), so a shared instance would
+	// mislabel the stream-json run as acp.
+	const dLegacy = new RecordingDriver();
+	const dAcp = new RecordingDriver();
+	const rt = new ToolRoundTrips(dLegacy as unknown as AgyDriver, undefined, { escalateAfterMs: 5_000 });
+	const p = rt.onToolCall("c1", "read", {}, new AbortController().signal);
+	const streamSimple = createStreamSimple({
+		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
+		store: new SessionStore(tmpStorePath()),
+		driver: dLegacy as unknown as AgyDriver,
+		acpDriver: dAcp as unknown as AgyDriver,
+		roundTrips: rt,
+		engine,
+	});
+	const context: Context = {
+		systemPrompt: undefined,
+		messages: [toolResultImageMessage("c1", "Read image file [image/png]")],
+	};
+	const stream = streamSimple(model, context, { cwd: process.cwd() } as unknown as SimpleStreamOptions);
+	for await (const _ev of stream) {
+		// Drain: the parked promise settles inside the continuation pass; the
+		// post-resolve branch may finalize an error (no live turn to re-enter).
+	}
+	return (await p) as BridgeCallResultShape;
+}
+
+test("bridge images: engine gate drops pixels on stream-json", async () => {
+	const res = await driveContinuation("stream-json");
+	assert.deepEqual(res.content, [{ type: "text", text: "Read image file [image/png]" }]);
+});
+
+test("bridge images: engine gate forwards pixels on acp", async () => {
+	const res = await driveContinuation("acp");
+	assert.deepEqual(res.content, [
+		{ type: "image", data: IMG.data, mimeType: IMG.mimeType },
+		{ type: "text", text: "Read image file [image/png]" },
+	]);
 });

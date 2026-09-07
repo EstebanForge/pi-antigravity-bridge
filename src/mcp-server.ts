@@ -71,7 +71,7 @@ export interface McpBridgeDeps {
 		name: string,
 		args: Record<string, unknown>,
 		signal: AbortSignal,
-	): Promise<{ content: Array<{ type: string; text?: string }>; isError: boolean }>;
+	): Promise<import("./provider.js").BridgeCallResultShape>;
 }
 
 /** Clamp an unsupported MCP-Protocol-Version header down to the SDK's LATEST.
