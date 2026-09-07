@@ -3,7 +3,7 @@
 // caller's Antigravity quota. Run: AGY_LIVE=1 node --experimental-strip-types scripts/smoke-stream-json.mjs
 // Verifies: driver spawns, init binds a conversation, text deltas arrive,
 // result settles, and the process is reused on a second turn (reused: 1).
-import { AgyDriver } from "../src/driver.js";
+import { StreamDriver } from "../src/driver.js";
 import { parseAgyLine } from "../src/stream-events.js";
 import { spawn } from "node:child_process";
 
@@ -18,7 +18,7 @@ await new Promise((res) => {
 	p.on("exit", (c) => { if (c !== 0) { console.error("agy not runnable"); process.exit(1); } res(); });
 });
 
-const driver = new AgyDriver();
+const driver = new StreamDriver();
 const handle = await driver.run({
 	cwd: process.cwd(),
 	model: process.env.AGY_SMOKE_MODEL ?? "gemini-3.7-flash-medium",

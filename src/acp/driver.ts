@@ -1,8 +1,8 @@
 // AcpDriver: the ACP turn engine. Implements the same TurnDriver surface as
-// the legacy stream-json driver (see src/driver-types.ts) so provider.ts and
+// the stream-json driver (see src/driver-types.ts) so provider.ts and
 // the G9 round-trip store work unchanged.
 //
-// Engine differences vs legacy, all verified live (docs/ACP-PROTOCOL-REFERENCE.md):
+// Engine differences vs stream-json, all verified live (docs/ACP-PROTOCOL-REFERENCE.md):
 //   - no process recycle on profile drift: one server process, sessions
 //     selected per turn via session/new / session/load
 //   - model/effort via session/set_config_option (configId "model", FULL slug
@@ -167,7 +167,7 @@ export class AcpDriver implements TurnDriver {
 	}
 
 	/** Turns are serialized; a parked turn stays open and the continuation
-	 *  path uses reentry() (same contract as the legacy driver). */
+	 *  path uses reentry() (same contract as the stream-json driver). */
 	run(request: DriverTurnRequest): Promise<TurnHandle> {
 		let release!: () => void;
 		const prev = this.#queueTail;
@@ -220,7 +220,7 @@ export class AcpDriver implements TurnDriver {
 		}
 
 		// Execute asynchronously: the handle returns as soon as the prompt is
-		// dispatched, and activities stream through next() (legacy contract).
+		// dispatched, and activities stream through next() (stream-json contract).
 		void this.#executeTurn(turn).catch((err: unknown) => {
 			this.#failTurn(turn, `ACP turn failed: ${describe(err)}`);
 		});

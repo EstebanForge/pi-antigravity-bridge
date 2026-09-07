@@ -14,7 +14,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
-import { AgyDriver } from "../src/driver.js";
+import { StreamDriver } from "../src/driver.js";
 import { SessionStore } from "../src/sessions.js";
 import type { AgyModelEntry } from "../src/models.js";
 
@@ -49,7 +49,7 @@ const context: Context = {
 
 // Use a throwaway session store so this test never clobbers real state.
 const tmpStore = new SessionStore(`/tmp/antigravity-test-${process.pid}-sessions.json`);
-const driver = new AgyDriver();
+const driver = new StreamDriver();
 const roundTrips = new ToolRoundTrips(driver);
 // A settled turn cannot answer its parked calls; the driver never sees the
 // toolResult. Fail them loudly (mirrors extensions/index.ts).

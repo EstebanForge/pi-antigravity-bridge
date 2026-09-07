@@ -1,12 +1,12 @@
 // H1 regression: stream-json frames that split across pipe chunks must be
-// buffered and reassembled, not dropped. Drives AgyDriver against the fake
+// buffered and reassembled, not dropped. Drives StreamDriver against the fake
 // agy in tests/helpers/fake-agy-bin/agy (resolved via PATH), whose reply is
 // deliberately split across two stdout writes mid-line.
 
 import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, test } from "vitest";
-import { AgyDriver } from "../src/driver.js";
+import { StreamDriver } from "../src/driver.js";
 import type { DriverActivity } from "../src/driver-types.js";
 
 const FAKE_BIN_DIR = path.join(import.meta.dirname, "helpers", "fake-agy-bin");
@@ -14,7 +14,7 @@ const FAKE_BIN_DIR = path.join(import.meta.dirname, "helpers", "fake-agy-bin");
 describe("stream-json driver stdout framing (H1)", () => {
 	test("frames split across pipe chunks are reassembled", async () => {
 		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
-		const driver = new AgyDriver();
+		const driver = new StreamDriver();
 		const handle = await driver.run({
 			prompt: "hi",
 			cwd: process.cwd(),
@@ -54,7 +54,7 @@ describe("stream-json driver shutdown latch", () => {
 	// instead of rejecting forever (regression 2026-09-07).
 	test("a turn after close('shutdown') respawns instead of rejecting forever", async () => {
 		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
-		const driver = new AgyDriver();
+		const driver = new StreamDriver();
 		const opts = {
 			prompt: "hi",
 			cwd: process.cwd(),
@@ -77,7 +77,7 @@ describe("stream-json driver shutdown latch", () => {
 
 	test("close('recycle') mid-turn settles the turn with a clean error", async () => {
 		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
-		const driver = new AgyDriver();
+		const driver = new StreamDriver();
 		const handle = await driver.run({
 			prompt: "please HANG",
 			cwd: process.cwd(),

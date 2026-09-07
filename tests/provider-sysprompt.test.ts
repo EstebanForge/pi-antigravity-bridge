@@ -19,7 +19,7 @@ import {
 	createStreamSimple,
 } from "../src/provider.js";
 import { SessionStore } from "../src/sessions.js";
-import type { AgyDriver, DriverTurnRequest } from "../src/driver.js";
+import type { StreamDriver, DriverTurnRequest } from "../src/driver.js";
 
 const SYS = "You are pi. Follow AGENTS.md.";
 
@@ -99,7 +99,7 @@ interface Harness {
 
 function gateHarness(): Harness {
 	const seen: { opts?: DriverTurnRequest } = {};
-	const driver: AgyDriver = {
+	const driver: StreamDriver = {
 		run: async (opts: DriverTurnRequest) => {
 			seen.opts = opts;
 			return {
@@ -115,7 +115,7 @@ function gateHarness(): Harness {
 				pushExternal: () => {},
 			};
 		},
-	} as unknown as AgyDriver;
+	} as unknown as StreamDriver;
 	// One tmp dir = one stable session key (cwd-based) across both turns.
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-sysprompt-"));
 	const streamSimple = createStreamSimple({

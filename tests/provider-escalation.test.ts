@@ -23,7 +23,7 @@ import {
 	type BridgeCallResultShape,
 } from "../src/provider.js";
 import { SessionStore } from "../src/sessions.js";
-import type { AgyDriver, DriverActivity, DriverTurnRequest } from "../src/driver.js";
+import type { StreamDriver, DriverActivity, DriverTurnRequest } from "../src/driver.js";
 
 const model: Model<Api> = {
 	id: "gemini-flash",
@@ -81,7 +81,7 @@ function toolResultMessage(callId: string, text: string): Message {
 
 test("escalation: fast calls settle with the real result and never register a handle", async () => {
 	const d = new RecordingDriver();
-	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: 5_000 });
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: 5_000 });
 	const p = rt.onToolCall("c1", "read", {}, new AbortController().signal);
 	assert.equal(rt.resolve("c1", "file body", false), true);
 	const res = (await p) as BridgeCallResultShape;
@@ -93,7 +93,7 @@ test("escalation: fast calls settle with the real result and never register a ha
 
 test("escalation: slow calls settle with a sentinel, poll reports running then the result", async () => {
 	const d = new RecordingDriver();
-	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: ESC });
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
 	const p = rt.onToolCall("c1", "AskClaude", {}, new AbortController().signal);
 	const res = await p;
 	assert.deepEqual(res, { escalated: true, callId: "c1", name: "AskClaude" });
@@ -115,7 +115,7 @@ test("escalation: slow calls settle with a sentinel, poll reports running then t
 
 test("escalation: aborted escalated calls report through poll AND keep the tombstone backstop", async () => {
 	const d = new RecordingDriver();
-	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: ESC });
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
 	const ctrl = new AbortController();
 	const settled = rt
 		.onToolCall("c1", "exec_command", {}, ctrl.signal)
@@ -134,7 +134,7 @@ test("escalation: aborted escalated calls report through poll AND keep the tombs
 
 test("escalation: failAll spares escalated calls (turn end must not fake a failure)", async () => {
 	const d = new RecordingDriver();
-	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: ESC });
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
 	const p = rt.onToolCall("c1", "AskClaude", {}, new AbortController().signal);
 	await p; // sentinel: escalated, pi tool still executing
 	// extensions/index.ts fires exactly this on EVERY turn end, OK turns
@@ -154,14 +154,14 @@ test("escalation: failAll spares escalated calls (turn end must not fake a failu
 
 test("escalation: continuation with a dead agy turn settles quietly for escalated calls", async () => {
 	const d = new RecordingDriver();
-	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: ESC });
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: ESC });
 	const p = rt.onToolCall("call-1", "AskClaude", {}, new AbortController().signal);
 	await p; // sentinel: escalated
 
 	const streamSimple = createStreamSimple({
 		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
 		store: new SessionStore(tmpStorePath()),
-		driver: d as unknown as AgyDriver,
+		driver: d as unknown as StreamDriver,
 		roundTrips: rt,
 	});
 	const context: Context = {
@@ -251,7 +251,7 @@ test("bridge images: collectToolResults extracts image blocks from parked tool r
 
 test("bridge images: fast (non-escalated) resolve emits image content ahead of text", async () => {
 	const d = new RecordingDriver();
-	const rt = new ToolRoundTrips(d as unknown as AgyDriver, undefined, { escalateAfterMs: 5_000 });
+	const rt = new ToolRoundTrips(d as unknown as StreamDriver, undefined, { escalateAfterMs: 5_000 });
 	const p = rt.onToolCall("c1", "read", {}, new AbortController().signal);
 	rt.resolve("c1", "Read image file [image/png]", false, [IMG]);
 	const res = (await p) as BridgeCallResultShape;
@@ -280,15 +280,15 @@ async function driveContinuation(engine: "stream-json" | "acp"): Promise<BridgeC
 	// Two DISTINCT stubs: createStreamSimple labels the engine by object
 	// identity (selected === deps.acpDriver), so a shared instance would
 	// mislabel the stream-json run as acp.
-	const dLegacy = new RecordingDriver();
+	const dStream = new RecordingDriver();
 	const dAcp = new RecordingDriver();
-	const rt = new ToolRoundTrips(dLegacy as unknown as AgyDriver, undefined, { escalateAfterMs: 5_000 });
+	const rt = new ToolRoundTrips(dStream as unknown as StreamDriver, undefined, { escalateAfterMs: 5_000 });
 	const p = rt.onToolCall("c1", "read", {}, new AbortController().signal);
 	const streamSimple = createStreamSimple({
 		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
 		store: new SessionStore(tmpStorePath()),
-		driver: dLegacy as unknown as AgyDriver,
-		acpDriver: dAcp as unknown as AgyDriver,
+		driver: dStream as unknown as StreamDriver,
+		acpDriver: dAcp as unknown as StreamDriver,
 		roundTrips: rt,
 		engine,
 	});

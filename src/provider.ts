@@ -72,7 +72,7 @@ function extractUserPrompt(context: Context): string | null {
 
 /** Image blocks of the latest user message (pi-ai ImageContent: base64 data
  *  + mimeType). The ACP engine forwards them as typed content blocks; the
- *  legacy CLI prompt is text-only, so its driver simply ignores these. */
+ *  stream-json CLI prompt is text-only, so its driver simply ignores these. */
 function extractImages(context: Context): Array<{ data: string; mimeType: string }> {
 	const last = context.messages[context.messages.length - 1];
 	if (!last || last.role !== "user" || typeof last.content === "string") return [];
@@ -294,8 +294,8 @@ function sessionKey(
 ): string {
 	const sid = (options as { sessionId?: string } | undefined)?.sessionId;
 	const base = sid && sid.length > 0 ? `sid:${sid}` : `cwd:${cwd}`;
-	// Engine-scoped keys (plan 9.4): one ACP turn must never touch the legacy
-	// binding and vice versa. Un-suffixed keys = legacy, byte-compatible with
+	// Engine-scoped keys (plan 9.4): one ACP turn must never touch the stream
+	// binding and vice versa. Un-suffixed keys = stream-json, byte-compatible with
 	// every store that predates the ACP engine.
 	return base + (engine === "acp" ? "@acp" : "");
 }
@@ -312,12 +312,12 @@ export interface BlockState {
 export interface StreamSimpleDeps {
 	entries: AgyModelEntry[];
 	store: SessionStore;
-	/** Legacy stream-json driver (the tested default engine). Turns run on the
+	/** Stream-json driver (the tested default engine). Turns run on the
 	 *  driver and bridge calls park as toolUse round-trips. Required with
 	 *  roundTrips. */
 	driver?: TurnDriver;
 	/** Official-server ACP engine. Opt-in via config.engine = "acp"; when
-	 *  absent the config switch falls back to the legacy driver. */
+	 *  absent the config switch falls back to the stream driver. */
 	acpDriver?: TurnDriver;
 	roundTrips?: ToolRoundTrips;
 	/** Replay store for the display-only antigravity wrapper tool. Required
@@ -878,7 +878,7 @@ export function consumeActivity(
 			appendText(stream, blocks, activity.delta);
 			return "continue";
 		case "thought":
-			// Legacy: token count only (no body). ACP: thought TEXT deltas —
+			// Stream-json: token count only (no body). ACP: thought TEXT deltas —
 			// rendered through the same thinking block pipeline (9.2).
 			if (typeof activity.delta === "string" && activity.delta.length > 0) {
 				appendThinking(stream, blocks, activity.delta);
@@ -1167,7 +1167,7 @@ async function runTurnDriver(
 
 /** Build the streamSimple closure. Captures the model catalog + session store
  *  resolved at extension load. When a driver is provided, turns run on the
- *  persistent stream-json engine (config.engine selects; legacy remains as
+ *  persistent stream-json engine (config.engine selects; stream remains as
  *  fallback). */
 export function createStreamSimple(
 	deps: StreamSimpleDeps,
@@ -1199,8 +1199,8 @@ export function createStreamSimple(
 				replay: deps.replay,
 				nativeActive: deps.nativeActive,
 				// Record the engine of the driver that will ACTUALLY run: if the
-				// ACP driver is absent, the config switch falls back to legacy,
-				// and keying the session as @acp would store a legacy
+				// ACP driver is absent, the config switch falls back to stream,
+				// and keying the session as @acp would store a stream
 				// conversationId under the wrong engine scope.
 				engine: selected === deps.acpDriver ? "acp" : "stream-json",
 				log: deps.log,

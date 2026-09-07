@@ -20,7 +20,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { ToolRoundTrips, WrapperReplay, consumeActivity, createStreamSimple, toAgyEffort } from "../src/provider.js";
 import { TurnDiffContext } from "../src/diff-render.js";
 import { SessionStore } from "../src/sessions.js";
-import type { AgyDriver, DriverTurnRequest } from "../src/driver.js";
+import type { StreamDriver, DriverTurnRequest } from "../src/driver.js";
 
 const model: Model<Api> = {
 	id: "gemini-flash",
@@ -49,7 +49,7 @@ function tmpStorePath(): string {
 /** A fake driver that records the run() opts so a test can assert how the
  *  provider translated pi's options into agy turn opts. The handle emits no
  *  activities and settles OK. */
-function capturingDriver(seen: { opts?: DriverTurnRequest }): AgyDriver {
+function capturingDriver(seen: { opts?: DriverTurnRequest }): StreamDriver {
 	return {
 		run: async (opts: DriverTurnRequest) => {
 			seen.opts = opts;
@@ -65,7 +65,7 @@ function capturingDriver(seen: { opts?: DriverTurnRequest }): AgyDriver {
 				pushExternal: () => {},
 			};
 		},
-	} as unknown as AgyDriver;
+	} as unknown as StreamDriver;
 }
 
 /** Run one scripted turn through streamSimple; returns the captured turn
@@ -135,7 +135,7 @@ test("streamSimple forwards image blocks from the user message to the driver", a
 		{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
 	);
 	for await (const ev of stream) void ev;
-	// Text rides as the prompt; images ride separately (the legacy driver
+	// Text rides as the prompt; images ride separately (the stream driver
 	// ignores them, the ACP driver forwards them as typed content blocks).
 	assert.equal(seen.opts?.prompt, "What is this?");
 	assert.deepEqual(seen.opts?.images, [{ data: "aGVsbG8=", mimeType: "image/png" }]);
@@ -212,16 +212,16 @@ test("streamSimple: stream-json engine keeps the digest inline in the prompt", a
 		// between the driver and acpDriver roles, and the engine heuristic
 		// keys off object identity.
 		const seen: { opts?: DriverTurnRequest } = {};
-		const legacySeen: { opts?: DriverTurnRequest } = {};
-		const legacyDriver = capturingDriver(legacySeen);
+		const streamSeen: { opts?: DriverTurnRequest } = {};
+		const streamDriver = capturingDriver(streamSeen);
 		const acpSeen: { opts?: DriverTurnRequest } = {};
 		const acpOnlyDriver = capturingDriver(acpSeen);
 		const streamSimple = createStreamSimple({
 			entries: [{ full: "gemini-3.6-flash", id: "gemini-flash", efforts: ["low", "medium", "high"] }],
 			store: new SessionStore(tmpStorePath()),
-			driver: legacyDriver,
+			driver: streamDriver,
 			acpDriver: acpOnlyDriver,
-			roundTrips: new ToolRoundTrips(legacyDriver),
+			roundTrips: new ToolRoundTrips(streamDriver),
 		});
 		const stream = streamSimple(
 			{ ...model, id: "gemini-flash" },
@@ -229,9 +229,9 @@ test("streamSimple: stream-json engine keeps the digest inline in the prompt", a
 			{ cwd: process.cwd() } as unknown as SimpleStreamOptions,
 		);
 		for await (const ev of stream) void ev;
-		assert.match(legacySeen.opts?.prompt ?? "", /context from the broader pi session/);
-		assert.match(legacySeen.opts?.prompt ?? "", /claude says hi/);
-		assert.equal(legacySeen.opts?.contextBlock, undefined);
+		assert.match(streamSeen.opts?.prompt ?? "", /context from the broader pi session/);
+		assert.match(streamSeen.opts?.prompt ?? "", /claude says hi/);
+		assert.equal(streamSeen.opts?.contextBlock, undefined);
 		assert.equal(acpSeen.opts, undefined, "acp driver must not run");
 	} finally {
 		delete process.env.AGY_ENGINE;

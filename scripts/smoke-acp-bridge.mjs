@@ -9,7 +9,7 @@
 // header), (b) list the bridge's tools over Streamable HTTP, (c) invoke one,
 // and (d) finish its turn with the tool result in hand. The bridge deps here
 // answer directly (no pi round-trip) — that half is engine-independent and was
-// proven live on the legacy engine. What this isolates is the agy-side HTTP
+// proven live on the stream-json engine. What this isolates is the agy-side HTTP
 // MCP client, which no fake server can stand in for.
 
 import { AcpDriver } from "../src/acp/driver.js";

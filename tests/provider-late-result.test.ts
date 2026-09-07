@@ -25,7 +25,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
 import { SessionStore } from "../src/sessions.js";
-import type { AgyDriver, DriverActivity, DriverTurnRequest } from "../src/driver.js";
+import type { StreamDriver, DriverActivity, DriverTurnRequest } from "../src/driver.js";
 
 const model: Model<Api> = {
 	id: "gemini-flash",
@@ -63,7 +63,7 @@ function fakeDriver(seen: { opts?: DriverTurnRequest }) {
 			seen.opts = opts;
 			return fakeHandle;
 		},
-	} as unknown as AgyDriver;
+	} as unknown as StreamDriver;
 }
 
 /** Park a bridge call, then fail it the way the abort/timeout/recycle paths
@@ -91,7 +91,7 @@ function toolResultMessage(callId: string, text: string, isError = false): Messa
 
 /** Run one scripted turn through streamSimple; returns the driver request the
  *  provider handed over plus any error events. */
-function makeStreamSimple(driver: AgyDriver, rt: ToolRoundTrips) {
+function makeStreamSimple(driver: StreamDriver, rt: ToolRoundTrips) {
 	return createStreamSimple({
 		entries: [{ full: "gemini-3.6-flash", id: "gemini-flash" }],
 		store: new SessionStore(tmpStorePath()),

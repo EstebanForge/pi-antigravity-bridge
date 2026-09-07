@@ -63,7 +63,7 @@ AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
 AGY_ACP_LIVE=1 AGY_ACP_BIN=~/.local/opt/agy-acp/current/agy_acp_server.par \
   npx tsx scripts/probe-acp-image-result.mjs
 
-# Live probe: same image question for the legacy stream-json engine. AGY
+# Live probe: same image question for the stream-json engine. AGY
 # bridge tool returns a two-tone PNG in its result; model must name both
 # halves. AGY_PROBE_REG_ONLY=1 skips the turn and dumps MCP registration
 # state (no quota).

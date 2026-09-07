@@ -4,7 +4,7 @@
 //   AGY_LIVE=1 npx tsx scripts/probe-stream-json-image.mjs
 //
 // Same question the ACP probe (probe-acp-image-result.mjs) answered for the
-// ACP engine, now for the legacy engine: the community "broken image upload"
+// ACP engine, now for the stream-json engine: the community "broken image upload"
 // reports were about the CLI's own image upload, never about MCP tool
 // results through its client. The bridge serves one tool whose result
 // carries a two-tone PNG (left green, right yellow); the model must name
@@ -22,7 +22,7 @@ import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "no
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { AgyDriver } from "../src/driver.js";
+import { StreamDriver } from "../src/driver.js";
 import { bridgeMcpConfigDir, startMcpServer } from "../src/mcp-server.js";
 import zlib from "node:zlib";
 
@@ -180,8 +180,8 @@ if (process.env.AGY_PROBE_REG_ONLY === "1") {
 	process.exit(0);
 }
 
-// --- legacy driver turn ----------------------------------------------------------
-const driver = new AgyDriver();
+// --- stream-json driver turn ----------------------------------------------------------
+const driver = new StreamDriver();
 let answer = "";
 const handle = await driver.run({
 	cwd: WorkCwd,

@@ -1,9 +1,9 @@
 // Engine-agnostic turn-driver contract.
 //
-// Both turn engines (legacy stream-json driver in `driver.ts`, ACP driver in
+// Both turn engines (stream-json driver in `driver.ts`, ACP driver in
 // `acp/driver.ts`) implement `TurnDriver`, and everything above them — the
 // provider's stream loop, the G9 round-trip store, the extension wiring —
-// depends on this interface only. Types live here so the legacy module can be
+// depends on this interface only. Types live here so the stream module can be
 // deleted (phase 4) without breaking imports.
 //
 // The ACP driver implements the same surface with protocol-native mechanics:
@@ -21,17 +21,17 @@ export interface DriverProfile {
 }
 
 export interface DriverTurnRequest extends DriverProfile {
-	/** Existing conversation/session to resume. Legacy: agy conversation id via
+	/** Existing conversation/session to resume. Stream-json: agy conversation id via
 	 *  `--conversation`. ACP: sessionId via `session/load` (falls back to
 	 *  `session/new` when the server no longer knows it). */
 	conversationId?: string | null;
 	prompt: string;
 	/** Image blocks riding with the prompt. ACP forwards them as typed
 	 *  content blocks (probe 2026-09-03: 64x64 two-tone PNG answered
-	 *  correctly); the legacy CLI prompt is text-only and ignores them. */
+	 *  correctly); the stream-json CLI prompt is text-only and ignores them. */
 	images?: Array<{ data: string; mimeType: string }>;
 	/** ACP only: pi-side context delivered as a native `embeddedContext`
-	 *  resource block instead of inline prompt text (G1 on ACP). Legacy
+	 *  resource block instead of inline prompt text (G1 on ACP). Stream-json
 	 *  embeds the digest in the prompt string and ignores this. */
 	contextBlock?: { uri: string; text: string };
 	signal?: AbortSignal;
@@ -52,7 +52,7 @@ export type AgyUsage = {
 
 export type DriverActivity =
 	| { type: "text"; delta: string }
-	/** Legacy emits a token count only; ACP carries the actual thought text in
+	/** Stream-json emits a token count only; ACP carries the actual thought text in
 	 *  `delta`. The provider renders whichever is present. */
 	| { type: "thought"; tokens?: number; delta?: string }
 	| { type: "tool_start"; stepId?: number; name: string; args: Record<string, unknown> }
@@ -64,7 +64,7 @@ export type DriverActivity =
 			output?: string;
 			durationSeconds?: number;
 			/** ACP only: the server's native edit diff from `tool_call`
-			 *  content[] ({type:"diff", path, oldText?, newText}). Legacy never
+			 *  content[] ({type:"diff", path, oldText?, newText}). Stream-json never
 			 *  sets it; the provider renders it without any git subprocess. */
 			diff?: { path: string; oldText?: string; newText: string };
 	  }
@@ -108,7 +108,7 @@ export interface DriverSnapshot {
 		recycleReasons: Record<string, number>;
 	};
 	lifecycle: string[];
-	/** Present on ACP snapshots; absent on legacy. */
+	/** Present on ACP snapshots; absent on stream-json. */
 	engine?: "acp";
 	acp?: {
 		sessionId?: string;
@@ -133,7 +133,7 @@ export interface DriverSnapshot {
 }
 
 /** The engine contract. Everything above the driver depends on this interface
- *  only; `AgyDriver` and `AcpDriver` both implement it. */
+ *  only; `StreamDriver` and `AcpDriver` both implement it. */
 export interface TurnDriver {
 	readonly state: DriverState;
 	readonly activeHandle: TurnHandle | null;

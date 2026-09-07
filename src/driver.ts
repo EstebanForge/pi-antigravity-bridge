@@ -122,7 +122,7 @@ export function shouldFlipToCumulative(accumulated: string, next: string): boole
 	return accumulated.length >= CUMULATIVE_FLIP_MIN_CHARS && isCumulativeResend(accumulated, next);
 }
 
-export class AgyDriver implements TurnDriver {
+export class StreamDriver implements TurnDriver {
 	#state: DriverState = "idle";
 	#child: ChildProcess | undefined;
 	#generation = 0;

@@ -5,7 +5,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { parseAgyLine, toPiUsage, type AgyUsage } from "../src/stream-events.js";
 import { mapAgyToolToNative } from "../src/native-tools.js";
-import { AgyDriver, type DriverActivity } from "../src/driver.js";
+import { StreamDriver, type DriverActivity } from "../src/driver.js";
 import { ToolRoundTrips, type BridgeCallResultShape } from "../src/provider.js";
 
 test("parser: init carries conversation id", () => {
@@ -70,7 +70,7 @@ test("native mapping: grep/list/find shapes", () => {
 });
 
 test("round-trips: parks, injects bridge_call into the active driver handle, resolves by toolCallId", async () => {
-	const driver = new AgyDriver();
+	const driver = new StreamDriver();
 	const rt = new ToolRoundTrips(driver);
 	// No active turn: onToolCall must fail closed.
 	await assert.rejects(rt.onToolCall("c0", "mem_search", {}, new AbortController().signal),
@@ -87,8 +87,8 @@ test("round-trips: parks, injects bridge_call into the active driver handle, res
 		pushExternal: (a: DriverActivity) => injected.push(a),
 	};
 	// Simulate the driver having an active handle.
-	const origActive = Object.getOwnPropertyDescriptor(AgyDriver.prototype, "activeHandle");
-	Object.defineProperty(AgyDriver.prototype, "activeHandle", {
+	const origActive = Object.getOwnPropertyDescriptor(StreamDriver.prototype, "activeHandle");
+	Object.defineProperty(StreamDriver.prototype, "activeHandle", {
 		configurable: true,
 		get() { return fakeHandle; },
 	});
@@ -110,12 +110,12 @@ test("round-trips: parks, injects bridge_call into the active driver handle, res
 		assert.equal(res.content[0].text, "found it");
 		assert.equal(rt.resolve("c1", "again", false), false);
 	} finally {
-		if (origActive) Object.defineProperty(AgyDriver.prototype, "activeHandle", origActive);
+		if (origActive) Object.defineProperty(StreamDriver.prototype, "activeHandle", origActive);
 	}
 });
 
 test("round-trips: timeout fails closed", async () => {
-	const driver = new AgyDriver();
+	const driver = new StreamDriver();
 	// Shrink the timeout by using a short-lived pending entry via failAll.
 	const rt = new ToolRoundTrips(driver, () => {});
 	const injected: DriverActivity[] = [];
@@ -125,8 +125,8 @@ test("round-trips: timeout fails closed", async () => {
 		next: async () => injected.shift() ?? null,
 		pushExternal: (a: DriverActivity) => injected.push(a),
 	};
-	const origActive = Object.getOwnPropertyDescriptor(AgyDriver.prototype, "activeHandle");
-	Object.defineProperty(AgyDriver.prototype, "activeHandle", {
+	const origActive = Object.getOwnPropertyDescriptor(StreamDriver.prototype, "activeHandle");
+	Object.defineProperty(StreamDriver.prototype, "activeHandle", {
 		configurable: true,
 		get() { return fakeHandle; },
 	});
@@ -135,7 +135,7 @@ test("round-trips: timeout fails closed", async () => {
 		rt.failAll("driver recycled mid-turn");
 		await assert.rejects(p, /driver recycled/);
 	} finally {
-		if (origActive) Object.defineProperty(AgyDriver.prototype, "activeHandle", origActive);
+		if (origActive) Object.defineProperty(StreamDriver.prototype, "activeHandle", origActive);
 	}
 });
 
@@ -184,7 +184,7 @@ function featsWith(rt: ToolRoundTrips, replay: WrapperReplay): ActivityFeatures 
 }
 
 test("consumeActivity: read-only agy tool emits a native pi builtin toolUse and parks", async () => {
-	const driver = new AgyDriver();
+	const driver = new StreamDriver();
 	const rt = new ToolRoundTrips(driver);
 	const replay = new WrapperReplay();
 	const stream = createAssistantMessageEventStream();
@@ -232,7 +232,7 @@ test("consumeActivity: read-only agy tool emits a native pi builtin toolUse and 
 });
 
 test("consumeActivity: mutating tool replays through the antigravity wrapper card", async () => {
-	const driver = new AgyDriver();
+	const driver = new StreamDriver();
 	const rt = new ToolRoundTrips(driver);
 	const replay = new WrapperReplay();
 	const stream = createAssistantMessageEventStream();
@@ -291,7 +291,7 @@ test("consumeActivity: without a replay store, tool steps stay label-only", () =
 });
 
 test("consumeActivity: acp engine renders the native diff in thinking, never parks", async () => {
-	const driver = new AgyDriver();
+	const driver = new StreamDriver();
 	const rt = new ToolRoundTrips(driver);
 	const replay = new WrapperReplay();
 	const stream = createAssistantMessageEventStream();

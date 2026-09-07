@@ -45,7 +45,7 @@ import {
 	formatEscalatedAck,
 	formatPollAnswer,
 } from "../src/provider.js";
-import { AgyDriver } from "../src/driver.js";
+import { StreamDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
@@ -107,7 +107,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const engine: Engine = loadConfig().engine;
 	// Engine switching requires a restart, so the catalog-time engine read is
 	// authoritative for input advertising: image attach rides only when turns
-	// will run on the ACP engine (the legacy CLI prompt is text-only).
+	// will run on the ACP engine (the stream-json CLI prompt is text-only).
 	const modelInput: Array<"text" | "image"> = engine === "acp" ? ["text", "image"] : ["text"];
 	const models = entries.map((e) => toPiModel(e, modelInput));
 
@@ -184,11 +184,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		"session-load-failed-creating-fresh", "connection-exited", "cancel-failed",
 		"unsupported-server-request",
 	]);
-	const legacyDriver = new AgyDriver();
-	// Mirror the legacy driver's lifecycle ring into the daily file log
+	const streamDriver = new StreamDriver();
+	// Mirror the stream driver's lifecycle ring into the daily file log
 	// (spawn/exit/abort/stall/recycle). The ACP driver reaches the same file
 	// through acpLog below.
-	legacyDriver.log = (msg, data) => {
+	streamDriver.log = (msg, data) => {
 		// Level classification mirrors acpLog's failure set: stalls, aborts,
 		// timeouts and nonzero exits are the "what broke" greps (warn);
 		// turn-start is the per-turn skeleton (info); everything else is
@@ -260,7 +260,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			const handle = mcpHandle;
 			if (!handle) return [];
 			// The bridge 403s any request without the shared-secret header; the
-			// legacy engine carries it via mcp_config.json, ACP via headers[].
+			// stream engine carries it via mcp_config.json, ACP via headers[].
 			return [
 				{
 					name: "pi-bridge",
@@ -272,11 +272,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		},
 	});
 	// The active engine is resolved from the latched load-time value.
-	const activeDriver = (): TurnDriver => (engine === "acp" ? acpDriver : legacyDriver);
-	// The provider's stream-json slot gets the LEGACY driver explicitly - never
+	const activeDriver = (): TurnDriver => (engine === "acp" ? acpDriver : streamDriver);
+	// The provider's stream-json slot gets the STREAM driver explicitly - never
 	// activeDriver(), or a load-time acp engine would make deps.driver and
 	// deps.acpDriver the same object and break the engine identity check.
-	const driver = legacyDriver;
+	const driver = streamDriver;
 	// The no-patch pi-tool round-trip store: the MCP bridge parks calls here;
 	// the provider emits them as real pi toolUse turns and completes them from
 	// the next call's toolResult.
@@ -306,7 +306,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		);
 		roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
 	};
-	legacyDriver.onTurnEnd = onTurnEnd;
+	streamDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
 	const streamSimple = createStreamSimple({
 		entries,
@@ -580,7 +580,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// connection now; the next turn respawns it. event.reason is
 		// deliberately ignored: recycle is correct even on real process exit
 		// ("quit") - the connection kill is identical and nothing runs after.
-		await legacyDriver.close("recycle", "session shutdown");
+		await streamDriver.close("recycle", "session shutdown");
 		await acpDriver.close("recycle", "session shutdown");
 	});
 }

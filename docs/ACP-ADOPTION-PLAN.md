@@ -463,7 +463,7 @@ src/acp/connection.ts  process lifecycle: spawn AGY_ACP_BIN, initialize
                        / load / prompt / cancel / set_config_option, client-side
                        method handlers (request_permission policy, fs, terminal),
                        outbound event queue.
-src/acp/driver.ts      AcpDriver: implements the AgyDriver surface (section 9.2)
+src/acp/driver.ts      AcpDriver: implements the StreamDriver surface (section 9.2)
                        so provider.ts keeps working unchanged. State machine,
                        timers, parks, snapshot, close.
 src/acp/events.ts      session/update to DriverActivity mapping + stopReason
@@ -475,7 +475,7 @@ scripts/smoke-acp.mjs  live smoke, gated by AGY_ACP_LIVE=1 (spends quota),
 
 ### 9.2 Driver contract (unchanged surface, additive only)
 
-`AcpDriver` matches the existing `AgyDriver` public surface: `state`,
+`AcpDriver` matches the existing `StreamDriver` public surface: `state`,
 `activeHandle`, `run()`, `reentry()`, `kickIdle()`, `set onTurnEnd()`,
 `snapshot()`, `close()`. `DriverActivity` gains one additive variant; the
 streaming engine never emits it:
@@ -490,7 +490,7 @@ streaming engine never emits it:
 the current token-count behavior. One `if`, additive, streaming untouched.
 
 Interface extraction (review 2, finding 7): `provider.ts` imports the
-concrete `AgyDriver` class today; deleting `driver.ts` in phase 4 would break
+concrete `StreamDriver` class today; deleting `driver.ts` in phase 4 would break
 the import. Phase 1 extracts a `TurnDriver` interface into a neutral module
 (`src/driver-types.ts`); both drivers implement it; `provider.ts` and
 `ToolRoundTrips` depend on the interface only. `/agy engine` changes require

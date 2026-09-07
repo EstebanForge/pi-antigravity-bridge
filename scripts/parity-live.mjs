@@ -11,7 +11,7 @@
 import { execFileSync } from "node:child_process";
 import { AcpDriver } from "../src/acp/driver.js";
 import { resolveAcpBinary } from "../src/acp/connection.js";
-import { AgyDriver } from "../src/driver.js";
+import { StreamDriver } from "../src/driver.js";
 import { startMcpServer, TOKEN_HEADER } from "../src/mcp-server.js";
 
 if (process.env.AGY_ACP_LIVE !== "1") {
@@ -131,7 +131,7 @@ async function parity(driver, tag) {
 	await sleep(3000);
 
 	// 2. multi-turn continuity: thread conversationId like the provider's
-	// session store does (legacy: --conversation resume; ACP: session/load).
+	// session store does (stream-json: --conversation resume; ACP: session/load).
 	const t2 = await runTurn(driver, {
 		prompt: "What exact phrase did I just ask you to reply with? Reply with only that phrase, nothing else.",
 		conversationId: t1.outcome.conversationId,
@@ -151,7 +151,7 @@ async function parity(driver, tag) {
 	ok(
 		"bridge-roundtrip",
 		t3.outcome.status === "OK" &&
-			// legacy surfaces MCP calls under agy's wrapper name (call_mcp_tool);
+			// stream-json surfaces MCP calls under agy's wrapper name (call_mcp_tool);
 			// ACP surfaces the bridge tool's own name.
 			(t3.tools.includes("bridge_echo") || t3.tools.includes("call_mcp_tool")) &&
 			t3.deltas.join("").includes(`ECHO:${ECHO_TOKEN}`),
@@ -159,7 +159,7 @@ async function parity(driver, tag) {
 	);
 	await sleep(3000);
 
-	// 4. effort switch mid-conversation (Gate A: set_config_option / legacy recycle+resume)
+	// 4. effort switch mid-conversation (Gate A: set_config_option / stream-json recycle+resume)
 	const t4 = await runTurn(driver, {
 		prompt: "Reply with exactly: PARITY-SWITCH. No tools.",
 		effort: "high",
@@ -200,8 +200,8 @@ async function parity(driver, tag) {
 
 	ok(
 		"usage-fields",
-		tag === "legacy" ? t1.outcome.usage != null : t1.outcome.usage == null,
-		tag === "legacy" ? "mapped" : "documented-absent (Gate B)",
+		tag === "stream-json" ? t1.outcome.usage != null : t1.outcome.usage == null,
+		tag === "stream-json" ? "mapped" : "documented-absent (Gate B)",
 	);
 
 	return results;
@@ -211,9 +211,9 @@ async function parity(driver, tag) {
 const matrix = {};
 {
 	console.log("[parity] engine: stream-json (agy CLI)");
-	const driver = new AgyDriver();
+	const driver = new StreamDriver();
 	try {
-		matrix["stream-json"] = await parity(driver, "legacy");
+		matrix["stream-json"] = await parity(driver, "stream-json");
 	} finally {
 		await driver.close("shutdown");
 	}
