@@ -75,11 +75,10 @@ The pre-1.3.0 engine (spawn `agy -p`, poll the SQLite conversation DB, decode pr
 
 `config.engine: "acp"` (or `/agy engine acp`) routes turns through Google's
 official ACP server (`agy_acp_server.par`, registry id `antigravity-acp`)
-over JSON-RPC stdio. Off by default; stream-json remains the default and a
-supported secondary. Gate B (absent usage fields) no longer blocks the
-default flip (user decision 2026-09-07, zero-usage documented); the
-secondary's DELETION still waits on upstream usage fields, per
-docs/ACP-ADOPTION-PLAN.md section 17.
+over JSON-RPC stdio. Off by default; stream-json remains the default. BOTH
+engines are permanently maintained peers (standing decision - no deletion,
+regardless of Gate B). Gate B (absent usage fields) is informational:
+zero-usage is documented on ACP. See docs/ACP-ADOPTION-PLAN.md section 17.
 
 Modules: `src/acp/jsonrpc.ts` (framing/correlation), `src/acp/connection.ts`
 (process + protocol methods + in-connection `auto` permission answering),

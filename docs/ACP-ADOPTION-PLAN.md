@@ -46,8 +46,11 @@ Adopt the official Google ACP server (`agy_acp_server.par`, registry id
 `antigravity-acp`) as a second turn engine for the bridge, behind a config
 switch. The existing stream-json engine stays the default until the ACP
 engine proves parity. Every change is an improvement or a one-to-one
-replacement. No functionality is removed until a later phase deletes the
-streaming engine on purpose.
+replacement.
+
+STANDING DECISION (user, 2026-09-07): BOTH engines are permanently
+maintained peers. The streaming engine is never deleted - no phase removes
+it, regardless of upstream progress (including Gate B).
 
 Cross-references: [ARCHITECTURE.md](./ARCHITECTURE.md),
 [PI-BRIDGE-GAPS.md](./PI-BRIDGE-GAPS.md), [DEVELOPMENT.md](./DEVELOPMENT.md).
@@ -165,8 +168,8 @@ is an unmaintained contract. ACP is the maintained one.
 | Module | Role today | Disposition under ACP |
 | --- | --- | --- |
 | `src/provider.ts` | streamSimple: pi Context to agy turn to pi events; G9 round-trips; G1 digest; G10 system prompt | KEEP unchanged (additive thought-delta `if` only). Engine-agnostic by contract |
-| `src/driver.ts` | persistent stream-json process, turn queue, recycle, timers | KEEP as streaming engine. DELETE in phase 4 |
-| `src/stream-events.ts` | NDJSON parser + usage mapping | KEEP as streaming. DELETE in phase 4 |
+| `src/driver.ts` | persistent stream-json process, turn queue, recycle, timers | KEEP permanently - both engines are maintained peers |
+| `src/stream-events.ts` | NDJSON parser + usage mapping | KEEP permanently - both engines are maintained peers |
 | `src/sessions.ts` | pi session to agy conversation store | KEEP. Add `engine` tag (section 9.4) |
 | `src/config.ts` | runtime config | KEEP. Add engine + acp block (section 9.5) |
 | `src/models.ts` | `agy models` to pi Model projection | KEEP. Catalog source stays the CLI until ACP exposes one (probe A.6) |
@@ -200,7 +203,7 @@ in git history.
 | Cancel | Kill process group; in-flight turn dies | `session/cancel` to `stopReason: cancelled`, process survives | **REGRESSION-MANAGED (Gate D FAIL on RC01): cancel NOT implemented.** Fallback kill + `session/load` VERIFIED; re-check per build |
 | Process lifecycle | One agy child per provider; recycle on model/effort/mode/cwd/conversation drift | One server hosts N sessions | IMPROVEMENT |
 | Model + effort selection | CLI flags + recycle | `session/set_config_option` (`configId`) | PASS (VERIFIED live, Gate A): per-session switching, no recycle |
-| Usage tokens | `toPiUsage` from step events | Not in any payload (Gate B FINAL) | **ABSENT on RC01.** Zero-usage documented and ACCEPTED for the flip (user decision 2026-09-07: Gate B no longer blocks the default). stream-json stays a supported secondary engine; its DELETION is still conditioned on Gate B lift |
+| Usage tokens | `toPiUsage` from step events | Not in any payload (Gate B FINAL) | **ABSENT on RC01.** Zero-usage documented and ACCEPTED for the flip (user decision 2026-09-07: Gate B no longer blocks the default). Both engines are permanently maintained - no deletion |
 | MCP tools (G9) | Our HTTP bridge server via `--add-dir` config | `mcpServers` param (`{name,type:"http",url,headers:[]}`) | PARITY at shape level (verified). Phase-1 acceptance: bridge `tools/list`+`tools/call` end-to-end |
 | Skills | `--disable-slash-commands`; bridge owns skills | Unknown slash behavior; `available_commands_update` exists | PARITY. Keep our bridge; probe F.7 |
 | G1 digest, G10 system prompt | Provider-side prompt assembly | Same (we compose the prompt either way) | PARITY. `embeddedContext` is a later enhancement |
@@ -318,7 +321,7 @@ Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Usage tokens absent (CONFIRMED, Gate B) | Cost/token display zeros on ACP | ACCEPTED 2026-09-07 (user decision): Gate B no longer blocks the default flip - zero-usage is documented behavior on ACP. stream-json stays a supported secondary; its deletion still waits on Gate B so zero-usage is never forced on a whole release (review 4, finding 2) |
+| Usage tokens absent (CONFIRMED, Gate B) | Cost/token display zeros on ACP | ACCEPTED 2026-09-07 (user decision): Gate B no longer blocks the default flip - zero-usage is documented behavior on ACP. Both engines are permanently maintained; no deletion (standing decision), so zero-usage is opt-in per user forever (review 4, finding 2, as amended) |
 | ~~No model/effort switch per session~~ RESOLVED: Gate A PASS | — | `session/set_config_option` verified live; per-session switching, no recycle |
 | Slash commands expanded server-side | Could double-expand with our prompt assembly | Probe F.7. If present: keep our prefixes out of command-looking lines, or ignore server command list |
 | `request_permission` with no pi-side permission UI | Cannot render a native dialog | Single `auto` policy (parity with `skipPermissions: true`); per-tool gating for pi tools belongs to the tools/extensions and is preserved end-to-end by G9 (9.3). Never hang |
@@ -490,8 +493,9 @@ streaming engine never emits it:
 the current token-count behavior. One `if`, additive, streaming untouched.
 
 Interface extraction (review 2, finding 7): `provider.ts` imports the
-concrete `StreamDriver` class today; deleting `driver.ts` in phase 4 would break
-the import. Phase 1 extracts a `TurnDriver` interface into a neutral module
+concrete `StreamDriver` class today; without a neutral type the two engine
+wirings would each drag the other's module in. Phase 1 extracts a
+`TurnDriver` interface into a neutral module
 (`src/driver-types.ts`); both drivers implement it; `provider.ts` and
 `ToolRoundTrips` depend on the interface only. `/agy engine` changes require
 a pi restart (driver wiring happens at extension load); a live engine router
@@ -771,21 +775,22 @@ Acceptance: parity suite remains 14/14, doctor parity, no breakage to stream-jso
 
 Status: 🚧 Phase 3 remaining items are COMPLETE (2026-09-04): 168/168 tests,
 tsc clean, live parity 14/14, embeddedContext verified live (resource block
-with a secret word answered correctly). Remaining phase-3 acceptance:
-deleted-code census lands with phase 4's deletions (nothing deletes in
-phase 3 — the streaming modules stay for the `stream-json` engine).
+with a secret word answered correctly). Phase-3 acceptance: nothing deletes
+in phase 3 — the streaming modules stay (permanently, see the standing
+decision at the top and Phase 4).
 
-### Phase 4: default flip and streaming deletion (deferred, next month)
+### Phase 4: default flip (deferred)
 
 All items below are deferred until a full soak cycle of both engines has completed and upstream conditions are met:
 
 1. AskAntigravity migration to ACP one-shot (migrating while `stream-json` is default breaks streaming-only users who haven't onboarded ACP auth; streaming conversation ids cannot resume under ACP). `mode: "plan"` delegations keep the `agy -p --mode plan` path (committed exception).
 2. Delete `src/discovery.ts` (`/proc` fd-scan) once AskAntigravity migration completes.
 3. Default flip: `config.engine` default becomes `"acp"` after one full release soak cycle with both engines shipping. Gate A PASS is verified. Gate B is NOT a precondition (lifted as a blocker 2026-09-07); the soft items in section 17 ship in the same release.
-4. Upstream Gate B resolution (optional, informational): Google ships usage counters in ACP payloads. The `/agy doctor` watch reports it when it happens.
-5. Streaming engine deletion: `src/driver.ts`, `src/stream-events.ts`, and streaming tests deleted one release after the flip AND only once Gate B has lifted (so zero-usage is never forced).
+4. Upstream Gate B resolution (optional, informational): Google ships usage counters in ACP payloads. The `/agy doctor` watch reports it when it happens. Mapping it in is a small additive job; the streaming engine stays regardless.
 
-Acceptance: default-flip release ships with the parity suite as acceptance evidence; deletion release has zero references to the removed modules.
+NO deletion phase: the streaming engine is a permanently maintained peer (standing user decision, 2026-09-07). The old phase-4 "streaming deletion" item is void.
+
+Acceptance: the default-flip release ships with the parity suite as acceptance evidence.
 
 ## 11. Test strategy
 
@@ -906,11 +911,13 @@ Former blocker — Gate B, LIFTED 2026-09-07:
   runs on subscription quota and cost is zero regardless, so the display
   gap is cosmetic for this extension. Zero-usage on ACP is documented
   behavior.
+- Both engines are PERMANENTLY maintained (standing user decision
+  2026-09-07): no deletion phase exists, regardless of Gate B. stream-json
+  is the supported fallback/secondary forever; zero-usage is opt-in per
+  user by choosing the engine.
 - The `/agy doctor` Gate B watch stays armed as INFORMATIONAL: it prints
   "acp tokens: AVAILABLE" if upstream ever ships usage, at which point the
-  mapping is a small job and stream-json deletion can proceed.
-- Stream-json remains a supported secondary engine; its DELETION (phase 4
-  step 5) still waits on Gate B so zero-usage is never forced.
+  mapping is a small additive job.
 
 Soft items to ship alongside the flip (not blockers):
 

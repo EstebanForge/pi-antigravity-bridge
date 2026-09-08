@@ -54,7 +54,7 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
 
 ## NOTES
 *   **Two engines**: default `stream-json` (persistent `agy` CLI process); `acp` (beta) opt-in via `config.engine` / `AGY_ENGINE` / `/agy engine acp` (requires restart). Both implement `TurnDriver`; the provider layer (G1 digest, G10 system prompt, G9 round-trips) is shared.
-*   **ACP limitations (RC01)**: no usage fields (Gate B — zero-usage accepted on ACP; no longer blocks the default flip, though stream-json deletion still waits on it), no `session/cancel` (Gate D teardown+reload abort), no review-only mode (modes are permission modes only; plan delegations keep `agy -p --mode plan`).
+*   **ACP limitations (RC01)**: no usage fields (Gate B — zero-usage accepted on ACP; informational only, never a blocker; both engines are permanently maintained peers), no `session/cancel` (Gate D teardown+reload abort), no review-only mode (modes are permission modes only; plan delegations keep `agy -p --mode plan`).
 *   **ACP-only features**: pi image attachments ride as typed content blocks; the G1 digest ships as an `embeddedContext` resource block; edit diffs from `tool_call content[]` render in the thinking stream with no git subprocesses (native re-exec and wrapper replay are retired on ACP turns).
 *   **Sessions**: engine-scoped keys (`sid:<x>` streaming, `sid:<x>@acp`) — engine switches never cross conversations and rollback preserves both bindings.
 *   **Architecture**: The MCP tool bridge runs with no pi patch: bridge calls park in the provider's round-trip store and re-enter pi as real `toolUse` turns (native cards, permissions, hooks). The pre-1.3.0 spawn-and-poll SQLite engine was removed in 1.3.2 (issue #1).
