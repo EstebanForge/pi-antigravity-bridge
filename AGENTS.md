@@ -13,6 +13,10 @@ Stack: **TypeScript / Node.js (ESNext / ES2022, ESM module)** targeting Node.js 
     *   `acp/driver.ts`: `AcpDriver`: serialized turns, remaining-budget timer pause on parks, Gate D abort (cancel probe → -32601 → teardown+kill+reload), connection-scoped exit handling, engine-scoped snapshots (reconnects, agentInfo, cancelSupported).
     *   `native-tools.ts`: Stream-json only: maps agy read-only tool steps onto real pi builtins (`read`/`ls`/`grep`/`find`) for native re-execution. Not used on ACP turns (Gate C).
     *   `skills.ts`: `activate_skill` bridge exposing the pi Agent Skills catalog to agy, answered by the bridge directly.
+*   `approval-gate.ts`: Shadow tool factory (bash/write/edit) for the approval gate. Marker calls (`__agyGate`) are approval round-trips: ticket-verified, never executed locally; non-marker calls delegate to factory twins of the real builtins. Also maps agy native tool names onto the shadow surface.
+*   `approval-detect.ts`: Third-party pi permission-extension detection (settings packages name-match + config markers) and `approvals.gateMode: auto` resolution (shadow only when a gate extension exists).
+*   `approval-hook.ts`: Merge-safe `.agents/hooks.json` staging (PreToolUse, matcher = agy mutating tools) plus the generated early-ack + poll hook script; staged timeout exceeds the park budget because hook timeouts soft-pass upstream.
+*   `mcp-registration.ts`: Registers/unregisters the bridge in `~/.gemini/config/mcp_config.json` for the stream-json CLI (per-pid entries, atomic writes, stale sweep).
     *   `patch-cleanup.ts`: Detects a leftover invokeTool patch from pre-1.3.0 installs; `/agy patch-cleanup` restores the original files from backup.
     *   `discovery.ts`: Conversation-id binding for the AskAntigravity one-shot tool (snapshot/diff + pid fd-scan; `agy -p` never prints the id). Scheduled for deletion in phase 4.
     *   `ask-tool.ts`: The `AskAntigravity` one-shot delegation tool (model/thinking defaults). Stays on `agy -p` until phase 4; `mode: "plan"` keeps that path permanently (ACP has no review-only mode).

@@ -24,6 +24,11 @@ export const HOOK_GROUP = "pi-bridge-gate";
 export const GATED_AGY_TOOLS =
 	"create_file|write_to_file|replace_file_content|multi_replace_file_content|edit_file|run_command";
 
+/** The same list as a set, for the bridge's POST /approval validation: a
+ *  payload for anything else is answered with a direct deny (defense in
+ *  depth - the hooks matcher should never let one through). */
+export const GATED_AGY_TOOL_SET: ReadonlySet<string> = new Set(GATED_AGY_TOOLS.split("|"));
+
 export interface StageOptions {
 	/** Bridge HTTP port (the approval endpoints live on the bridge server). */
 	port: number;
@@ -58,6 +63,11 @@ try {
 		body,
 	});
 	const json = await res.json();
+	// Ungated payloads get a terminal decision right on the POST (no park).
+	if (json && typeof json === "object" && "decision" in json) {
+		console.log(JSON.stringify(json.decision));
+		process.exit(0);
+	}
 	ticket = json.ticket ?? "";
 } catch {}
 if (!ticket) {

@@ -31,6 +31,7 @@ import {
 	LATEST_PROTOCOL_VERSION,
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
+import { GATED_AGY_TOOL_SET } from "./approval-hook.js";
 
 /** Tools we do NOT expose to agy: it would just error (the provider is already
  *  antigravity, so the tool's own guard refuses; advertising it is noise). */
@@ -43,11 +44,44 @@ const BRIDGE_MCP_KEY = "pi-antigravity-bridge";
 export const TOKEN_HEADER = "x-bridge-token";
 const MAX_BODY_BYTES = 1_000_000;
 
+// --- approval gate (docs/TODO.md 2.5) ---------------------------------------
+
+/** stdin JSON of a PreToolUse hook, forwarded verbatim by the bundled poll
+ *  script. Only toolCall is load-bearing here. */
+export interface ApprovalPayload {
+	toolCall: { name: string; args: Record<string, unknown> };
+	stepIdx?: number;
+	conversationId?: string;
+	[key: string]: unknown;
+}
+
+/** Terminal decision for a parked approval (mirrors GateDecision from
+ *  approval-gate.ts; deny MUST carry a reason - it is the only feedback
+ *  agy's model gets, see V2). */
+export type ApprovalDecision = { allow: true } | { allow: false; reason: string };
+
+/** Provider-facing park controls: ticket verification for the shadow tools'
+ *  marker calls, and completion when pi's tool result maps to a decision. */
+export interface ApprovalParkApi {
+	/** True while the ticket is still parked (unanswered, unexpired). */
+	has(ticket: string): boolean;
+	/** Settle a ticket. False when the id is unknown or already terminal. */
+	resolve(ticket: string, decision: ApprovalDecision): boolean;
+}
+
+/** Human-decision latency budget for one parked approval. The staged hook
+ *  timeout (approval-hook.stagedTimeoutSeconds) exceeds this with margin:
+ *  a timed-out hook soft-passes (V3), so the park must time out FIRST and
+ *  print a deny. Mirrors the G9 park budget. */
+export const APPROVAL_PARK_TIMEOUT_MS = 480_000;
+
 export interface McpServerHandle {
 	port: number;
 	/** Shared secret for TOKEN_HEADER. Callers that register the bridge with
 	 *  an engine other than the stream-json discovery file need it. */
 	token: string;
+	/** Approval-gate park controls (docs/TODO.md 2.5). */
+	approvals: ApprovalParkApi;
 	close: () => Promise<void>;
 }
 
@@ -72,6 +106,11 @@ export interface McpBridgeDeps {
 		args: Record<string, unknown>,
 		signal: AbortSignal,
 	): Promise<import("./provider.js").BridgeCallResultShape>;
+	/** Approval gate: called once per parked POST /approval, right after the
+	 *  early-ack. The provider interrupts the pi-side view of the agy turn and
+	 *  emits the shadow toolUse; the decision returns via approvals.resolve.
+	 *  Optional: absent = every approval POST is denied directly (fail closed). */
+	onApproval?(ticket: string, payload: ApprovalPayload): void;
 }
 
 /** Clamp an unsupported MCP-Protocol-Version header down to the SDK's LATEST.
@@ -244,9 +283,15 @@ export function registerExitCleanup(
 
 export async function startMcpServer(
 	deps: McpBridgeDeps,
-	opts: { preferredPort?: number; log?: (s: string, d?: unknown) => void } = {},
+	opts: {
+		preferredPort?: number;
+		log?: (s: string, d?: unknown) => void;
+		/** Test override for the per-park timeout (deny, fail closed). */
+		approvalTimeoutMs?: number;
+	} = {},
 ): Promise<McpStartResult> {
 	const log = opts.log ?? (() => {});
+	const approvalTimeoutMs = opts.approvalTimeoutMs ?? APPROVAL_PARK_TIMEOUT_MS;
 
 	const listHandler = async () => {
 		const tools = deps.listTools();
@@ -300,6 +345,136 @@ export async function startMcpServer(
 	const token = crypto.randomUUID();
 	sweepStaleBridgeDirs();
 
+	// --- approval park (docs/TODO.md 2.5) ------------------------------------
+	// Ticket -> parked approval. A settled ticket STAYS in the map until its
+	// terminal decision is delivered to a poll, so the hook never 404s on the
+	// answer; an unknown/expired ticket 404s and the hook fails closed.
+	const parks = new Map<
+		string,
+		{ name: string; since: number; timer: NodeJS.Timeout; terminal?: ApprovalDecision }
+	>();
+	const settlePark = (ticket: string, decision: ApprovalDecision): boolean => {
+		const p = parks.get(ticket);
+		if (!p || p.terminal) return false;
+		p.terminal = decision;
+		clearTimeout(p.timer);
+		return true;
+	};
+	const approvalsApi: ApprovalParkApi = {
+		has: (ticket) => {
+			const p = parks.get(ticket);
+			return p !== undefined && p.terminal === undefined;
+		},
+		resolve: (ticket, decision) => settlePark(ticket, decision),
+	};
+	const decisionBody = (d: ApprovalDecision): string =>
+		d.allow ? JSON.stringify({ decision: "allow" }) : JSON.stringify({ decision: "deny", reason: d.reason });
+	const denyDirect = (res: http.ServerResponse, reason: string): void => {
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(decisionBody({ allow: false, reason }));
+	};
+	const tokenOk = (req: http.IncomingMessage): boolean => {
+		const received = req.headers[TOKEN_HEADER];
+		return (
+			typeof received === "string" &&
+			received.length === token.length &&
+			crypto.timingSafeEqual(Buffer.from(received), Buffer.from(token))
+		);
+	};
+	const readBody = async (req: http.IncomingMessage): Promise<string | null> => {
+		let body = "";
+		let bytes = 0;
+		for await (const chunk of req) {
+			body += chunk;
+			bytes += chunk.length;
+			if (bytes > MAX_BODY_BYTES) return null;
+		}
+		return body;
+	};
+	const approvalRoute = async (
+		req: http.IncomingMessage,
+		res: http.ServerResponse,
+		route: string,
+	): Promise<void> => {
+		if (!tokenOk(req)) {
+			log("unauthorized", { url: req.url });
+			res.writeHead(403, { "content-type": "application/json" }).end('{"error":"forbidden"}');
+			return;
+		}
+		if (req.method === "POST" && route === "/approval") {
+			const body = await readBody(req);
+			if (body === null) {
+				res.writeHead(413, { "content-type": "application/json", connection: "close" }).end('{"error":"payload too large"}');
+				return;
+			}
+			let payload: ApprovalPayload;
+			try {
+				const parsed = JSON.parse(body) as ApprovalPayload;
+				const name = parsed?.toolCall?.name;
+				if (typeof name !== "string" || name.length === 0) throw new Error("no toolCall.name");
+				if (!parsed.toolCall.args || typeof parsed.toolCall.args !== "object") {
+					parsed.toolCall.args = {};
+				}
+				payload = parsed;
+			} catch {
+				res.writeHead(400, { "content-type": "application/json" }).end('{"error":"invalid payload"}');
+				return;
+			}
+			// Defense in depth: the hooks matcher should never let an ungated
+			// tool through; deny directly instead of parking.
+			if (!GATED_AGY_TOOL_SET.has(payload.toolCall.name)) {
+				log("approval-ungated", { name: payload.toolCall.name });
+				denyDirect(res, `tool ${payload.toolCall.name} is not in the approval matcher set`);
+				return;
+			}
+			if (typeof deps.onApproval !== "function") {
+				log("approval-unwired", { name: payload.toolCall.name });
+				denyDirect(res, "approval gate is not wired; denying");
+				return;
+			}
+			const ticket = crypto.randomUUID();
+			const timer = setTimeout(() => {
+				// Fail closed FIRST: the staged hook timeout is longer than this
+				// park budget (V3: a hook outliving its timeout soft-passes, so the
+				// park must answer the deny before the hook is killed).
+				settlePark(ticket, { allow: false, reason: `approval gate timed out after ${Math.round(approvalTimeoutMs / 1000)}s` });
+				log("approval-timeout", { ticket, name: payload.toolCall.name });
+			}, approvalTimeoutMs);
+			parks.set(ticket, { name: payload.toolCall.name, since: Date.now(), timer });
+			log("approval-parked", { ticket, name: payload.toolCall.name });
+			try {
+				deps.onApproval(ticket, payload);
+			} catch (e) {
+				// A throwing provider must never hang the hook: settle deny now.
+				log("approval-onapproval-fail", { ticket, msg: e instanceof Error ? e.message : String(e) });
+				settlePark(ticket, { allow: false, reason: "approval gate internal error" });
+			}
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ ticket }));
+			return;
+		}
+		if (req.method === "GET" && route.startsWith("/approval/")) {
+			const ticket = decodeURIComponent(route.slice("/approval/".length));
+			const p = parks.get(ticket);
+			if (!p) {
+				// Unknown or already delivered: the hook fails closed on a 404.
+				res.writeHead(404, { "content-type": "application/json" }).end('{"error":"unknown ticket"}');
+				return;
+			}
+			if (p.terminal) {
+				parks.delete(ticket); // delivered; a repeat poll 404s (fail closed)
+				log("approval-delivered", { ticket, name: p.name });
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(decisionBody(p.terminal));
+				return;
+			}
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ status: "pending" }));
+			return;
+		}
+		res.writeHead(405).end();
+	};
+
 	return new Promise<McpStartResult>((resolve) => {
 		const httpServer = http.createServer(async (req, res) => {
 			// #1: a client-side stream error must never crash pi.
@@ -317,18 +492,18 @@ export async function startMcpServer(
 					res.writeHead(404, { "content-type": "application/json" }).end('{"error":"not found"}');
 					return;
 				}
+				const route = (req.url ?? "").split("?")[0];
+				if (route === "/approval" || route.startsWith("/approval/")) {
+					await approvalRoute(req, res, route);
+					return;
+				}
 				if (req.method !== "POST") {
 					res.writeHead(405).end();
 					return;
 				}
 				// #3: require the shared-secret header. Constant-time compare so a
 				// timing oracle can't recover the token byte-by-byte.
-				const received = req.headers[TOKEN_HEADER];
-				if (
-					typeof received !== "string" ||
-					received.length !== token.length ||
-					!crypto.timingSafeEqual(Buffer.from(received), Buffer.from(token))
-				) {
+				if (!tokenOk(req)) {
 					log("unauthorized", { url: req.url });
 					res.writeHead(403, { "content-type": "application/json" }).end('{"error":"forbidden"}');
 					return;
@@ -424,7 +599,14 @@ export async function startMcpServer(
 				handle: {
 					port,
 					token,
+					approvals: approvalsApi,
 					close: async () => {
+						// Pending approvals fail closed on shutdown: the hook gets a
+						// terminal deny instead of a 404 on its next poll.
+						for (const [ticket, p] of [...parks]) {
+							if (p.terminal) continue;
+							settlePark(ticket, { allow: false, reason: "approval gate bridge shut down" });
+						}
 						await new Promise<void>((r) => httpServer.close(() => r()));
 						removeBridgeMcpConfig();
 						disposeExitCleanup();

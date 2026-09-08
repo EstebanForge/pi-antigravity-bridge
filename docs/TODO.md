@@ -4,17 +4,20 @@ Pending work, two streams. Evidence dates: 2026-09-05 (stream-json thread), 2026
 
 ## State (handoff, end of session 2026-09-07)
 
-- Registration work committed as `f7f001d` and pushed. Stream 1 is DONE:
-  the stream-json image gate is widened (tool results carry image blocks on
-  both engines) after a live transport probe (see 1.3), all committed in
-  this session's image commit. Naming convention is BINDING: the two
-  engines are the **stream(-json) driver** (class `StreamDriver`,
-  src/driver.ts) and the **ACP driver** (`AcpDriver`, src/acp/driver.ts).
-  "legacy" refers only to the deleted pre-1.3.2 patch-based/sqlite engine.
+- Registration work committed as `f7f001d` and pushed; stream 1 (stream-json
+  images) done in `2ed9318`. Section 2 wiring landed in this session's
+  approval-gate commit: endpoints, provider park, extension registration,
+  tests, README. Naming convention is BINDING: the two engines are the
+  **stream(-json) driver** (class `StreamDriver`, src/driver.ts) and the
+  **ACP driver** (`AcpDriver`, src/acp/driver.ts). "legacy" refers only to
+  the deleted pre-1.3.2 patch-based/sqlite engine.
 - Probe artifacts live outside the repo: `~/tmp/pi-antigravity-bridge-probes/`
   (run scripts via `npx tsx` from the repo cwd - they import src/*.ts).
   Findings also mirrored in agentmemory.
-- Next: section 2 remaining items (approval-gate wiring, 2.8).
+- Next: live verification of the gate end-to-end (enable with a test gate
+  extension, run an agy turn that mutates a file, watch the round-trip),
+  then the explicit `antigravity_approve` variant for dedicated mode if
+  wanted.
 
 ## 1. Stream-json engine: bridge tools registration regression
 
@@ -49,7 +52,9 @@ Operational gotchas for any live stream-json probe (learned 2026-09-07): `--prin
 
 ## 2. Approval gate bridge: pi permissions over agy native tools
 
-**Status: designed, not implemented.** This section is a cold-start specification. A future agent with no prior context should be able to implement from it. Two load-bearing verifications must run before coding the deny path (see 2.8).
+**Status: DONE (wired, unit-pinned; live end-to-end still pending).** This
+section is a cold-start specification. Two load-bearing verifications ran
+before the deny path was coded (see 2.8).
 
 ### 2.1 Background: why this work exists
 
@@ -218,12 +223,13 @@ Implementation:
 - [x] `src/config.ts`: `approvals: {gateMode: "auto|shadow|dedicated|off" (default auto), mode: "ask|allow|deny" (default ask)}`, env `AGY_APPROVALS` / `AGY_APPROVALS_MODE`. Pinned.
 - [x] `src/approval-detect.ts`: `detectPermissionGateExtensions` (settings packages name-match + audited config-file markers) + `resolveGateMode` (auto -> shadow on detection, else off). Pinned.
 - [x] `src/approval-hook.ts`: merge-safe `stageGateHooks`/`removeGateHooks` (foreign groups preserved, backup on first foreign modification, refuse unparseable), `buildGateGroup` (matcher = agy mutating tools, staged timeout = park budget + 60s margin, min 60s), `hookScriptSource` (POST /approval early-ack + poll, fail-closed prints on unreachable/deadline). Pinned.
-- [ ] `POST /approval` + `GET /approval/<id>` in `src/mcp-server.ts` (token auth, ticket park, early-ack). Wire alongside the G9 park store. Peer review 2026-09-07 additions, REQUIRED: (a) ticket binding - the shadow factory must verify `__agyTicket` against the bridge's pending set (HMAC or registry lookup); an unrecognized ticket denies. A model-set `__agyGate:true` must never produce a fake-approved result. (b) the round-trip composer must STRIP incoming `__agy*` fields from real agy tool-call args before building a G9 toolUse. (c) the generated script file must be written 0600 (the token is embedded in it).
-- [ ] Provider wiring: parked approval -> interrupt agy turn -> toolUse for the SHADOW tool -> tool result -> park completion (mirror the G9 round-trip plumbing in `src/provider.ts`: escalation registry, budget pause on `AcpDriver`, late-delivery tombstones).
-- [ ] Extension registration: capture real builtins via `pi.getAllTools()`, `pi.registerTool(createShadowTool(...))` for bash/write/edit when `resolveGateMode(...) !== "off"`; call `stageGateHooks` per session workspace; `removeGateHooks` on disable. Policy implementation: ask -> `ctx.ui.confirm` guarded by `ctx.hasUI`; headless deny.
-- [ ] `daily-log.ts` audit entries (2.7).
-- [ ] Tests on the fake ACP server harness (`tests/helpers/fake-acp-server.mjs`): PreToolUse-shaped frames, park/toolUse/decision round-trip, extension-block path, timeout-deny path.
-- [ ] Docs: README user section + sample gate extension snippet (2.5).
+- [x] `POST /approval` + `GET /approval/<id>` in `src/mcp-server.ts` (token auth, ticket park, early-ack). Peer review additions REQUIRED and DONE: (a) ticket binding - the shadow factory takes `verifyTicket`; a marker call whose `__agyTicket` is missing or unknown throws BEFORE the policy runs, so a model-set `__agyGate:true` can never produce a fake-approved result even under mode `allow`. (b) the G9 composer strips `__agy*` from real agy tool-call args (`stripMarkerFields` at the pushExternal site). (c) the generated script file is written 0600 (token embedded).
+- [x] Provider wiring: parked approval -> interrupt agy turn -> toolUse for the SHADOW tool -> tool result -> park completion. Reuses the `bridge_call` pushExternal mechanism, so both drivers pause their turn timers for free; the park is wired only after shadow registration (an approval toolUse can never dispatch to the real builtin); park timeout and `failAll` deny fail-closed; audit events `approval-parked` / `approval-decision` / `approval-timeout` / `approval-late` carry decision, source, and latency (2.7).
+- [x] Extension registration: shadow bases are FACTORY TWINS from pi's public `createBashToolDefinition` / `createWriteToolDefinition` / `createEditToolDefinition` - NOT `pi.getAllTools()`, which returns ToolInfo (no execute). `stageGateHooks` per session workspace, script 0600 in the logs dir, `removeGateHooks` on gate-off and on session_shutdown. Policy: ask -> `ctx.ui.confirm` (timeout = park budget) guarded by `ctx.hasUI`; headless deny. `dedicated` currently stages shadow tools (warn-logged remap; explicit `antigravity_approve` variant is planned).
+- [x] Tests (14 new in `tests/approval-park.test.ts` + 6 in `approval-gate.test.ts`): endpoint flow (park/early-ack, poll pending -> terminal, delivered-then-404, timeout deny, 403, invalid payload, ungated direct deny, unwired deny, close fail-closed), map pins for the gated set, forged/stale ticket pins, provider round-trip (allow, block -> deny with text, timeout deny, ungated deny, `__agy*` strip on G9 args, failAll deny).
+- [x] Docs: README "Approval gate" section with config + sample gate extension snippet (2.5).
+
+Design deviation worth remembering: the V1 note "capture real definitions via pi.getAllTools()" is impossible - it returns `Pick<ToolDefinition, name|description|parameters|promptGuidelines>` at runtime too (agent-session.js getAllTools maps to a narrow object). Delegation uses the factory twins instead.
 
 ### 2.9 Artifacts and references (2026-09-07 session)
 

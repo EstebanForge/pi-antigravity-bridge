@@ -81,9 +81,71 @@ export function stripMarkerFields(params: Record<string, unknown>): Record<strin
 	return out;
 }
 
-/** Build the shadow definition for one builtin. `base` MUST be the real
- *  builtin's definition (captured before any shadow registration). */
-export function createShadowTool(base: AnyToolDefinition, policy: GatePolicy): AnyToolDefinition {
+export interface ShadowMapping {
+	shadow: "bash" | "write" | "edit";
+	input: Record<string, unknown>;
+}
+
+/** Map an agy native tool call (hook stdin payload) onto the shadow surface.
+ *  Field names follow the TODO 2.5 table: create_file is live-captured (F1);
+ *  the edit-class arg names are docs-attested and degrade gracefully - a
+ *  wrong guess only weakens the confirm-dialog text, never the decision
+ *  (the tool runs in agy's loop either way). Unknown names return null:
+ *  read-only tools are not gated. */
+export function mapNativeToShadow(name: string, args: Record<string, unknown>): ShadowMapping | null {
+	const a = args ?? {};
+	const str = (v: unknown): string => (typeof v === "string" ? v : v === undefined || v === null ? "" : String(v));
+	switch (name) {
+		case "run_command": {
+			const input: Record<string, unknown> = { command: str(a.CommandLine) };
+			if (a.Cwd !== undefined && a.Cwd !== null && a.Cwd !== "") input.cwd = str(a.Cwd);
+			return { shadow: "bash", input };
+		}
+		case "write_to_file":
+		case "create_file":
+			return { shadow: "write", input: { path: str(a.TargetFile), content: str(a.CodeContent) } };
+		case "replace_file_content":
+		case "edit_file":
+			return {
+				shadow: "edit",
+				input: {
+					path: str(a.TargetFile),
+					edits: [{ oldText: str(a.SearchText), newText: str(a.ReplacementContent) }],
+				},
+			};
+		case "multi_replace_file_content": {
+			const chunks = Array.isArray(a.ReplacementChunks) ? a.ReplacementChunks : [];
+			return {
+				shadow: "edit",
+				input: {
+					path: str(a.TargetFile),
+					edits: chunks.map((c) => {
+						const chunk = (c ?? {}) as Record<string, unknown>;
+						return { oldText: str(chunk.SearchText), newText: str(chunk.ReplacementContent) };
+					}),
+				},
+			};
+		}
+		default:
+			return null;
+	}
+}
+
+/** Options for the shadow factory. */
+export interface ShadowOptions {
+	/** Registry lookup for the park's ticket. When set, a marker call whose
+	 *  __agyTicket is missing or unrecognized throws (deny) BEFORE the policy
+	 *  runs: a model that sets __agyGate:true itself can then never produce a
+	 *  fake-approved result, even under approvals.mode "allow". */
+	verifyTicket?: (ticket: string) => boolean;
+}
+
+/** Build the shadow definition for one builtin. `base` MUST be a definition
+ *  of the real builtin - the extension passes factory twins created with
+ *  pi's public createBashToolDefinition/createWriteToolDefinition/
+ *  createEditToolDefinition (pi.getAllTools() returns ToolInfo, which strips
+ *  execute, so the live definition cannot be captured). */
+export function createShadowTool(base: AnyToolDefinition, policy: GatePolicy, opts: ShadowOptions = {}): AnyToolDefinition {
 	const execute = async (
 		toolCallId: string,
 		params: any,
@@ -96,6 +158,16 @@ export function createShadowTool(base: AnyToolDefinition, policy: GatePolicy): A
 			return base.execute(toolCallId, stripMarkerFields(p), signal, onUpdate, ctx);
 		}
 		const native = typeof p.__agyTool === "string" && p.__agyTool.length > 0 ? p.__agyTool : base.name;
+		// Ticket binding (peer review 2026-09-07): only calls the provider parked
+		// carry a live ticket. Anything else with the marker set was forged by
+		// the model (or the park is gone); fail closed without consulting the
+		// policy, so approvals.mode "allow" can never bless it either.
+		const ticket = typeof p.__agyTicket === "string" ? p.__agyTicket : "";
+		if (!ticket || !opts.verifyTicket?.(ticket)) {
+			throw new Error(
+				`approval gate: unrecognized or stale approval ticket; refusing to decide (${native}).`,
+			);
+		}
 		if (signal?.aborted) {
 			throw new Error(`approval gate aborted before a decision was reached (${native}).`);
 		}

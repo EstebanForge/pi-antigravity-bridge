@@ -36,6 +36,8 @@ import { mapAgyToolToNative } from "./native-tools.js";
 import { type AgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
+import { GATE_MARKER, mapNativeToShadow, stripMarkerFields } from "./approval-gate.js";
+import type { ApprovalDecision, ApprovalPayload, ApprovalParkApi } from "./mcp-server.js";
 import path from "node:path";
 import { TurnDiffContext, createExecGitOps, formatInlineDiff, parseEditToolInput } from "./diff-render.js";
 
@@ -426,6 +428,11 @@ export const ESCALATE_AFTER_MS = 20_000;
 /** Escalated parks carry a longer TTL: human-gated tools (commit previews,
  *  permission dialogs) legitimately block for many minutes. */
 export const ESCALATED_TIMEOUT_MS = 1_800_000;
+/** Human-decision budget for one parked approval (docs/TODO.md 2.5). Same
+ *  envelope as the G9 park; the staged hook timeout exceeds it with margin
+ *  (approval-hook.stagedTimeoutSeconds). Exported: the extension needs the
+ *  same number for hooks.json staging and the hook script deadline. */
+export const APPROVAL_PARK_MS = BRIDGE_TIMEOUT_MS;
 
 export interface PollView {
 	state: "running" | "done" | "failed";
@@ -528,9 +535,15 @@ export function formatPollAnswer(callId: string, view: PollView | undefined): Br
 interface PendingRoundTrip {
 	/** "bridge": parked MCP HTTP call; resolve() completes it.
 	 *  "rt": native re-exec / wrapper round-trip; pi already executed, the
-	 *  toolResult only confirms continuation, nothing remote to settle. */
-	kind: "bridge" | "rt";
+	 *  toolResult only confirms continuation, nothing remote to settle.
+	 *  "approval": parked approval gate decision; resolve() maps the shadow
+	 *  tool result to allow/deny and completes the /approval ticket. */
+	kind: "bridge" | "rt" | "approval";
 	name: string;
+	/** Approval entries only: the agy native tool this decision is for. */
+	nativeName?: string;
+	/** Approval entries only: park start, for the latency audit field. */
+	started?: number;
 	resolve?: (r: BridgeCallResultShape | BridgeEscalation) => void;
 	reject?: (e: Error) => void;
 	timer?: NodeJS.Timeout;
@@ -575,13 +588,17 @@ export class ToolRoundTrips {
 	#escalations = new EscalationRegistry();
 	#escalateAfterMs: number;
 	#getDriver: () => TurnDriver;
-	#log: (s: string, d?: unknown) => void;
+	#log: (s: string, d?: unknown, level?: "debug" | "info" | "warn" | "error") => void;
+	/** Approval park controls (mcp-server handle). Assigned by the extension
+	 *  only after at least one shadow tool is registered, so an approval
+	 *  toolUse can never dispatch to the REAL builtin and execute locally. */
+	#approvalPark?: ApprovalParkApi;
 
 	/** Accepts a driver or a getter: with two engines wired, the ACTIVE driver
 	 *  is resolved at call time from config (plan §9.5). */
 	constructor(
 		driver: TurnDriver | (() => TurnDriver),
-		log?: (s: string, d?: unknown) => void,
+		log?: (s: string, d?: unknown, level?: "debug" | "info" | "warn" | "error") => void,
 		opts: { escalateAfterMs?: number } = {},
 	) {
 		this.#getDriver = typeof driver === "function" ? driver : () => driver;
@@ -612,6 +629,79 @@ export class ToolRoundTrips {
 		return this.#escalations.poll(callId);
 	}
 
+	/** Wire the approval park (mcp-server handle.approvals). The extension
+	 *  assigns this AFTER the shadow tools are registered; see onApproval. */
+	set approvalPark(api: ApprovalParkApi | undefined) {
+		this.#approvalPark = api;
+	}
+
+	/** Approval gate (docs/TODO.md 2.5): a PreToolUse hook parked a native agy
+	 *  tool call. Interrupt the pi-side view of the still-running agy turn
+	 *  with a toolUse for the SHADOW tool (same bridge_call mechanism as G9,
+	 *  so both drivers pause their turn timers); pi's permission extensions
+	 *  gate it, the shadow execute() consults the fallback policy, and the
+	 *  arriving toolResult maps to the terminal decision (resolve()).
+	 *  Every failure path denies fail-closed: an approval must never be
+	 *  granted by accident. */
+	onApproval(ticket: string, payload: ApprovalPayload): void {
+		const deny = (reason: string): void => {
+			this.#log("approval-denied-pre-park", { ticket, reason });
+			this.#approvalPark?.resolve(ticket, { allow: false, reason });
+		};
+		if (!this.#approvalPark) return deny("shadow tools are not registered");
+		const native = payload?.toolCall?.name;
+		if (typeof native !== "string" || native.length === 0) return deny("approval payload has no tool name");
+		const handle = this.#getDriver().activeHandle;
+		if (!handle) return deny("no active antigravity turn");
+		const args = (payload.toolCall.args && typeof payload.toolCall.args === "object"
+			? payload.toolCall.args
+			: {}) as Record<string, unknown>;
+		const mapped = mapNativeToShadow(native, args);
+		if (!mapped) return deny(`tool ${native} is not in the approval matcher set`);
+		const entry: PendingRoundTrip = {
+			kind: "approval",
+			name: mapped.shadow,
+			nativeName: native,
+			started: Date.now(),
+			timer: setTimeout(() => {
+				this.#failApproval(
+					ticket,
+					`approval gate timed out after ${Math.round(APPROVAL_PARK_MS / 1000)}s`,
+					"timeout",
+				);
+			}, APPROVAL_PARK_MS),
+		};
+		this.#pending.set(ticket, entry);
+		handle.pushExternal({
+			type: "bridge_call",
+			callId: ticket,
+			name: mapped.shadow,
+			args: {
+				...mapped.input,
+				[GATE_MARKER]: true,
+				__agyTicket: ticket,
+				__agyTool: native,
+			},
+		});
+		this.#log("approval-parked", { ticket, native, shadow: mapped.shadow });
+	}
+
+	/** Settle a parked approval with a deny. Used by the park timeout and
+	 *  failAll; the ticket is answered (fail closed) and the pending entry
+	 *  dropped, so the late shadow tool result logs as approval-late. */
+	#failApproval(ticket: string, reason: string, cause: "timeout" | "shutdown"): void {
+		const entry = this.#pending.get(ticket);
+		this.#pending.delete(ticket);
+		if (entry?.timer) clearTimeout(entry.timer);
+		const resolved = this.#approvalPark?.resolve(ticket, { allow: false, reason }) ?? false;
+		this.#log(
+			resolved ? `approval-${cause}` : "approval-late",
+			{ ticket, native: entry?.nativeName, shadow: entry?.name, reason },
+			resolved && cause === "timeout" ? "warn" : "debug",
+		);
+		this.#getDriver().kickIdle();
+	}
+
 	/** Fail all pending calls (driver recycle/shutdown path). Escalated bridge
 	 *  calls are skipped: their HTTP request was already answered with a poll
 	 *  handle, and the agy turn ending does NOT make the still-running pi tool
@@ -620,6 +710,10 @@ export class ToolRoundTrips {
 	failAll(reason: string): void {
 		for (const id of [...this.#pending.keys()]) {
 			const entry = this.#pending.get(id);
+			if (entry?.kind === "approval") {
+				this.#failApproval(id, reason, "shutdown");
+				continue;
+			}
 			if (entry?.kind === "bridge" && entry.escalated) continue;
 			this.#fail(id, reason);
 		}
@@ -696,7 +790,10 @@ export class ToolRoundTrips {
 				}, this.#escalateAfterMs);
 			}
 			this.#pending.set(callId, entry);
-			handle.pushExternal({ type: "bridge_call", callId, name, args });
+			// Strip the internal marker fields from model-supplied args (peer
+			// review 2026-09-07): a real bridge call must never arrive at the
+			// shadow's gate branch with a forged __agyGate/__agyTicket.
+			handle.pushExternal({ type: "bridge_call", callId, name, args: stripMarkerFields(args) });
 		});
 	};
 
@@ -724,6 +821,33 @@ export class ToolRoundTrips {
 		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
 		if (entry.kind === "rt") {
 			this.#log("round-trip-rt-done", { callId: toolCallId, name: entry.name, isError });
+			return true;
+		}
+		if (entry.kind === "approval") {
+			clearTimeout(entry.timer);
+			this.#pending.delete(toolCallId);
+			// Decision mapping (docs/TODO.md 2.5): block/error -> deny with the
+			// text (pi turns a tool_call block into an error tool result, so both
+			// paths land here); synthetic success -> allow.
+			const decision: ApprovalDecision = isError
+				? { allow: false, reason: text || `blocked by approval gate (${entry.nativeName})` }
+				: { allow: true };
+			const delivered = this.#approvalPark?.resolve(toolCallId, decision) ?? false;
+			// Audit trail (docs/TODO.md 2.7): decision, source, latency.
+			this.#log(
+				delivered ? "approval-decision" : "approval-late",
+				{
+					ticket: toolCallId,
+					native: entry.nativeName,
+					shadow: entry.name,
+					decision: decision.allow ? "allow" : "deny",
+					source: isError ? "extension-block" : "policy",
+					reason: decision.allow ? undefined : decision.reason,
+					latencyMs: Date.now() - (entry.started ?? 0),
+				},
+				delivered ? "info" : "debug",
+			);
+			this.#getDriver().kickIdle();
 			return true;
 		}
 		// Escalated call: the HTTP response already carried the poll handle, so

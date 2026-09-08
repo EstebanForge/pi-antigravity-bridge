@@ -17,10 +17,15 @@
 // ~/.pi/agent/antigravity-bridge/config.json so toggles survive restarts.
 
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionUIContext,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createWriteToolDefinition,
 	getSettingsListTheme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -38,6 +43,7 @@ import {
 } from "../src/models.js";
 import { SessionStore } from "../src/sessions.js";
 import {
+	APPROVAL_PARK_MS,
 	POLL_TOOL_NAME,
 	ToolRoundTrips,
 	WrapperReplay,
@@ -45,6 +51,14 @@ import {
 	formatEscalatedAck,
 	formatPollAnswer,
 } from "../src/provider.js";
+import {
+	createShadowTool,
+	stripMarkerFields,
+	type AnyToolDefinition,
+	type GatePolicy,
+} from "../src/approval-gate.js";
+import { detectPermissionGateExtensions, resolveGateMode } from "../src/approval-detect.js";
+import { hookScriptSource, removeGateHooks, stageGateHooks } from "../src/approval-hook.js";
 import { StreamDriver } from "../src/driver.js";
 import { AcpDriver } from "../src/acp/driver.js";
 import { runAcpAuth } from "../src/acp/auth.js";
@@ -161,6 +175,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// MCP bridge handle, declared early: the ACP engine reads the bridge port
 	// at session/new / session/load time.
 	let mcpHandle: McpServerHandle | null = null;
+	// Approval-gate hook script (per-pid, token embedded). Written at session
+	// start when the gate is active; removed at session_shutdown.
+	let gateScriptPath: string | null = null;
 	// ACP self-heal runs once per process (session_start re-fires on /reload;
 	// a ready setup is two file stats, so re-running is harmless anyway).
 	let acpSelfHealRan = false;
@@ -285,7 +302,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// The no-patch pi-tool round-trip store: the MCP bridge parks calls here;
 	// the provider emits them as real pi toolUse turns and completes them from
 	// the next call's toolResult.
-	const roundTrips = new ToolRoundTrips(activeDriver, (s, d) => fileLog.log(s, d, s === "round-trip-fail" ? "warn" : "debug"));
+	const roundTrips = new ToolRoundTrips(
+		activeDriver,
+		(s, d, level) =>
+			fileLog.log(
+				s,
+				d,
+				level ?? (s === "round-trip-fail" ? "warn" : "debug"),
+			),
+	);
 	const replay = new WrapperReplay();
 	// Native re-exec only emits for builtins actually active in the session;
 	// anything else (or an unknown name) falls back to the wrapper card.
@@ -562,7 +587,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				isError: !skill,
 			});
 		};
-		const r = await startMcpServer({ listTools, onToolCall: bridgeOnToolCall }, { log: mcpLog });
+		const r = await startMcpServer(
+			{
+				listTools,
+				onToolCall: bridgeOnToolCall,
+				onApproval: (ticket, payload) => roundTrips.onApproval(ticket, payload),
+			},
+			{ log: mcpLog },
+		);
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
 			// Stream-json engine registration: the agy CLI discovers MCP servers
@@ -576,6 +608,91 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				token: r.handle.token,
 				tokenHeader: TOKEN_HEADER,
 			});
+			// --- Approval gate (docs/TODO.md 2.5) ------------------------------
+			// agy native tool calls pass through a pi-side approval: a PreToolUse
+			// hook parks in the bridge, the provider emits a shadow toolUse, and
+			// pi's permission extensions gate it like any native call. Off until
+			// enabled (auto = on only when a third-party gate extension exists).
+			{
+				const cfg = loadConfig();
+				const mode = resolveGateMode(cfg.approvals.gateMode, detectPermissionGateExtensions());
+				if (mode === "dedicated") {
+					// The explicit antigravity_approve variant is planned; until it
+					// ships, dedicated stages the same shadow tools. Say so, so the
+					// config value never lies silently.
+					fileLog.log("approval-dedicated-as-shadow", {}, "warn");
+				}
+				if (mode === "off") {
+					// Gate disabled: a hooks group left over from an earlier session
+					// with the gate on would keep firing hooks at a dead script.
+					const unstaged = removeGateHooks(process.cwd());
+					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+				} else {
+					// Script: per-pid file; 0600 because the bridge token is
+					// embedded (peer review 2026-09-07).
+					const scriptPath = path.join(logsDir(), `approval-hook-${process.pid}.js`);
+					fs.mkdirSync(path.dirname(scriptPath), { recursive: true, mode: 0o700 });
+					fs.writeFileSync(
+						scriptPath,
+						hookScriptSource({
+							port: r.handle.port,
+							token: r.handle.token,
+							deadlineMs: APPROVAL_PARK_MS,
+						}),
+						{ mode: 0o600 },
+					);
+					gateScriptPath = scriptPath;
+					const staged = stageGateHooks(process.cwd(), {
+						port: r.handle.port,
+						token: r.handle.token,
+						scriptPath,
+						parkBudgetMs: APPROVAL_PARK_MS,
+					});
+					fileLog.log("approval-staged", { mode, script: scriptPath, ...staged }, staged.wrote ? "info" : "debug");
+
+					// Shadow bases: factory twins of pi's own builtins (public API).
+					// pi.getAllTools() is unusable here: it returns ToolInfo, which
+					// strips execute. Marker calls never execute; non-marker calls
+					// delegate to the twins, so behavior matches the standard
+					// builtins (session-level bash-operations overrides are not
+					// inherited; documented in README).
+					const gateCwd = process.cwd();
+					const bases: Record<string, AnyToolDefinition> = {
+						bash: createBashToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						write: createWriteToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+						edit: createEditToolDefinition(gateCwd) as unknown as AnyToolDefinition,
+					};
+					const askMode = cfg.approvals.mode;
+					const policy: GatePolicy = async ({ tool, params, ctx }) => {
+						if (askMode === "allow") return { allow: true };
+						if (askMode === "deny") {
+							return { allow: false, reason: `blocked by approval gate (mode: deny): ${tool}` };
+						}
+						const extCtx = ctx as { hasUI?: boolean; ui?: Pick<ExtensionUIContext, "confirm"> } | undefined;
+						if (!extCtx?.hasUI || typeof extCtx.ui?.confirm !== "function") {
+							return { allow: false, reason: `approval gate: no UI to approve ${tool} (headless)` };
+						}
+						const what =
+							typeof params.command === "string"
+								? params.command
+								: typeof params.path === "string"
+									? params.path
+									: JSON.stringify(stripMarkerFields(params)).slice(0, 200);
+						const ok = await extCtx.ui.confirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS });
+						return ok ? { allow: true } : { allow: false, reason: `declined in pi (agy ${tool})` };
+					};
+					const handle = r.handle;
+					for (const [name, base] of Object.entries(bases)) {
+						pi.registerTool(
+							createShadowTool(base, policy, { verifyTicket: (t) => handle.approvals.has(t) }),
+						);
+					}
+					// The park is wired ONLY after the shadows are registered: an
+					// approval toolUse must never dispatch to the REAL builtin and
+					// execute locally.
+					roundTrips.approvalPark = handle.approvals;
+				}
+			}
 		} else {
 			console.error(`[antigravity-bridge] MCP tool bridge disabled: ${r.reason}`);
 		}
@@ -599,6 +716,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		await streamDriver.close("recycle", "session shutdown");
 		await acpDriver.close("recycle", "session shutdown");
 		unregisterBridgeServer(process.pid);
+		// Approval gate: unstage hooks and remove the per-pid script. Pending
+		// approvals already failed closed via handle close (bridge shutdown deny).
+		const unstaged = removeGateHooks(process.cwd());
+		if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
+		if (gateScriptPath) {
+			try {
+				fs.rmSync(gateScriptPath, { force: true });
+			} catch {
+				/* best effort */
+			}
+			gateScriptPath = null;
+		}
 	});
 }
 
