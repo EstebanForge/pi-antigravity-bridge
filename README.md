@@ -23,37 +23,11 @@ Turns run through one of two engines behind the same provider surface (`config.e
 - **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
 - **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display shows client-side ESTIMATES until Google ships usage; `acp.usageEstimate` off to keep zeros) and no cancel (abort tears the server down and reloads it next turn).
 
-Engine-dependent features: pi image attachments ride natively only on the ACP engine (the picker offers image attach automatically when `config.engine` is `acp`; the stream-json CLI prompt is text-only). With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text. The `AskAntigravity` delegation tool is unaffected by `config.engine` and runs the `stream-json` CLI (`agy -p`) across both configurations.
+The choice of engine is left to the user, with the trade-offs explained in the tool: a first-run picker modal asks once on a fresh install (stream-json preselected; `esc` defers, and the modal reappears next start), and `/agy engine` with no arguments reopens it anytime. An `acp` pick downloads the ~1.5 GB server binary and starts the Google sign-in immediately; a restart applies the engine. With stream-json active and the `agy` binary missing, pi warns on every start until the binary is found.
 
-### First run
+Full capability comparison, switching, and setup/auth details: [docs/ENGINES.md](docs/ENGINES.md).
 
-On a fresh install (no `config.json` yet), the first interactive pi start opens a picker modal that explains both engines - stream-json needs the `agy` CLI installed and authenticated; ACP needs a second Google sign-in plus a ~1.5 GB server binary downloaded from Google. stream-json is preselected (the default); `esc` decides later (nothing is written, the modal reappears on the next start). Picking **acp** starts the server download immediately (progress in the status bar, milestones in the chat), then opens the Google sign-in; a restart applies the engine. Picking **stream-json** persists and toasts; while that engine is active and the `agy` binary is missing, pi warns on every start with the install link until the binary shows up.
-
-| Capability | `stream-json` (default) | `acp` (beta) |
-| --- | --- | --- |
-| Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
-| Live token usage | Yes (live metrics from CLI step events) | Estimated client-side (absent in RC01; `acp.usageEstimate`, default on) |
-| Image prompt input | No (CLI prompt is text-only; images dropped) | Yes (native image blocks forwarded to server) |
-| Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
-| Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |
-| Review-only plan mode | Yes (`--mode plan` review-only via `/agy mode plan`) | No (RC01 modes are permission levels; plan mode refused) |
-| Leading slash commands in prompt | Disabled via `--disable-slash-commands` (sent as plain text) | Server intercepts recognized commands (e.g. `/plan`) and executes them under the active policy |
-| Dynamic model / effort switch | Recycles process on model or effort change | Dynamic per-turn via `session/set_config_option` (no restart) |
-| Process lifecycle | 1 persistent `agy` process per provider; recycles on drift | 1 persistent server process hosting N sessions concurrently |
-| Session resume & persistence | Client-side map in `sessions.json` via `--conversation <id>` | Server-side session store via `session/load` and `session/new` |
-| Turn cancel / abort | Kills process group; in-flight turn terminates | Teardown, kill, and auto-reload on RC01 (-32601 fallback) |
-| MCP tool bridge routing | Injected filesystem config via `--add-dir` | Direct `mcpServers` param in `session/new` and `session/load` |
-| Tool execution & visibility | Native re-exec (read-only) + wrapper replay (mutating) | Server executes tools natively; events stream with content |
-| Inline file edit diffs | Sourced from git working tree in thinking block | Sourced from `tool_call content[]` or disk vs git HEAD |
-| Permission handling | `--dangerously-skip-permissions` (unattended CLI requirement) | Protocol-native `session/request_permission` (auto-approve when `skipPermissions` is on; auto-deny when off) |
-| Context digest delivery (G1) | Prepend plain text inline in prompt | Native `embeddedContext` resource block |
-| System prompt delivery (G10) | Prepend to first prompt of conversation | Prepend to first prompt of conversation |
-| Authentication methods | Inherits existing `agy` CLI OAuth state | 4 methods: `oauth-personal`, `oauth-business`, `gemini-api-key`, `agent-platform` |
-| Wire protocol | Undocumented CLI NDJSON stream format | Versioned JSON-RPC 2.0 over stdio (`protocolVersion: 1`) |
-| Diagnostics (`/agy doctor`) | Child PID, state, process spawns, recycles, queue stats | Server version, agentInfo, session counts, reconnect count, cancel support |
-| Integration channel | Spawns internal CLI stream-json dialect | Official Google first-party ACP server binary |
-
-Switch with `/agy engine acp|stream-json` (takes effect on restart), or run `/agy engine` with no arguments for the same picker modal as first run (an `acp` pick there runs the same download + sign-in chain). Setup is automatic: switching to `acp` installs Google's official ACP server binary from the [antigravity-acp registry entry](https://github.com/agentclientprotocol/registry) (`~/.local/opt/agy-acp/<build>/` + a `current` symlink, zip sha256 recorded; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)) and prepares the login. The login is your Antigravity subscription: the same account and plan you use for the Antigravity CLI (`agy`). Sign in explicitly with `/agy auth` (engine `acp` selected): it opens the Google login in your browser and completes when you finish it. If no browser is available (an SSH session on a remote machine), pi shows the sign-in URL to copy, plus the ssh port-forward command for the login redirect. It is no different from logging into the CLI; the server just keeps its own token file on your machine, like any Google tool, and this extension never sees your credentials. If you also export `GEMINI_API_KEY`, it is ignored: the server uses the auth type in settings.json, and setup always writes `oauth-personal`. A session start self-heals the same way, silently when everything is ready. Manual instructions (`/agy auth-manual`) surface only when a step fails. Sessions are engine-scoped, so switching engines never crosses conversations.
+Switch and setup details live in [docs/ENGINES.md](docs/ENGINES.md): switching to `acp` self-installs Google's official server binary from the [antigravity-acp registry entry](https://github.com/agentclientprotocol/registry) and prepares the login (your Antigravity subscription, same account as the `agy` CLI; the extension never sees your credentials). `/agy auth` signs in explicitly, `/agy doctor` diagnoses, and a session start self-heals silently when everything is ready. Sessions are engine-scoped, so switching engines never crosses conversations.
 
 ## What it cannot do
 
@@ -62,7 +36,7 @@ agy runs its own closed tool loop (`read_file`, `write_file`, `edit_file`, `run_
 Residual limits (with or without the bridge):
 
 - agy's own edits still land directly on disk; pi's inline diff review does not engage for them.
-- agy commands run without per-action approval by default, same as every other tool in pi. The [Approval gate](#approval-gate-agy-native-tools) can put pi-side review in front of agy's mutating native tools (off by default; `auto` enables it only when a pi permission extension is installed). See also [Permissions](#permissions) below.
+- agy commands run without per-action approval by default, same as every other tool in pi. The [Approval gate](docs/APPROVAL-GATE.md) can put pi-side review in front of agy's mutating native tools (off by default; `auto` enables it only when a pi permission extension is installed). See also [Permissions](#permissions) below.
 - No cost accounting: cost stays zero because agy runs on your subscription quota. Token usage is live.
 
 ## MCP tool bridge (agy uses pi's tools)
@@ -98,35 +72,9 @@ bridge port, and the last lifecycle events without spending tokens.
 
 ## Approval gate (agy native tools)
 
-agy is not a plain model: it runs its own agent loop with its own native tools (`run_command`, `create_file`, `edit_file`, ...). Those calls execute inside agy with no pi involvement, so pi's permission extensions never saw them. The approval gate closes that gap: agy native tool calls pass through a pi-side approval in a form the existing permission-extension ecosystem gates with zero changes.
+agy runs its own agent loop with native tools (`run_command`, `create_file`, `edit_file`, ...), which pi's permission extensions never saw. The optional approval gate routes those calls through a pi-side approval: a staged PreToolUse hook parks the call, the provider surfaces it as a shadow `bash`/`write`/`edit` toolUse, and your permission extension (or the built-in ask/allow/deny fallback) decides before agy executes it. Off by default (`approvals.gateMode: auto` enables it only when a pi permission extension is detected); denials fail closed; read-only agy tools stay ungated.
 
-Mechanics: the extension stages an `.agents/hooks.json` group in the workspace; the Antigravity server/CLI fires a `PreToolUse` hook before each mutating native tool runs. The hook script (generated, per-pid, mode 0600 because it embeds the bridge token) POSTs the call to the bridge and polls for a decision. The bridge parks it, the provider interrupts the pi-side view of the agy turn with a `toolUse` for a SHADOW tool named `bash`/`write`/`edit` (same schema as the real builtin plus internal `__agy*` marker fields), and pi's whole `tool_call` surface applies: any installed permission extension gates the call unchanged, and only if nothing blocks does the fallback policy run. The decision travels back to the hook and agy enforces it; on deny the reason text is what agy's model sees. Marker calls never execute locally (a ticket check denies forged ones); non-marker calls delegate to a factory twin of the real builtin, so normal pi bash/write/edit behavior is unchanged. Read-only agy tools stay ungated. Every decision lands in the daily log with tool names, source, and latency.
-
-Configuration (`/agy` config keys or environment):
-
-```jsonc
-{
-  "approvals": {
-    "gateMode": "auto",  // auto | shadow | dedicated | off
-    "mode": "ask"        // ask | allow | deny  (fallback when no extension gates)
-  }
-}
-// env: AGY_APPROVALS=shadow AGY_APPROVALS_MODE=ask
-```
-
-`auto` (default) keeps the gate OFF until one of the known pi permission packages is detected (pi settings `packages` name-match or known config markers). `shadow` forces it on; `off` forces it off. `dedicated` currently stages the same shadow tools (the explicit `antigravity_approve` variant is planned; the config value is accepted today so the schema is stable). The fallback `mode` is consulted only when no extension blocked the call: `ask` shows a pi confirm dialog (headless runs deny, fail-closed), `allow` approves, `deny` blocks. Timeouts deny fail-closed: the staged hook timeout always exceeds the park budget, but a hook that outlives its timeout soft-passes upstream (verified against the ACP server), so the park always answers first.
-
-If you write your own gate extension, it sees a normal pi tool call:
-
-```typescript
-export default function (pi) {
-	pi.on("tool_call", async (event) => {
-		if (event.input?.__agyGate && event.input.command?.startsWith("rm ")) {
-			return { block: true, reason: "rm is not allowed through the agy gate" };
-		}
-	});
-}
-```
+Full mechanics, configuration, and a sample gate extension: [docs/APPROVAL-GATE.md](docs/APPROVAL-GATE.md).
 
 ## Install
 
@@ -208,7 +156,7 @@ Because agy runs non-interactively under this provider (nothing can answer a `y/
 
 If you want agy to execute nothing, use `/agy mode plan`. Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
 
-For per-action review of agy's mutating native tools (`run_command`, `create_file`, `edit_file`, ...), see the [Approval gate](#approval-gate-agy-native-tools): with it on, the call must pass a pi-side approval (your permission extension, or the built-in ask/allow/deny fallback) before agy executes it.
+For per-action review of agy's mutating native tools (`run_command`, `create_file`, `edit_file`, ...), see the [Approval gate](docs/APPROVAL-GATE.md): with it on, the call must pass a pi-side approval (your permission extension, or the built-in ask/allow/deny fallback) before agy executes it.
 
 ### Run pi inside a sandbox
 

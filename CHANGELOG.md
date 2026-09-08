@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-09-08
+
+### Added
+
+- First-run engine picker. The choice of engine is left to the user: on a fresh install (no `config.json`, no `AGY_ENGINE`), the first interactive pi start opens a modal that explains both engines - stream-json needs the `agy` CLI installed and authenticated; ACP needs a second Google sign-in plus a ~1.5 GB server binary downloaded from Google. stream-json is preselected as the default; `esc` defers (nothing is written, the modal reappears next start). Headless sessions and existing installs are never asked.
+- The ACP pick chains setup immediately instead of waiting for a restart: the ~1.5 GB server binary downloads right away (live percent in the status bar, phase milestones as chat lines), the Google sign-in opens when it lands, and a restart applies the engine. The next start's self-heal sees binary + auth settled and stays silent.
+- `/agy engine` with no arguments (TUI) opens the same picker modal with identical semantics: plan mode blocks acp, an acp pick chains the download + sign-in, same-engine picks ack, esc acknowledges. Direct `/agy engine acp|stream-json` and the headless usage line are unchanged.
+- Missing-CLI warning: while the stream-json engine is active and the `agy` binary cannot be found (PATH or `AGY_BIN`), every pi start warns with the official install URL (toast in the TUI, stderr headless) until the binary is detected. Auth state is not checked, presence only.
+
+### Fixed
+
+- The picker's ACP line no longer claims "adds image input and native diffs": tool-result images ride both engines (probe-verified 2026-09-07) and stream-json has its own diff rendering. A negative test pin keeps the claim from returning.
+
+### Changed
+
+- README streamlined: the engine capability table, switching, and setup/auth details moved to docs/ENGINES.md; the approval-gate mechanics, configuration, and sample extension moved to docs/APPROVAL-GATE.md. Both stay linked from the README, which now carries the quick surface and states that engine choice is the user's.
+- Dependencies: fast-uri 3.1.5 → 3.1.7 clears four high-severity advisories (repeated hostname percent-decoding SSRF, malformed IPv6 normalization SSRF, percent-encoded scheme and IDN host confusion; in-range lockfile bump under ajv's `^3.0.1`), qs 6.15.3 → 6.16.0 clears a moderate pair (via express, dev surface). npm audit reports zero.
+
 ## [1.4.10] - 2026-09-07
 
 ### Added
