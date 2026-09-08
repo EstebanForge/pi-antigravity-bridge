@@ -387,6 +387,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		acpLog,
 		fileLog,
 		authCapture: authCapture ?? null,
+		runAcpPickSetup,
 	});
 
 	// AskAntigravity tool: one-shot delegation to agy (ported from
@@ -426,7 +427,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	 *  Restart still applies the engine (drivers wire at load); this only
 	 *  removes the wait. Fire-and-forget: the caller already toasted the
 	 *  promise, failures land in the daily log + a warning toast. */
-	const runAcpPickSetup = async (ctx: { ui: ExtensionUIContext }): Promise<void> => {
+	// eslint-disable-next-line @typescript-eslint/no-inner-declarations -- hoisted: registerAgyCommand below injects it
+	async function runAcpPickSetup(ctx: { ui: ExtensionUIContext }): Promise<void> {
 		acpSelfHealRan = true;
 		let lastPhase = "";
 		ctx.ui.setStatus("agy-acp", "downloading ACP server…");
@@ -482,7 +484,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			fileLog.log("acp-setup", { error: String(err) }, "warn");
 			ctx.ui.notify(`ACP setup failed (${String(err)}). /agy auth retries; /agy doctor inspects.`, "warning");
 		}
-	};
+	}
 
 	// MCP tool bridge: expose pi's tools to agy over localhost Streamable HTTP.
 	// Calls park in the provider's round-trip store and complete through pi's
@@ -864,6 +866,9 @@ interface AgyCommandCtx {
 	acpLog: (msg: string, data?: unknown) => void;
 	/** Daily file logger (src/daily-log.ts); command + doctor surfacing. */
 	fileLog: DailyLogger;
+	/** Wizard-pick follow-through (download now + chained sign-in); reused
+	 *  by /agy engine's no-args modal so both entry points behave alike. */
+	runAcpPickSetup: (cmdCtx: { ui: ExtensionUIContext }) => Promise<void>;
 	/** BROWSER-capture handles; null when unavailable (Windows, unwritable
 	 *  data dir). /agy auth passes them to the sign-in process. */
 	authCapture: { browserEnv: Record<string, string>; file: string } | null;
@@ -984,6 +989,28 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					} else {
 						ui?.notify(`ACP engine ready (auth: ${status.auth}). Takes effect on the next pi start (or /reload).`, "info");
 					}
+				} else if (!val && mode === "tui" && ui) {
+					// Same modal as the first-run wizard: switching engines deserves
+					// the explanations, not a bare usage line. Semantics match the
+					// direct path above: plan blocks acp, an acp pick chains setup
+					// + sign-in immediately, restart applies the switch.
+					const current = loadConfig().engine;
+					const picked = await showEnginePicker(ui);
+					if (picked === null) {
+						ui.notify(`engine unchanged: ${current}.`, "info");
+						return;
+					}
+					if (picked === current) {
+						ui.notify(`engine is already ${current}. Restart applies it if set this session.`, "info");
+						return;
+					}
+					if (picked === "acp" && loadConfig().mode === "plan") {
+						ui.notify("mode is plan; the ACP engine has no plan mode. /agy mode accept-edits first.", "warning");
+						return;
+					}
+					saveConfig({ engine: picked });
+					ui.notify(savedEngineMessage(picked), "info");
+					if (picked === "acp") void ctx.runAcpPickSetup({ ui });
 				} else {
 					ui?.notify(`current engine: ${loadConfig().engine}\nusage: /agy engine stream-json|acp`, "info");
 				}
