@@ -69,12 +69,12 @@ export function toEngine(value: string): Engine {
 	return value === "acp" ? "acp" : "stream-json";
 }
 
-/** Toast copy shown after the choice is saved. ACP carries the three setup
- *  facts the engine needs beyond the restart (auto-download of the server
- *  binary, sign-in, server binary path). */
+/** Toast copy shown after the choice is saved. ACP names the promise that
+ *  matters: the binary download starts NOW (not on restart), sign-in follows
+ *  when it lands, restart applies the engine. */
 export function savedEngineMessage(engine: Engine): string {
 	return engine === "acp"
-		? "Engine saved: acp. Restart pi to apply, then run /agy auth to sign in. Set acp.bin or AGY_ACP_BIN if the server .par is not on PATH. If the binary is missing it downloads automatically on next start (~1.5 GB)."
+		? "Engine saved: acp. The ~1.5 GB server binary downloads now; the Google sign-in opens when it lands. Restart applies the engine."
 		: "Engine saved: stream-json. Restart pi to apply.";
 }
 

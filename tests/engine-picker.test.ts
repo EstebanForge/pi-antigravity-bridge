@@ -62,14 +62,15 @@ test("picker: only the literal acp value selects the ACP engine", () => {
 	assert.equal(toEngine("sqlite"), "stream-json");
 });
 
-test("picker: saved-engine toast names the restart and ACP setup steps", () => {
+test("picker: saved-engine toast names the download-now and sign-in promise", () => {
 	assert.match(savedEngineMessage("stream-json"), /Restart pi to apply/);
 	const acp = savedEngineMessage("acp");
-	assert.match(acp, /\/agy auth/);
-	assert.match(acp, /AGY_ACP_BIN/);
-	// Sets the expectation before the restart triggers a long download.
-	assert.match(acp, /downloads automatically/);
+	// The pick must promise immediacy: download starts now, sign-in follows
+	// it, only the engine switch waits for the restart.
 	assert.match(acp, /~1\.5 GB/);
+	assert.match(acp, /downloads now/);
+	assert.match(acp, /sign-in opens when it lands/);
+	assert.match(acp, /Restart applies the engine/);
 });
 
 test("picker: agy binary detection covers PATH and explicit paths", () => {

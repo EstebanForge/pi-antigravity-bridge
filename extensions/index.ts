@@ -419,6 +419,59 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		},
 	});
 
+	/** ACP pick follow-through (first-run wizard): the same self-service
+	 *  setup the /agy engine acp command runs, but immediately - the 1.5 GB
+	 *  download starts while the toast is still on screen, progress rides the
+	 *  footer status, and the Google sign-in opens when the install lands.
+	 *  Restart still applies the engine (drivers wire at load); this only
+	 *  removes the wait. Fire-and-forget: the caller already toasted the
+	 *  promise, failures land in the daily log + a warning toast. */
+	const runAcpPickSetup = async (ctx: { ui: ExtensionUIContext }): Promise<void> => {
+		acpSelfHealRan = true;
+		ctx.ui.setStatus("agy-acp", "downloading ACP server…");
+		try {
+			const status = await ensureAcpReady({
+				configBin: loadConfig().acp.bin,
+				onProgress: (m) => ctx.ui.setStatus("agy-acp", m),
+			});
+			ctx.ui.setStatus("agy-acp", undefined);
+			fileLog.log(
+				"acp-setup",
+				status.ok
+					? { ok: true, binarySource: status.binarySource, needsLogin: status.needsLogin }
+					: { ok: false, error: status.error },
+				status.ok ? "info" : "warn",
+			);
+			if (!status.ok) {
+				ctx.ui.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
+				return;
+			}
+			// Spread, not a bare acp patch: a bare {bin} patch would drop
+			// sibling keys (usageEstimate) from the file.
+			saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
+			if (!status.needsLogin) {
+				ctx.ui.notify(`ACP server ready (auth: ${status.auth}). Restart applies the engine.`, "info");
+				return;
+			}
+			ctx.ui.notify(
+				"ACP server ready. Signing in: the Google sign-in opens in your browser and completes when you finish it.",
+				"info",
+			);
+			const r = await runAcpAuth({
+				bin: status.bin,
+				...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
+				log: acpLog,
+			});
+			fileLog.log("acp-auth", r.ok ? { ok: true } : { ok: false, error: r.error }, r.ok ? "info" : "warn");
+			if (r.ok) ctx.ui.notify("Signed in. The ACP engine is ready; restart applies it.", "info");
+			else ctx.ui.notify(`ACP sign-in failed (${r.error}).\nRun /agy auth to retry; /agy auth-manual has manual steps.`, "warning");
+		} catch (err) {
+			ctx.ui.setStatus("agy-acp", undefined);
+			fileLog.log("acp-setup", { error: String(err) }, "warn");
+			ctx.ui.notify(`ACP setup failed (${String(err)}). /agy auth retries; /agy doctor inspects.`, "warning");
+		}
+	};
+
 	// MCP tool bridge: expose pi's tools to agy over localhost Streamable HTTP.
 	// Calls park in the provider's round-trip store and complete through pi's
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
@@ -444,6 +497,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				if (picked) {
 					saveConfig({ engine: picked });
 					ctx.ui.notify(savedEngineMessage(picked), "info");
+					if (picked === "acp") void runAcpPickSetup(ctx);
 				}
 			} catch (err) {
 				fileLog.log("engine-picker", { error: String(err) }, "warn");
