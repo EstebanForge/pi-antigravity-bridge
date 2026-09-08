@@ -66,6 +66,7 @@ import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
@@ -420,8 +421,33 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// Calls park in the provider's round-trip store and complete through pi's
 	// normal toolUse loop (native cards, permissions, hooks) - no patch, no
 	// privileged API. Started on session_start, torn down on session_shutdown.
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		if (ctx.hasUI) activeUi = ctx.ui;
+		// First-run engine picker: ask once, on the first interactive start,
+		// which turn engine to use. Skipped headless (ctx.mode !== "tui"),
+		// when AGY_ENGINE is set, or once any config file exists (any save -
+		// even of an unrelated knob - means the user has been here before).
+		// esc = decide later: nothing is written, the picker reappears next
+		// start. Like /agy engine, the choice applies on the next start
+		// (drivers wire at load). The await intentionally runs before the
+		// bridge startup below: on a genuine first run the modal blocks input
+		// anyway, so the delay is invisible.
+		if (event.reason === "startup" && ctx.mode === "tui" && shouldOfferEnginePicker(CONFIG_PATH)) {
+			// Best-effort, like the legacy-patch notice below: a picker failure
+			// (mid-prompt TUI teardown, resize races) must never take down the
+			// rest of session_start - the MCP bridge startup included. The
+			// default engine keeps working untouched.
+			try {
+				const picked = await showEnginePicker(ctx.ui);
+				if (picked) {
+					saveConfig({ engine: picked });
+					ctx.ui.notify(savedEngineMessage(picked), "info");
+				}
+			} catch (err) {
+				fileLog.log("engine-picker", { error: String(err) }, "warn");
+				console.error(`[antigravity-bridge] engine picker failed: ${String(err)}`);
+			}
+		}
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
 		// and offer /agy patch-cleanup. Never auto-edits the install.
