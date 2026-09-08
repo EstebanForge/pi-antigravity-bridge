@@ -428,11 +428,23 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	 *  promise, failures land in the daily log + a warning toast. */
 	const runAcpPickSetup = async (ctx: { ui: ExtensionUIContext }): Promise<void> => {
 		acpSelfHealRan = true;
+		let lastPhase = "";
 		ctx.ui.setStatus("agy-acp", "downloading ACP server…");
 		try {
 			const status = await ensureAcpReady({
 				configBin: loadConfig().acp.bin,
-				onProgress: (m) => ctx.ui.setStatus("agy-acp", m),
+				onProgress: (m) => {
+					// Dual surface: the status bar carries the live percent (cleared
+					// on completion, zero footprint); the chat window gets phase
+					// milestones only (download start, unpacking, installed) - same
+					// line-in-chat feel as other extensions' notify() notices. The
+					// percent variant updates every chunk and would spam the chat.
+					ctx.ui.setStatus("agy-acp", m);
+					if (m !== lastPhase && !/\d+%/.test(m)) {
+						ctx.ui.notify(m, "info");
+						lastPhase = m;
+					}
+				},
 			});
 			ctx.ui.setStatus("agy-acp", undefined);
 			fileLog.log(
