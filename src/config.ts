@@ -52,7 +52,9 @@ export type BridgeTools = "none" | "mcp" | "all";
  *  configuration on its side.
  *
  *  "shadow" / "dedicated": force the gate on in that shape. "off": never
- *  gate, even when a permission extension is installed. */
+ *  gate, even when a permission extension is installed. NOTE: "dedicated"
+ *  currently stages the same shadow tools as "shadow" (warn-logged remap);
+ *  the explicit antigravity_approve variant is planned - see docs/TODO.md. */
 export type GateMode = "auto" | "shadow" | "dedicated" | "off";
 
 /** Fallback decision when no extension blocked a gated call: "ask" uses

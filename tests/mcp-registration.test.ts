@@ -39,6 +39,20 @@ test("registerBridgeServer writes the exact agy entry shape into a fresh file", 
 	fs.rmSync(home, { recursive: true, force: true });
 });
 
+test("the shared config file lands 0600 (it carries the bridge token)", () => {
+	const home = tmpHome();
+	registerBridgeServer(ENTRY, cfgFile(home));
+	const mode = fs.statSync(cfgFile(home)).mode & 0o777;
+	assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
+	// And a pre-existing world-readable file is tightened on the next write.
+	const file = cfgFile(home);
+	fs.chmodSync(file, 0o644);
+	unregisterBridgeServer(4242, file);
+	const after = fs.statSync(file).mode & 0o777;
+	assert.equal(after, 0o600, `expected 0600 after rewrite, got ${after.toString(8)}`);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
 test("register preserves foreign servers and refreshes our entry", () => {
 	const home = tmpHome();
 	const file = cfgFile(home);

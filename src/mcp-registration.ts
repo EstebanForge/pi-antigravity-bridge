@@ -56,9 +56,12 @@ function readConfig(file: string): { ok: true; config: McpConfig } | { ok: false
 }
 
 function writeConfig(file: string, config: McpConfig): void {
-	fs.mkdirSync(path.dirname(file), { recursive: true });
+	// 0700/0600: the file carries the bridge's shared-secret token in its
+	// headers, and it lives in the USER'S global agy config (audit 2026-09-07:
+	// it previously landed at the umask default, typically world-readable).
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
 	const tmp = `${file}.${process.pid}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n");
+	fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 	fs.renameSync(tmp, file);
 }
 

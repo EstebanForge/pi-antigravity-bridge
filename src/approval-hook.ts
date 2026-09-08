@@ -20,6 +20,39 @@ import path from "node:path";
 
 export const HOOK_GROUP = "pi-bridge-gate";
 
+/** Group-key namespace. Each pi session stages its OWN group keyed per-pid
+ *  (`pi-bridge-gate-<pid>`): hooks.json lives in the SHARED workspace, and
+ *  two concurrent sessions must never remove or overwrite each other's gate
+ *  (audit 2026-09-07: a single shared key let a gate-off session silently
+ *  strip a gate-on session's PreToolUse matchers). */
+export const GATE_GROUP_PREFIX = "pi-bridge-gate";
+
+/** This session's group key. */
+export function gateGroupKey(pid: number = process.pid): string {
+	return `${GATE_GROUP_PREFIX}-${pid}`;
+}
+
+/** True if the process is running (EPERM counts: alive but not ours). */
+function pidAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** Which session a gate group belongs to, parsed from the script path its
+ *  command embeds (`.../approval-hook-<pid>.js`). The pid is the ownership
+ *  proof: the script is per-pid (0600, written by that session). Returns
+ *  null for groups we cannot attribute (foreign/future formats - never
+ *  touched). */
+function gateGroupPid(group: unknown): number | null {
+	const m = /approval-hook-(\d+)\.js/.exec(JSON.stringify(group));
+	return m ? Number(m[1]) : null;
+}
+
 /** agy native tools worth gating: everything that mutates the machine. */
 export const GATED_AGY_TOOLS =
 	"create_file|write_to_file|replace_file_content|multi_replace_file_content|edit_file|run_command";
@@ -126,13 +159,18 @@ export interface StageResult {
 	reason?: string;
 }
 
-/** Stage the gate group into <workspaceDir>/.agents/hooks.json. Merge-safe:
- *  foreign groups are preserved; a foreign file is backed up before its
- *  first modification; unparseable files are never touched. */
+/** Stage the gate group into <workspaceDir>/.agents/hooks.json under THIS
+ *  session's per-pid key. Merge-safe:
+ *  - foreign groups are preserved;
+ *  - gate groups of DEAD sessions are swept (their bridge is gone; the hook
+ *    would fail closed forever), groups of live sessions never touched;
+ *  - a foreign file is backed up before its first modification;
+ *  - unparseable files are never touched. */
 export function stageGateHooks(workspaceDir: string, opts: StageOptions): StageResult {
 	const dir = path.join(workspaceDir, ".agents");
 	const file = path.join(dir, "hooks.json");
 	const group = buildGateGroup(opts);
+	const ownKey = gateGroupKey();
 	let current: Record<string, unknown> = {};
 	const existed = fs.existsSync(file);
 	if (existed) {
@@ -152,24 +190,45 @@ export function stageGateHooks(workspaceDir: string, opts: StageOptions): StageR
 		} catch {
 			return { wrote: false, reason: "hooks.json is not valid JSON; refusing to touch it" };
 		}
-		if (JSON.stringify(current[HOOK_GROUP]) === JSON.stringify(group)) {
+		// Sweep gate groups whose owning session is gone. Never touch groups of
+		// live sessions (concurrent pi sessions share this workspace) or groups
+		// we cannot attribute.
+		let swept = 0;
+		for (const key of Object.keys(current)) {
+			if (key === ownKey) continue;
+			const isGateGroup = key === GATE_GROUP_PREFIX || key.startsWith(`${GATE_GROUP_PREFIX}-`);
+			if (!isGateGroup) continue;
+			const pid = gateGroupPid(current[key]);
+			if (pid === null || pidAlive(pid)) continue;
+			delete current[key];
+			swept += 1;
+		}
+		if (swept > 0 && JSON.stringify(current[ownKey]) === JSON.stringify(group)) {
+			// Own group already current; the pass only swept dead peers.
+			fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
+			return { wrote: true, reason: `swept ${swept} dead gate group(s)` };
+		}
+		if (JSON.stringify(current[ownKey]) === JSON.stringify(group)) {
 			return { wrote: false, reason: "already staged" };
 		}
 	}
 	const backup =
-		existed && current[HOOK_GROUP] === undefined
+		existed && current[ownKey] === undefined
 			? `${file}.backup-${new Date().toISOString().replace(/[:.]/g, "-")}`
 			: undefined;
 	if (backup) fs.copyFileSync(file, backup);
-	current[HOOK_GROUP] = group;
+	current[ownKey] = group;
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
 	return { wrote: true, backup };
 }
 
-/** Remove our group from <workspaceDir>/.agents/hooks.json. Foreign content
- *  stays; an empty object file is left in place (harmless). */
-export function removeGateHooks(workspaceDir: string): StageResult {
+/** Remove ONLY this session's gate group (or the given pid's). Other
+ *  sessions' groups - including live ones in a shared workspace - are never
+ *  touched: a gate-off session must not strip a gate-on session's matchers
+ *  (audit 2026-09-07). Foreign content stays; an object file is left in
+ *  place (harmless). */
+export function removeGateHooks(workspaceDir: string, pid: number = process.pid): StageResult {
 	const file = path.join(workspaceDir, ".agents", "hooks.json");
 	if (!fs.existsSync(file)) return { wrote: false, reason: "no hooks.json" };
 	try {
@@ -182,8 +241,9 @@ export function removeGateHooks(workspaceDir: string): StageResult {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
 		if (!parsed || typeof parsed !== "object") return { wrote: false, reason: "not an object; refusing" };
-		if (parsed[HOOK_GROUP] === undefined) return { wrote: false, reason: "not staged" };
-		delete parsed[HOOK_GROUP];
+		const ownKey = gateGroupKey(pid);
+		if (parsed[ownKey] === undefined) return { wrote: false, reason: "not staged" };
+		delete parsed[ownKey];
 		fs.writeFileSync(file, JSON.stringify(parsed, null, 2) + "\n");
 		return { wrote: true };
 	} catch {

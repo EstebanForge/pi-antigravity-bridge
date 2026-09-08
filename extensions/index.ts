@@ -623,8 +623,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 					fileLog.log("approval-dedicated-as-shadow", {}, "warn");
 				}
 				if (mode === "off") {
-					// Gate disabled: a hooks group left over from an earlier session
-					// with the gate on would keep firing hooks at a dead script.
+					// Gate off: remove ONLY this session's group. Other sessions'
+					// groups in a shared workspace are never touched - a gate-off
+					// session must not strip a gate-on session's matchers.
 					const unstaged = removeGateHooks(process.cwd());
 					if (unstaged.wrote) fileLog.log("approval-unstaged", unstaged, "info");
 				} else {
