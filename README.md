@@ -25,6 +25,10 @@ Turns run through one of two engines behind the same provider surface (`config.e
 
 Engine-dependent features: pi image attachments ride natively only on the ACP engine (the picker offers image attach automatically when `config.engine` is `acp`; the stream-json CLI prompt is text-only). With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text. The `AskAntigravity` delegation tool is unaffected by `config.engine` and runs the `stream-json` CLI (`agy -p`) across both configurations.
 
+### First run
+
+On a fresh install (no `config.json` yet), the first interactive pi start opens a picker modal that explains both engines - stream-json needs the `agy` CLI installed and authenticated; ACP needs a second Google sign-in plus a ~1.5 GB server binary downloaded from Google. stream-json is preselected (the default); `esc` decides later (nothing is written, the modal reappears on the next start). Picking **acp** starts the server download immediately (progress in the status bar, milestones in the chat), then opens the Google sign-in; a restart applies the engine. Picking **stream-json** persists and toasts; while that engine is active and the `agy` binary is missing, pi warns on every start with the install link until the binary shows up.
+
 | Capability | `stream-json` (default) | `acp` (beta) |
 | --- | --- | --- |
 | Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
@@ -49,7 +53,7 @@ Engine-dependent features: pi image attachments ride natively only on the ACP en
 | Diagnostics (`/agy doctor`) | Child PID, state, process spawns, recycles, queue stats | Server version, agentInfo, session counts, reconnect count, cancel support |
 | Integration channel | Spawns internal CLI stream-json dialect | Official Google first-party ACP server binary |
 
-Switch with `/agy engine acp|stream-json` (takes effect on restart). Setup is automatic: switching to `acp` installs Google's official ACP server binary from the [antigravity-acp registry entry](https://github.com/agentclientprotocol/registry) (`~/.local/opt/agy-acp/<build>/` + a `current` symlink, zip sha256 recorded; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)) and prepares the login. The login is your Antigravity subscription: the same account and plan you use for the Antigravity CLI (`agy`). Sign in explicitly with `/agy auth` (engine `acp` selected): it opens the Google login in your browser and completes when you finish it. If no browser is available (an SSH session on a remote machine), pi shows the sign-in URL to copy, plus the ssh port-forward command for the login redirect. It is no different from logging into the CLI; the server just keeps its own token file on your machine, like any Google tool, and this extension never sees your credentials. If you also export `GEMINI_API_KEY`, it is ignored: the server uses the auth type in settings.json, and setup always writes `oauth-personal`. A session start self-heals the same way, silently when everything is ready. Manual instructions (`/agy auth-manual`) surface only when a step fails. Sessions are engine-scoped, so switching engines never crosses conversations.
+Switch with `/agy engine acp|stream-json` (takes effect on restart), or run `/agy engine` with no arguments for the same picker modal as first run (an `acp` pick there runs the same download + sign-in chain). Setup is automatic: switching to `acp` installs Google's official ACP server binary from the [antigravity-acp registry entry](https://github.com/agentclientprotocol/registry) (`~/.local/opt/agy-acp/<build>/` + a `current` symlink, zip sha256 recorded; layout and pinning in [docs/ACP-ADOPTION-PLAN.md](docs/ACP-ADOPTION-PLAN.md)) and prepares the login. The login is your Antigravity subscription: the same account and plan you use for the Antigravity CLI (`agy`). Sign in explicitly with `/agy auth` (engine `acp` selected): it opens the Google login in your browser and completes when you finish it. If no browser is available (an SSH session on a remote machine), pi shows the sign-in URL to copy, plus the ssh port-forward command for the login redirect. It is no different from logging into the CLI; the server just keeps its own token file on your machine, like any Google tool, and this extension never sees your credentials. If you also export `GEMINI_API_KEY`, it is ignored: the server uses the auth type in settings.json, and setup always writes `oauth-personal`. A session start self-heals the same way, silently when everything is ready. Manual instructions (`/agy auth-manual`) surface only when a step fails. Sessions are engine-scoped, so switching engines never crosses conversations.
 
 ## What it cannot do
 
@@ -134,7 +138,7 @@ Install with pi's package manager:
 pi install npm:@estebanforge/pi-antigravity-bridge
 ```
 
-Requires the **`agy` CLI** installed and authenticated. If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable.
+Requires the **`agy` CLI** installed and authenticated. If you don't have it, follow Google's [official install guide](https://antigravity.google/docs/cli/install) for your platform, then run `agy` once to complete Google OAuth. The extension resolves `agy` on `$PATH`, or via the `AGY_BIN` environment variable. While the stream-json engine is active and the binary cannot be found, pi warns on every start (toast in the TUI, stderr headless) pointing at the install guide; the warning stops once the binary is detected.
 
 ## Usage
 
@@ -190,7 +194,7 @@ The `activate_skill` catalog mirrors pi's directory-based skill discovery: the t
 /agy system-prompt on|off send pi's system prompt + AGENTS.md + the Pi Bridge tool-priority note to new agy conversations (default on)
 /agy bridge all|mcp|none  which pi tools the MCP bridge exposes to agy (default all; none = bridge off)
 /agy acp-bin <path|auto>  point the ACP engine at a specific server binary (auto = setup installs, or AGY_ACP_BIN; applies on the next ACP turn)
-/agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp is beta and runs self-service setup: binary install + auth bootstrap)
+/agy engine acp|stream-json   switch the turn engine (restart to apply; default stream-json; acp is beta and runs self-service setup: binary install + auth bootstrap). No arguments opens the engine picker modal (TUI)
 /agy auth-manual             manual ACP credential setup (fallback; auto-setup normally covers this; default login = your Antigravity subscription, same account as the agy CLI)
 /agy patch-cleanup        restore the original pi files if an older version patched them
 /agy clear                drop all session bindings (force fresh conversations)

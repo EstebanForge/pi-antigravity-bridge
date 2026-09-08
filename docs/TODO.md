@@ -2,7 +2,7 @@
 
 ## 1. Approval gate: live end-to-end verification
 
-The gate is wired and unit-pinned (304 tests) but has never run against a live
+The gate is wired and unit-pinned (333 tests) but has never run against a live
 agy turn. Enable it, drive an agy turn that mutates a file, and watch the
 round trip: PreToolUse hook -> POST /approval park -> shadow toolUse ->
 decision -> hook stdout -> agy enforces.

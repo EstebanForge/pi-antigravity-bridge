@@ -32,6 +32,7 @@ src/approval-gate.ts  shadow tool factory (bash/write/edit): marker calls are ti
 src/approval-detect.ts third-party pi permission-extension detection; resolves approvals.gateMode auto (off until a gate extension exists)
 src/approval-hook.ts  merge-safe .agents/hooks.json staging (PreToolUse) + generated 0600 early-ack/poll hook script; staged timeout exceeds the park budget (hook timeouts soft-pass)
 src/diff-render.ts    stream-json: render agy's file edits as git diffs in pi's thinking stream; formatInlineDiff (no git) renders ACP's native diffs
+src/engine-picker.ts  first-run onboarding: engine picker overlay (SelectList + DynamicBorder), first-run gate (no config file + no AGY_ENGINE), agy binary detection (PATH / AGY_BIN), missing-CLI toast copy
 src/driver-types.ts   TurnDriver contract shared by both engines (request/handle/snapshot types)
 src/acp/jsonrpc.ts    NDJSON JSON-RPC 2.0 framing with line buffering and typed error results
 src/acp/connection.ts ACP server process + protocol (initialize, session/new+load, prompt with image/resource blocks, config options, cancel probing, auto permissions)
