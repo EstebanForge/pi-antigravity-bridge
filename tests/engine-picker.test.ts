@@ -7,8 +7,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+	agyMissingMessage,
 	ENGINE_PICKER_ITEMS,
 	ENGINE_PICKER_INTRO,
+	isAgyInstalled,
 	savedEngineMessage,
 	shouldOfferEnginePicker,
 	toEngine,
@@ -68,6 +70,28 @@ test("picker: saved-engine toast names the restart and ACP setup steps", () => {
 	// Sets the expectation before the restart triggers a long download.
 	assert.match(acp, /downloads automatically/);
 	assert.match(acp, /~1\.5 GB/);
+});
+
+test("picker: agy binary detection covers PATH and explicit paths", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-bin-"));
+	try {
+		const fake = path.join(dir, "agy");
+		fs.writeFileSync(fake, "#!/bin/sh\n");
+		fs.chmodSync(fake, 0o755);
+		assert.equal(isAgyInstalled("agy", { PATH: `${dir}:/usr/bin` }), true);
+		assert.equal(isAgyInstalled("agy", { PATH: "/usr/bin" }), false);
+		assert.equal(isAgyInstalled("agy", { PATH: "" }), false);
+		assert.equal(isAgyInstalled(fake, { PATH: "" }), true);
+		assert.equal(isAgyInstalled(path.join(dir, "nope"), {}), false);
+		assert.equal(isAgyInstalled(dir, { PATH: "" }), false); // a dir is not a file
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("picker: missing-agy toast carries the official install URL", () => {
+	assert.match(agyMissingMessage(), /https:\/\/antigravity\.google\/product\/antigravity-cli/);
+	assert.match(agyMissingMessage(), /[Ll]og in/);
 });
 
 test("picker: intro explains both engines' constraints", () => {

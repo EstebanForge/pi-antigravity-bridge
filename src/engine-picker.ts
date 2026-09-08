@@ -1,9 +1,11 @@
-// First-run engine picker.
+// First-run onboarding: the engine picker plus the agy-presence warning.
 //
 // On the first interactive start (no config file yet, no AGY_ENGINE env) pi
 // asks which turn engine to use: the stream-json `agy` CLI or Google's
 // official ACP server. The choice persists via saveConfig({ engine }) and,
 // like /agy engine, takes effect on the next pi start (drivers wire at load).
+// Every start with the stream-json engine active also re-checks that the
+// `agy` binary exists and warns until it does (re-auth is out of scope).
 //
 // UI: tui.md "Pattern 1" - SelectList framed by DynamicBorder inside pi's
 // native overlay (the window feel pi-rtk builds its modal on).
@@ -18,6 +20,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import fs from "node:fs";
+import path from "node:path";
 import type { Engine } from "./config.js";
 
 /** Picker order is the default answer order: stream-json first. */
@@ -73,6 +76,36 @@ export function savedEngineMessage(engine: Engine): string {
 	return engine === "acp"
 		? "Engine saved: acp. Restart pi to apply, then run /agy auth to sign in. Set acp.bin or AGY_ACP_BIN if the server .par is not on PATH. If the binary is missing it downloads automatically on next start (~1.5 GB)."
 		: "Engine saved: stream-json. Restart pi to apply.";
+}
+
+/** True when the `agy` CLI binary can be found. A binRef with a path
+ *  separator (AGY_BIN=/opt/agy/agy) must exist as a file; a bare name is
+ *  searched on PATH. statSync cannot throw through the guards, but a race
+ *  (file removed between listing and stat) fails closed to false. */
+export function isAgyInstalled(binRef: string, env: NodeJS.ProcessEnv = process.env): boolean {
+	if (binRef.includes("/")) {
+		try {
+			return fs.statSync(binRef).isFile();
+		} catch {
+			return false;
+		}
+	}
+	return (env.PATH ?? "")
+		.split(path.delimiter)
+		.filter(Boolean)
+		.some((dir) => {
+			try {
+				return fs.statSync(path.join(dir, binRef)).isFile();
+			} catch {
+				return false;
+			}
+		});
+}
+
+/** Toast copy for the missing-CLI warning. Fires every pi start while the
+ *  stream-json engine is active and the binary is absent. */
+export function agyMissingMessage(): string {
+	return "The `agy` CLI is not installed. Install it from https://antigravity.google/product/antigravity-cli and log in on it to use Antigravity models.";
 }
 
 /** Render the picker overlay. Resolves with the chosen engine, or null when

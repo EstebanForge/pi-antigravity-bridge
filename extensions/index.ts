@@ -66,7 +66,7 @@ import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
 import { CONFIG_PATH, loadConfig, logsDir, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
-import { savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
+import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
@@ -182,6 +182,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// ACP self-heal runs once per process (session_start re-fires on /reload;
 	// a ready setup is two file stats, so re-running is harmless anyway).
 	let acpSelfHealRan = false;
+	// Warn-once-per-process flag for the missing-agy-CLI toast (stream-json).
+	let agyMissingWarned = false;
 	// OAuth URL capture: the server hands the login URL only to the
 	// browser-open call (nothing on stdio), so a BROWSER wrapper records it
 	// and the driver logs it as "auth-url". Local users keep the automatic
@@ -447,6 +449,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				fileLog.log("engine-picker", { error: String(err) }, "warn");
 				console.error(`[antigravity-bridge] engine picker failed: ${String(err)}`);
 			}
+		}
+		// agy presence check (stream-json engine): the CLI is the whole engine,
+		// so a missing binary means every Antigravity turn would fail. Warn on
+		// every process start until it is installed (per-process flag so /new,
+		// /resume and /reload re-fires do not nag mid-session). Runs after the
+		// picker above, so a first-run stream-json pick warns immediately.
+		if (engine === "stream-json" && !agyMissingWarned && !isAgyInstalled(binary)) {
+			agyMissingWarned = true;
+			const msg = agyMissingMessage();
+			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
+			else console.error(`[antigravity-bridge] ${msg}`);
 		}
 		// Legacy cleanup: users who ran the old consent-gated patcher still
 		// carry pi.invokeTool in their installed pi. Inert, but tell them once
