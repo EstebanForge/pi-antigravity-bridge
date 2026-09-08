@@ -44,6 +44,12 @@ export type AgyMode = "accept-edits" | "plan";
 export type ThinkingTier = "low" | "medium" | "high";
 export type BridgeTools = "none" | "mcp" | "all";
 
+/** How ACP turns report token usage while Gate B stands (agy sends none).
+ *  "estimate" (default): word-boundary regex over prompt/response/thought
+ *  text (pi-token-speed's mechanism). "direct": 1 token per streamed delta.
+ *  "off": keep zero-usage. Real server usage (usageSeen latch) always wins. */
+export type UsageEstimate = "estimate" | "direct" | "off";
+
 /** How the approval gate activates (docs/TODO.md section 2.5).
  *
  *  "auto" (default): OFF until a third-party pi permission extension is
@@ -74,6 +80,10 @@ export interface AcpConfig {
 	 *  (parity with skipPermissions). Kept as a key so future policies do not
 	 *  change the config shape. */
 	permissions: "auto";
+	/** Gate B stopgap: client-side token estimates for ACP turns so pi's
+	 *  usage surfaces show nonzero numbers. Estimates are labeled as such in
+	 *  /agy doctor and auto-disable when the server sends real usage. */
+	usageEstimate: UsageEstimate;
 }
 
 export interface AgyConfig {
@@ -149,7 +159,7 @@ const DEFAULTS: AgyConfig = {
 	digest: false,
 	systemPrompt: true,
 	approvals: { gateMode: "auto", mode: "ask" },
-	acp: { bin: "", permissions: "auto" },
+	acp: { bin: "", permissions: "auto", usageEstimate: "estimate" },
 };
 
 /** Load config merged over defaults. Env vars override the file when set. */
@@ -232,11 +242,19 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 			: "ask";
 
 	const fileAcp = (typeof file.acp === "object" && file.acp !== null ? file.acp : {}) as Partial<AcpConfig>;
+	// Unknown values fall back to "estimate" (same narrow-parse pattern as
+	// gateMode: a typo must never silently change behavior).
+	const usageRaw = String(
+		process.env.AGY_USAGE_ESTIMATE ?? fileAcp.usageEstimate ?? DEFAULTS.acp.usageEstimate,
+	).toLowerCase();
+	const usageEstimate: UsageEstimate =
+		usageRaw === "direct" || usageRaw === "off" ? usageRaw : "estimate";
 	const acp: AcpConfig = {
 		bin:
 			process.env.AGY_ACP_BIN ??
 			(typeof fileAcp.bin === "string" ? fileAcp.bin : DEFAULTS.acp.bin),
 		permissions: "auto",
+		usageEstimate,
 	};
 
 	return {

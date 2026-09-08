@@ -276,6 +276,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		// Resolved per connection: the setup flow can install the binary and
 		// update acp.bin mid-session; the next turn picks it up (no restart).
 		bin: () => loadConfig().acp.bin,
+		// Resolved per turn: /agy and AGY_USAGE_ESTIMATE changes apply without
+		// a restart. Without this the driver defaults to "estimate" and the
+		// config knob (incl. "off") is dead.
+		usageEstimate: () => loadConfig().acp.usageEstimate,
 		...(authCapture ? { extraEnv: authCapture.browserEnv, authUrlFile: authCapture.file } : {}),
 		log: acpLog,
 		mcpServers: () => {
@@ -451,7 +455,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 				);
 				if (status.ok) {
 					if (status.binarySource === "installed" || status.binarySource === "existing") {
-						saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
+						saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
 					}
 					if (status.needsLogin) {
 						const msg = acpLoginPending();
@@ -866,7 +870,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
 						return;
 					}
-					saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
+					saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
 					if (status.needsLogin) {
 						ui?.notify(
 							`ACP engine set. ${acpLoginPending()}`,
@@ -901,7 +905,7 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					ui?.notify(`ACP auto-setup failed (${status.error}).\n${status.manual}`, "warning");
 					return;
 				}
-				saveConfig({ acp: { bin: status.bin, permissions: loadConfig().acp.permissions } });
+				saveConfig({ acp: { ...loadConfig().acp, bin: status.bin } });
 				if (!status.needsLogin) {
 					ui?.notify(`Already signed in (auth: ${status.auth}). Nothing to do.`, "info");
 					return;
@@ -929,7 +933,9 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 				if (rest.length > 0) {
 					// Only the keyword compares case-insensitively; the path keeps its case.
 					const bin = rest.toLowerCase() === "auto" ? "" : rest.replace(/^~(?=\/|$)/, os.homedir());
-					saveConfig({ acp: { bin, permissions: loadConfig().acp.permissions } });
+					// Spread, not a bare acp patch: a bare {bin, permissions} object
+					// would drop sibling keys (usageEstimate) from the file.
+					saveConfig({ acp: { ...loadConfig().acp, bin } });
 					ui?.notify(
 						bin
 							? `acp.bin set to ${bin}. The next ACP turn (re)connects with it.`
@@ -999,6 +1005,8 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 					// line the day it starts (then real usage mapping is worth wiring).
 					if (snap.acp.usageSeen) {
 						lines.push("  acp tokens:    AVAILABLE in server payloads (wire real usage mapping next)");
+					} else if (config.acp.usageEstimate !== "off") {
+						lines.push(`  acp tokens:    ESTIMATED client-side (mode: ${config.acp.usageEstimate}; auto-off once the server sends real usage)`);
 					}
 				}
 				if (snap.lifecycle.length > 0) {

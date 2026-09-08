@@ -88,12 +88,43 @@ test("AGY_ACP_BIN env overrides acp.bin", () => {
 test("acp.bin persists through saveConfig", () => {
 	const p = tmpConfig();
 	try {
-		saveConfig({ acp: { bin: "~/.local/opt/agy-acp/current/agy_acp_server.par", permissions: "auto" } }, p);
+		saveConfig({ acp: { bin: "~/.local/opt/agy-acp/current/agy_acp_server.par", permissions: "auto", usageEstimate: "estimate" } }, p);
 		assert.equal(loadConfig(p).acp.bin, "~/.local/opt/agy-acp/current/agy_acp_server.par");
 		saveConfig({ digest: true }, p);
 		assert.equal(loadConfig(p).acp.bin, "~/.local/opt/agy-acp/current/agy_acp_server.par");
 		assert.equal(loadConfig(p).digest, true);
 	} finally {
+		rm(p);
+	}
+});
+
+test("usageEstimate defaults to estimate; unknown values fall back", () => {
+	const p = tmpConfig();
+	try {
+		assert.equal(loadConfig(p).acp.usageEstimate, "estimate");
+		saveConfig({ acp: { bin: "", permissions: "auto", usageEstimate: "direct" } }, p);
+		assert.equal(loadConfig(p).acp.usageEstimate, "direct");
+		const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Record<string, unknown>;
+		const acpRaw = raw.acp as Record<string, unknown>;
+		acpRaw.usageEstimate = "bogus";
+		fs.writeFileSync(p, JSON.stringify(raw));
+		assert.equal(loadConfig(p).acp.usageEstimate, "estimate");
+	} finally {
+		rm(p);
+	}
+});
+
+test("AGY_USAGE_ESTIMATE env overrides acp.usageEstimate", () => {
+	const p = tmpConfig();
+	const prev = process.env.AGY_USAGE_ESTIMATE;
+	process.env.AGY_USAGE_ESTIMATE = "off";
+	try {
+		assert.equal(loadConfig(p).acp.usageEstimate, "off");
+		process.env.AGY_USAGE_ESTIMATE = "nonsense";
+		assert.equal(loadConfig(p).acp.usageEstimate, "estimate");
+	} finally {
+		if (prev === undefined) delete process.env.AGY_USAGE_ESTIMATE;
+		else process.env.AGY_USAGE_ESTIMATE = prev;
 		rm(p);
 	}
 });

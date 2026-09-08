@@ -35,6 +35,7 @@ async function runDriver(
 		conversationId?: string | null;
 		timeoutMin?: number;
 		skipPermissions?: boolean;
+		usageEstimate?: "estimate" | "direct" | "off";
 		signal?: AbortSignal;
 		onHandle?: (
 			handle: Awaited<ReturnType<AcpDriver["run"]>>,
@@ -48,6 +49,7 @@ async function runDriver(
 		bin: process.execPath,
 		binArgs: [FAKE_SERVER],
 		extraEnv: { ACP_FAKE_SCENARIO: scenario, ACP_FAKE_LOG: logPath },
+		usageEstimate: opts.usageEstimate,
 		log: () => {},
 	});
 	const activities: DriverActivity[] = [];
@@ -485,5 +487,61 @@ describe("acp/driver shutdown latch", () => {
 		assert.match(outcome.error ?? "", /recycled mid-turn \(session switch\)/);
 		// Respawn-after-close is pinned by the shutdown-latch test above: the
 		// same #ensureConnection path brings the connection back on the next turn.
+	});
+});
+
+describe("acp/driver usage synthesis (Gate B stopgap)", () => {
+	test("default (estimate): OK turns carry synthetic usage + a usage activity", async () => {
+		const run = await tracked("think", { prompt: "one two three" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		// Input "one two three" = 3; thoughts TH1+TH2 = 2; "HE LLO" = 2 words.
+		assert.deepEqual(outcome.usage, {
+			input_tokens: 3,
+			output_tokens: 4,
+			thinking_tokens: 2,
+			total_tokens: 7,
+		});
+		// The usage activity must reach the provider BEFORE the stream closes.
+		const usageIdx = run.activities.findIndex((a) => a.type === "usage");
+		assert.ok(usageIdx >= 0, "usage activity missing");
+		assert.equal(run.activities[run.activities.length - 1]?.type, "usage");
+	});
+
+	test("direct mode counts deltas instead of text", async () => {
+		// think scenario: 3 deltas (2 thought + 1 multi-word text). Estimate
+		// would report 4 output tokens (2+2); direct reports 1 per delta.
+		const run = await tracked("think", { prompt: "one two three", usageEstimate: "direct" });
+		const outcome = await run.handle.outcome;
+		assert.deepEqual(outcome.usage, {
+			input_tokens: 3,
+			output_tokens: 3,
+			thinking_tokens: 2,
+			total_tokens: 6,
+		});
+	});
+
+	test("off mode keeps zero-usage semantics", async () => {
+		const run = await tracked("happy", { prompt: "hi", usageEstimate: "off" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.usage, undefined);
+		assert.equal(run.activities.some((a) => a.type === "usage"), false);
+	});
+
+	test("a server frame carrying usage latches the estimate off (Gate B)", async () => {
+		const run = await tracked("usage-frame", { prompt: "hi" });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "OK");
+		assert.equal(outcome.usage, undefined);
+		assert.equal(run.activities.some((a) => a.type === "usage"), false);
+	});
+
+	test("error turns never synthesize usage", async () => {
+		const run = await tracked("slow", { prompt: "hang", timeoutMin: 0.05 });
+		const outcome = await run.handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+		assert.equal(outcome.usage, undefined);
+		assert.equal(run.activities.some((a) => a.type === "usage"), false);
 	});
 });

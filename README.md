@@ -21,14 +21,14 @@ Multi-turn works. The provider binds a pi session to an agy conversation id (per
 Turns run through one of two engines behind the same provider surface (`config.engine`, default `stream-json`):
 
 - **stream-json** (default): the persistent `agy` CLI process. The tested default; live token usage; conversation resume via `--conversation`.
-- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display shows zero) and no cancel (abort tears the server down and reloads it next turn).
+- **acp** (beta): Google's official ACP server (`agy_acp_server.par`), JSON-RPC 2.0 over stdio. Beta: parity-verified live against the current build (RC01) - text streaming, multi-turn resume via `session/load`, bridge tools, effort switching, serialization, abort recovery (see `scripts/parity-live.mjs`). Two known RC01 gaps remain: no usage fields (token display shows client-side ESTIMATES until Google ships usage; `acp.usageEstimate` off to keep zeros) and no cancel (abort tears the server down and reloads it next turn).
 
 Engine-dependent features: pi image attachments ride natively only on the ACP engine (the picker offers image attach automatically when `config.engine` is `acp`; the stream-json CLI prompt is text-only). With the optional G1 digest enabled, its delivery also differs: ACP ships it as a native `embeddedContext` resource block, stream-json prepends it to the prompt text. The `AskAntigravity` delegation tool is unaffected by `config.engine` and runs the `stream-json` CLI (`agy -p`) across both configurations.
 
 | Capability | `stream-json` (default) | `acp` (beta) |
 | --- | --- | --- |
 | Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
-| Live token usage | Yes (live metrics from CLI step events) | No (absent in RC01, displays zero tokens) |
+| Live token usage | Yes (live metrics from CLI step events) | Estimated client-side (absent in RC01; `acp.usageEstimate`, default on) |
 | Image prompt input | No (CLI prompt is text-only; images dropped) | Yes (native image blocks forwarded to server) |
 | Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
 | Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |

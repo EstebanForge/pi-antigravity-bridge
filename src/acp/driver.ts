@@ -19,9 +19,12 @@
 //     in-connection (plan §9.3); no provider involvement
 
 import { randomUUID } from "node:crypto";
+import type { UsageEstimate } from "../config.js";
 import { AcpConnection, resolveAcpBinary, type AcpMcpServer } from "./connection.js";
 import { mapStopReason, mapUpdate, TextAccumulator, type AcpEditDiff } from "./events.js";
+import { estimateTokens, synthesizeUsage } from "./usage-estimate.js";
 import type {
+	AgyUsage,
 	DriverActivity,
 	DriverSnapshot,
 	DriverState,
@@ -46,6 +49,10 @@ export interface AcpDriverOptions {
 	authUrlFile?: string;
 	/** Bridge registration for session/new AND session/load. */
 	mcpServers?: () => AcpMcpServer[];
+	/** Gate B stopgap: how ACP turns synthesize usage while the server sends
+	 *  none. A function is resolved per turn (follows live config, like bin).
+	 *  Default "estimate". */
+	usageEstimate?: UsageEstimate | (() => UsageEstimate);
 	log?: (msg: string, data?: unknown) => void;
 }
 
@@ -59,6 +66,13 @@ interface ActiveTurn {
 	resolve: (o: TurnOutcome) => void;
 	outcome: Promise<TurnOutcome>;
 	response: TextAccumulator;
+	/** Usage-synthesis counters: per-delta token sums (estimate mode) and
+	 *  delta counts (direct mode). Sums are taken per delta, never over the
+	 *  joined text, so a word split across chunks stays two words. */
+	textTokens: number;
+	thoughtTokens: number;
+	textDeltas: number;
+	thoughtDeltas: number;
 	sawResult: boolean;
 	/** True once the prompt RPC was issued. Abort before this point has
 	 *  nothing to cancel: probing would risk a success-as-noop answer from a
@@ -359,10 +373,16 @@ export class AcpDriver implements TurnDriver {
 		switch (mapped.kind) {
 			case "text": {
 				const emit = turn.response.append(mapped.delta);
-				if (emit) this.#emit(turn, { type: "text", delta: emit });
+				if (emit) {
+					turn.textDeltas += 1;
+					turn.textTokens += estimateTokens(emit);
+					this.#emit(turn, { type: "text", delta: emit });
+				}
 				return;
 			}
 			case "thought": {
+				turn.thoughtDeltas += 1;
+				turn.thoughtTokens += estimateTokens(mapped.delta);
 				this.#emit(turn, { type: "thought", delta: mapped.delta });
 				return;
 			}
@@ -543,6 +563,10 @@ export class AcpDriver implements TurnDriver {
 			resolve,
 			outcome,
 			response: new TextAccumulator(),
+			textTokens: 0,
+			thoughtTokens: 0,
+			textDeltas: 0,
+			thoughtDeltas: 0,
 			sawResult: false,
 		promptStarted: false,
 			aborted: false,
@@ -643,6 +667,16 @@ export class AcpDriver implements TurnDriver {
 
 	#settle(turn: ActiveTurn, outcome: TurnOutcome): void {
 		if (turn.closed) return;
+		// Gate B stopgap: synthesize usage on clean turns while the server sends
+		// none. Runs BEFORE close so the usage activity drains through the
+		// normal #nextActivity loop (provider maps it onto partial.usage).
+		if (outcome.status === "OK" && !outcome.aborted && outcome.usage === undefined) {
+			const usage = this.#syntheticUsage(turn);
+			if (usage) {
+				outcome.usage = usage;
+				this.#emit(turn, { type: "usage", usage });
+			}
+		}
 		turn.closed = true;
 		if (turn.overallTimer) clearTimeout(turn.overallTimer);
 		if (turn.idleTimer) clearTimeout(turn.idleTimer);
@@ -668,6 +702,29 @@ export class AcpDriver implements TurnDriver {
 			error: message,
 			finished: true,
 			aborted: turn.aborted,
+		});
+	}
+
+	/** Usage synthesis mode, resolved per turn (follows live config). */
+	#usageMode(): UsageEstimate {
+		const opt = this.#opts.usageEstimate;
+		return (typeof opt === "function" ? opt() : opt) ?? "estimate";
+	}
+
+	#syntheticUsage(turn: ActiveTurn): AgyUsage | undefined {
+		const mode = this.#usageMode();
+		if (mode === "off") return undefined;
+		// Gate B latch: any server frame with usage/token keys means real
+		// usage exists upstream; estimates must never shadow it.
+		if (this.#conn?.usageSeen) return undefined;
+		return synthesizeUsage({
+			mode,
+			prompt: turn.request.prompt,
+			contextText: turn.request.contextBlock?.text,
+			textTokens: turn.textTokens,
+			thoughtTokens: turn.thoughtTokens,
+			textDeltas: turn.textDeltas,
+			thoughtDeltas: turn.thoughtDeltas,
 		});
 	}
 

@@ -16,6 +16,12 @@
 //   load-fails         session/load -> -32000 (driver must fall back to new)
 //   park               prompt -> chunk "P1", then after 2500ms "P2" + end_turn
 //                      (overall-timer pause tests: park past a tight deadline)
+//   think              prompt -> thought chunks ("TH1","TH2") + text chunk
+//                      "HE LLO" -> end_turn (usage synthesis tests; the
+//                      multi-word chunk diverges estimate from direct)
+//   usage-frame        prompt -> chunk carrying a usage-like key -> chunks
+//                      "HE","LLO" -> end_turn (Gate B latch tests: real
+//                      usage in any frame must suppress synthesis)
 //   tool-diff          prompt -> tool_call (pending, WITH diff content) ->
 //                      tool_call_update (in_progress) -> tool_call_update
 //                      (completed, rawOutput only, no content) -> chunk
@@ -56,6 +62,13 @@ function notifyChunk(text) {
     jsonrpc: "2.0",
     method: "session/update",
     params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } },
+  });
+}
+function notifyThoughtChunk(text) {
+  send({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { sessionId, update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text } } },
   });
 }
 function sleep(ms) {
@@ -277,6 +290,32 @@ async function streamPrompt() {
     notifyChunk("LIVE-1");
     await sleep(20);
     notifyChunk("LIVE-2");
+    if (pendingPromptId !== null) {
+      result(pendingPromptId, { stopReason: "end_turn" });
+      pendingPromptId = null;
+    }
+    return;
+  }
+  if (scenario === "think") {
+    notifyThoughtChunk("TH1");
+    await sleep(20);
+    notifyThoughtChunk("TH2");
+    await sleep(20);
+    notifyChunk("HE LLO");
+    if (pendingPromptId !== null) {
+      result(pendingPromptId, { stopReason: "end_turn" });
+      pendingPromptId = null;
+    }
+    return;
+  }
+  if (scenario === "usage-frame") {
+    send({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId, update: { sessionUpdate: "agent_message_chunk", usage: { totalTokens: 99 }, content: { type: "text", text: "HE" } } },
+    });
+    await sleep(20);
+    notifyChunk("LLO");
     if (pendingPromptId !== null) {
       result(pendingPromptId, { stopReason: "end_turn" });
       pendingPromptId = null;
