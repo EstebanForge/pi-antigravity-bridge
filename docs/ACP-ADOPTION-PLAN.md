@@ -873,3 +873,57 @@ answers: model catalog ships in `session/new` (CLI catalog unnecessary on
 ACP); edits surface as diffs inside `tool_call` content even with fs
 capabilities off; no usage fields anywhere; available_commands_update carries
 `plan` and `logout`; cold start ~5-6 s, steady RSS ~327 MB.
+
+## 17. Default-flip readiness (phase 4) — analysis as of 2026-09-07
+
+Standing analysis so nobody re-derives it: what blocks flipping the default
+engine from stream-json to ACP. Re-verify only the dated facts (Gate B
+status via `/agy doctor`); the structural conclusions hold.
+
+**Verdict: nothing mechanical blocks the flip. The one real blocker is
+deliberate (Gate B), plus four soft items to ship in the same release.**
+
+Already green:
+
+- Parity contract (section 6) is ALL `[x]`, live-verified on both engines
+  (parity suite 14/14).
+- Everything shipped since 1.4.9 is engine-aware: bridge registration is
+  ACP-native (`session/new` mcpServers) AND stream-json-native
+  (`~/.gemini/config/mcp_config.json`); tool-result images ride both engines
+  (probe-verified on each); the approval gate's ACP hook firing is the
+  LIVE-verified side (stream-json is docs-attested only), so the flip does
+  not weaken it.
+- Rollback is one config flip; sessions are engine-scoped so bindings never
+  cross.
+
+THE blocker — Gate B (a product decision, not code):
+
+- RC01 sends no usage/token fields in ANY payload. Flipping the default
+  moves every user's token/cost display to zero on their daily engine.
+- The plan (section 7) keeps stream-json default until upstream ships
+  usage. The `/agy doctor` Gate B watch is armed and prints "acp tokens:
+  AVAILABLE" the day upstream changes - that is the flip signal. Nothing on
+  our side can lift it.
+- Acceptable alternative, already discussed: flip now and document
+  zero-usage for ACP users. Both positions are defensible; the documented
+  default matches the plan's letter.
+
+Soft items to ship alongside the flip (not blockers):
+
+1. Clean-machine first-run: ACP as DEFAULT means fresh installs hit the
+   self-setup path (binary install + auth bootstrap) immediately. Self-heal
+   exists; never tested as the first-run experience. Test once on a clean
+   env.
+2. User-visible abort change: Esc on ACP = kill + reconnect + reload (RC01
+   has no `session/cancel`). Document in README and `/agy status`.
+3. Pull soak evidence from the daily logs (warn rates per engine, 1.4.9+)
+   and attach to this section.
+4. Note that `AskAntigravity` stays on `agy -p` regardless (phase 4+).
+
+Mechanics of the flip (minutes): default in `src/config.ts` + the
+`acp-config` test default + README engine table + AGENTS.md + beta wording.
+`AGY_ENGINE` env override keeps an escape hatch either way.
+
+Recommendation on record: keep stream-json default until the doctor's Gate B
+line appears; OR flip now accepting documented zero-usage. First matches the
+plan's letter, second trades token display for the better engine.
