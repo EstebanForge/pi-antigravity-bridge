@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.10] - 2026-09-07
+
+### Added
+
+- Approval gate for agy native tool calls. agy runs its own agent loop, and its mutating native tools (`run_command`, `create_file`, `edit_file`, ...) executed with no pi involvement: pi's permission extensions never saw them. The gate routes the calls through a pi-side approval in builtin shape, so the existing permission-extension ecosystem gates them with zero changes: a staged `.agents/hooks.json` `PreToolUse` hook parks the call in the bridge, the provider emits a pi `toolUse` for a builtin-shaped shadow tool (`bash`/`write`/`edit`), and the decision - allow, or deny with a reason the model sees - travels back to the hook. Marker calls never execute locally and are verified against the bridge's pending-ticket set (a forged marker denies even in allow mode); non-marker calls delegate to factory twins of the real builtins, so normal pi behavior is unchanged. Read-only agy tools stay ungated. Opt-in via `approvals.gateMode` (`auto`, the default, keeps it off until a known pi permission extension is detected; `shadow` forces on; `off` forces off) and `approvals.mode` (`ask`, the default, shows a pi confirm dialog and denies headless; `allow`/`deny` skip the dialog). Timeout, an unwired gate, and shutdown all deny fail-closed. Every decision lands in the daily log with tool names, source, and latency. README has the full section plus a sample gate extension.
+
+### Fixed
+
+- Bridge tools now register for the stream-json engine. That engine registered nothing: the agy CLI discovers MCP servers from `~/.gemini/config/mcp_config.json`, which the bridge never wrote (only the per-invocation `--add-dir` config existed), and the gap was masked because the daily engine is ACP. The bridge now registers itself there per-pid (`pi-bridge-<pid>`) at session start, sweeps stale entries left by crashed sessions, and unregisters on shutdown. Foreign servers in the shared file are preserved; a corrupt file is refused, never rewritten. Probe-verified live: agy discovers the server and completes tool calls through its native `call_mcp_tool` wrapper.
+- Image blocks in tool results now reach the model on the stream-json engine too (they were ACP-only). The engine gate downgraded pixels to a text label over an unverified transport concern; a live probe settled it - the CLI's MCP client delivers tool-result image content, and the model named a two-tone PNG's halves from the tool result alone with no decoders in the frame trail. `read` on an image file now gives agy real pixels on both engines. Stream-json prompt attachments and the late-delivery prompt stay text-only by design.
+
 ## [1.4.9] - 2026-09-05
 
 ### Added

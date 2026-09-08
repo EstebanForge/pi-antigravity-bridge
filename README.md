@@ -30,6 +30,7 @@ Engine-dependent features: pi image attachments ride natively only on the ACP en
 | Show thinking text | No (token count only, floor 64, no text body) | Yes (streams thought text via `agent_thought_chunk`; sparse on RC01 where reasoning often arrives in message text) |
 | Live token usage | Yes (live metrics from CLI step events) | No (absent in RC01, displays zero tokens) |
 | Image prompt input | No (CLI prompt is text-only; images dropped) | Yes (native image blocks forwarded to server) |
+| Image tool results | Yes (bridge tool results carry pixels; probe-verified 2026-09-07) | Yes (probe-verified 2026-09-05) |
 | Audio prompt input | No (dropped) | Protocol advertised (`promptCapabilities.audio: true`) |
 | Review-only plan mode | Yes (`--mode plan` review-only via `/agy mode plan`) | No (RC01 modes are permission levels; plan mode refused) |
 | Leading slash commands in prompt | Disabled via `--disable-slash-commands` (sent as plain text) | Server intercepts recognized commands (e.g. `/plan`) and executes them under the active policy |
@@ -57,7 +58,7 @@ agy runs its own closed tool loop (`read_file`, `write_file`, `edit_file`, `run_
 Residual limits (with or without the bridge):
 
 - agy's own edits still land directly on disk; pi's inline diff review does not engage for them.
-- agy commands run without per-action approval, same as every other tool in pi. See [Permissions](#permissions) below.
+- agy commands run without per-action approval by default, same as every other tool in pi. The [Approval gate](#approval-gate-agy-native-tools) can put pi-side review in front of agy's mutating native tools (off by default; `auto` enables it only when a pi permission extension is installed). See also [Permissions](#permissions) below.
 - No cost accounting: cost stays zero because agy runs on your subscription quota. Token usage is live.
 
 ## MCP tool bridge (agy uses pi's tools)
@@ -202,6 +203,8 @@ pi itself has no built-in approval gate. Unlike codex, claude, or agy running in
 Because agy runs non-interactively under this provider (nothing can answer a `y/n` prompt), this extension passes `--dangerously-skip-permissions` by default. It is technically necessary: `accept-edits` auto-approves file edits but not shell commands, so a `run_command` would otherwise hang forever waiting for a prompt nothing can answer (upstream [google-antigravity/antigravity-cli#318](https://github.com/google-antigravity/antigravity-cli/issues/318)). The net effect is that agy executes commands the same way pi already executes your other tools: without per-action review.
 
 If you want agy to execute nothing, use `/agy mode plan`. Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
+
+For per-action review of agy's mutating native tools (`run_command`, `create_file`, `edit_file`, ...), see the [Approval gate](#approval-gate-agy-native-tools): with it on, the call must pass a pi-side approval (your permission extension, or the built-in ask/allow/deny fallback) before agy executes it.
 
 ### Run pi inside a sandbox
 

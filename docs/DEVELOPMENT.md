@@ -98,6 +98,10 @@ Most "stuck" reports trace to one of:
 - `tests/acp-driver.test.ts` - the ACP driver over the fake server (`tests/helpers/fake-acp-server.mjs`, scenario-selected): happy flow, load-replay, permission auto-answer, Gate D abort (cancel probe, teardown, `cancelSupported` memory), the stale-exit race (a killed connection's late exit must not fail its replacement - `ACP_FAKE_SLOW_DEATH_MS`), auth errors, park/kickIdle timer pause with remaining budget.
 - `tests/acp-config.test.ts` - engine selection narrowing (`AGY_ENGINE`/`config.engine`), acp block parsing.
 - `tests/daily-log.test.ts` - the support log: day rotation, retention cutoff boundary, secret redaction (incl. header blocks), the 4 KB record cap, never-throw on a broken dir, and the two-tier gate (debug records dropped unless `AGY_DEBUG`).
+- `tests/mcp-registration.test.ts` - the `~/.gemini/config/mcp_config.json` registration for the stream-json CLI: exact agy entry shape, foreign servers preserved, corrupt config refused, atomic writes, stale-entry sweep.
+- `tests/provider-escalation.test.ts` - the early-ack + poll pipeline (escalation registry, poll views, late-delivery tombstones) and tool-result image forwarding on both engines.
+- `tests/approval-gate.test.ts` - the shadow tool factory: marker calls never execute, ticket verification denies forged/stale markers before the policy, denials throw, native-to-shadow mapping.
+- `tests/approval-park.test.ts` - the approval park end-to-end over a real (port 0) server: POST ticket early-ack, poll pending -> terminal, timeout deny, ungated/unwired deny, close fail-closed, provider round-trip (allow / block-deny / timeout), `__agy*` strip on G9 args.
 
 ## Module map
 

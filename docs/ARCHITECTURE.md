@@ -26,7 +26,11 @@ src/sessions.ts       atomic JSON store: pi session -> agy conversation + waterm
 src/config.ts         persisted runtime config (engine + acp block, bridgeTools, digest, mode, permissions, model/thinking defaults)
 src/daily-log.ts      daily NDJSON support log (one file per day, 14-day retention, secret redaction, AGY_DEBUG verbose gate); fed by both drivers, the bridge, round-trips, /agy, and ask-tool
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
-src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip
+src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip. Also the approval park: POST /approval (ticket early-ack) + GET /approval/<id>, fail-closed on timeout/unwired/close
+src/mcp-registration.ts registers/unregisters the bridge in ~/.gemini/config/mcp_config.json for the stream-json CLI (per-pid, atomic, stale sweep)
+src/approval-gate.ts  shadow tool factory (bash/write/edit): marker calls are ticket-verified approval round-trips, non-marker calls delegate; maps agy native tools onto the shadow surface
+src/approval-detect.ts third-party pi permission-extension detection; resolves approvals.gateMode auto (off until a gate extension exists)
+src/approval-hook.ts  merge-safe .agents/hooks.json staging (PreToolUse) + generated 0600 early-ack/poll hook script; staged timeout exceeds the park budget (hook timeouts soft-pass)
 src/diff-render.ts    stream-json: render agy's file edits as git diffs in pi's thinking stream; formatInlineDiff (no git) renders ACP's native diffs
 src/driver-types.ts   TurnDriver contract shared by both engines (request/handle/snapshot types)
 src/acp/jsonrpc.ts    NDJSON JSON-RPC 2.0 framing with line buffering and typed error results
@@ -85,7 +89,9 @@ Phase-2/3 additions (all ACP-only, verified live):
 
 - **Images**: pi image attachments ride as typed content blocks in the
   prompt array; models advertise `input: ["text","image"]` only when the
-  engine is `acp` (decided at extension load). stream-json stays text-only.
+  engine is `acp` (decided at extension load). stream-json prompt input
+  stays text-only (tool-RESULT images ride both engines; see
+  PI-BRIDGE-GAPS).
 - **Digest delivery**: with `config.digest` on, ACP ships the G1 digest as
   a native `embeddedContext` resource block (images → resource → text);
   stream-json keeps it inline. Same cache churn either way.
