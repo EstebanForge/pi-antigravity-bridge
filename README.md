@@ -3,10 +3,13 @@
 A Gemini model provider **and** the `AskAntigravity` delegation tool for [pi](https://github.com/earendil-works/pi-coding-agent), built on Google's official Antigravity binaries: the `agy` CLI by default, or **Google's official ACP server** (opt-in). It registers `antigravity/gemini-*` models in pi's `/model` picker (streaming), and provides the `AskAntigravity` tool for one-shot delegation - the same combined shape as `pi-claude-bridge`.
 
 <p>
-<img width="1376" height="451" alt="SCR-20260908-mbox" src="https://github.com/user-attachments/assets/d105c8a7-1ace-42f7-8285-642150453761" align="center" />
+  <img width="1374" height="869" alt="image" src="https://github.com/user-attachments/assets/fdd6c1f0-5144-40ef-9371-77a94de50b76" align="center" />
 </p>
 <p>
-<img width="1375" height="1342" alt="SCR-20260908-mbvc" src="https://github.com/user-attachments/assets/bb614c55-e0f8-4677-bb0e-6541071e91ef" align="center" />
+  <img width="1376" height="451" alt="SCR-20260908-mbox" src="https://github.com/user-attachments/assets/d105c8a7-1ace-42f7-8285-642150453761" align="center" />
+</p>
+<p>
+  <img width="1375" height="1342" alt="SCR-20260908-mbvc" src="https://github.com/user-attachments/assets/bb614c55-e0f8-4677-bb0e-6541071e91ef" align="center" />
 </p>
 
 
