@@ -259,9 +259,10 @@ unreachable on RC01 — no cancel method).
 
 NO usage/token fields appeared anywhere in `initialize`, `session/new`,
 `set_config_option`, `agent_message_chunk`, prompt results, or tool flows
-(run 6). Gate B FINAL: ABSENT on RC01. Consequence in the plan: stream-json
-is retained as a secondary engine until upstream ships usage (phase-4
-deletion conditioned on Gate B lifting).
+(run 6). Gate B FINAL: ABSENT on RC01. Consequence in the plan (updated
+2026-09-07): Gate B no longer blocks the default flip - zero-usage is
+documented and accepted on ACP. stream-json stays a supported secondary
+engine; its deletion remains conditioned on Gate B lifting.
 
 ## session/cancel
 

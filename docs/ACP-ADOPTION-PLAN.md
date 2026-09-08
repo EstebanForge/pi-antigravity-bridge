@@ -200,7 +200,7 @@ in git history.
 | Cancel | Kill process group; in-flight turn dies | `session/cancel` to `stopReason: cancelled`, process survives | **REGRESSION-MANAGED (Gate D FAIL on RC01): cancel NOT implemented.** Fallback kill + `session/load` VERIFIED; re-check per build |
 | Process lifecycle | One agy child per provider; recycle on model/effort/mode/cwd/conversation drift | One server hosts N sessions | IMPROVEMENT |
 | Model + effort selection | CLI flags + recycle | `session/set_config_option` (`configId`) | PASS (VERIFIED live, Gate A): per-session switching, no recycle |
-| Usage tokens | `toPiUsage` from step events | Not in any payload (Gate B FINAL) | **ABSENT on RC01.** Zero-usage documented; stream-json retained as secondary engine; phase-4 deletion conditioned on Gate B lift |
+| Usage tokens | `toPiUsage` from step events | Not in any payload (Gate B FINAL) | **ABSENT on RC01.** Zero-usage documented and ACCEPTED for the flip (user decision 2026-09-07: Gate B no longer blocks the default). stream-json stays a supported secondary engine; its DELETION is still conditioned on Gate B lift |
 | MCP tools (G9) | Our HTTP bridge server via `--add-dir` config | `mcpServers` param (`{name,type:"http",url,headers:[]}`) | PARITY at shape level (verified). Phase-1 acceptance: bridge `tools/list`+`tools/call` end-to-end |
 | Skills | `--disable-slash-commands`; bridge owns skills | Unknown slash behavior; `available_commands_update` exists | PARITY. Keep our bridge; probe F.7 |
 | G1 digest, G10 system prompt | Provider-side prompt assembly | Same (we compose the prompt either way) | PARITY. `embeddedContext` is a later enhancement |
@@ -318,7 +318,7 @@ Tested with the parity suite (section 11) and `scripts/parity-live.mjs`
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Usage tokens absent (CONFIRMED, Gate B) | Cost/token display zeros on ACP | Zero-usage documented; stream-json retained as SECONDARY engine until upstream ships usage — phase-4 deletion is conditioned on Gate B lifting (review 4, finding 2) |
+| Usage tokens absent (CONFIRMED, Gate B) | Cost/token display zeros on ACP | ACCEPTED 2026-09-07 (user decision): Gate B no longer blocks the default flip - zero-usage is documented behavior on ACP. stream-json stays a supported secondary; its deletion still waits on Gate B so zero-usage is never forced on a whole release (review 4, finding 2) |
 | ~~No model/effort switch per session~~ RESOLVED: Gate A PASS | — | `session/set_config_option` verified live; per-session switching, no recycle |
 | Slash commands expanded server-side | Could double-expand with our prompt assembly | Probe F.7. If present: keep our prefixes out of command-looking lines, or ignore server command list |
 | `request_permission` with no pi-side permission UI | Cannot render a native dialog | Single `auto` policy (parity with `skipPermissions: true`); per-tool gating for pi tools belongs to the tools/extensions and is preserved end-to-end by G9 (9.3). Never hang |
@@ -781,8 +781,8 @@ All items below are deferred until a full soak cycle of both engines has complet
 
 1. AskAntigravity migration to ACP one-shot (migrating while `stream-json` is default breaks streaming-only users who haven't onboarded ACP auth; streaming conversation ids cannot resume under ACP). `mode: "plan"` delegations keep the `agy -p --mode plan` path (committed exception).
 2. Delete `src/discovery.ts` (`/proc` fd-scan) once AskAntigravity migration completes.
-3. Default flip: `config.engine` default becomes `"acp"` after one full release soak cycle with both engines shipping. Gate A PASS is verified.
-4. Upstream Gate B resolution: Google ships usage counters in ACP payloads.
+3. Default flip: `config.engine` default becomes `"acp"` after one full release soak cycle with both engines shipping. Gate A PASS is verified. Gate B is NOT a precondition (lifted as a blocker 2026-09-07); the soft items in section 17 ship in the same release.
+4. Upstream Gate B resolution (optional, informational): Google ships usage counters in ACP payloads. The `/agy doctor` watch reports it when it happens.
 5. Streaming engine deletion: `src/driver.ts`, `src/stream-events.ts`, and streaming tests deleted one release after the flip AND only once Gate B has lifted (so zero-usage is never forced).
 
 Acceptance: default-flip release ships with the parity suite as acceptance evidence; deletion release has zero references to the removed modules.
@@ -880,8 +880,11 @@ Standing analysis so nobody re-derives it: what blocks flipping the default
 engine from stream-json to ACP. Re-verify only the dated facts (Gate B
 status via `/agy doctor`); the structural conclusions hold.
 
-**Verdict: nothing mechanical blocks the flip. The one real blocker is
-deliberate (Gate B), plus four soft items to ship in the same release.**
+**Verdict: nothing blocks the flip. Gate B was REMOVED as a blocker on
+2026-09-07 (user decision: token usage does not matter for the extension's
+purpose - agy runs on subscription quota, cost stays zero either way).
+Zero-usage on ACP is accepted as documented behavior. Remaining before the
+flip: the four soft items below, shipped in the same release.**
 
 Already green:
 
@@ -896,17 +899,18 @@ Already green:
 - Rollback is one config flip; sessions are engine-scoped so bindings never
   cross.
 
-THE blocker — Gate B (a product decision, not code):
+Former blocker — Gate B, LIFTED 2026-09-07:
 
-- RC01 sends no usage/token fields in ANY payload. Flipping the default
-  moves every user's token/cost display to zero on their daily engine.
-- The plan (section 7) keeps stream-json default until upstream ships
-  usage. The `/agy doctor` Gate B watch is armed and prints "acp tokens:
-  AVAILABLE" the day upstream changes - that is the flip signal. Nothing on
-  our side can lift it.
-- Acceptable alternative, already discussed: flip now and document
-  zero-usage for ACP users. Both positions are defensible; the documented
-  default matches the plan's letter.
+- RC01 sends no usage/token fields in ANY payload, so ACP shows zero
+  tokens. This used to block the default flip; the user lifted it: agy
+  runs on subscription quota and cost is zero regardless, so the display
+  gap is cosmetic for this extension. Zero-usage on ACP is documented
+  behavior.
+- The `/agy doctor` Gate B watch stays armed as INFORMATIONAL: it prints
+  "acp tokens: AVAILABLE" if upstream ever ships usage, at which point the
+  mapping is a small job and stream-json deletion can proceed.
+- Stream-json remains a supported secondary engine; its DELETION (phase 4
+  step 5) still waits on Gate B so zero-usage is never forced.
 
 Soft items to ship alongside the flip (not blockers):
 
@@ -924,6 +928,6 @@ Mechanics of the flip (minutes): default in `src/config.ts` + the
 `acp-config` test default + README engine table + AGENTS.md + beta wording.
 `AGY_ENGINE` env override keeps an escape hatch either way.
 
-Recommendation on record: keep stream-json default until the doctor's Gate B
-line appears; OR flip now accepting documented zero-usage. First matches the
-plan's letter, second trades token display for the better engine.
+Recommendation on record: Gate B is no longer a condition. Remaining
+pre-flip work is the soft items above; the flip itself is a small,
+mechanical change whenever the soak cycle is judged complete.
