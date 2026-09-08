@@ -79,4 +79,8 @@ test("picker: intro explains both engines' constraints", () => {
 	assert.match(ENGINE_PICKER_INTRO, /~1\.5 GB/);
 	assert.match(ENGINE_PICKER_INTRO, /unavoidable/);
 	assert.match(ENGINE_PICKER_INTRO, /\/agy engine/);
+	// Tool-result images ride BOTH engines since the gate widening
+	// (probe-verified 2026-09-07); the old "adds image input" claim painted
+	// an ACP advantage that no longer exists. Keep it out.
+	assert.doesNotMatch(ENGINE_PICKER_INTRO, /[Aa]dds image/);
 });

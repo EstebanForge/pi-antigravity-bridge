@@ -40,7 +40,7 @@ export const ENGINE_PICKER_INTRO = [
 	"Pick the engine that runs your Antigravity turns. Switch anytime with /agy engine (restart applies it).",
 	"",
 	"stream-json: the `agy` CLI you already installed and authenticated. Persistent process, streamed output. Tested default.",
-	"ACP: Google's official server (agy_acp_server.par). Needs a second Google sign-in and a ~1.5 GB server binary downloaded from Google (automatic, one-time, unavoidable: the server is not part of the agy CLI). Adds image input and native diffs.",
+	"ACP: Google's official server (agy_acp_server.par). Needs a second Google sign-in and a ~1.5 GB server binary downloaded from Google (automatic, one-time, unavoidable: the server is not part of the agy CLI).",
 ].join("\n");
 
 /** True only for a genuine first interactive run: no saved config yet (any
