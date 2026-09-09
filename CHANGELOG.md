@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-09-15
+
+### Fixed
+
+- Delegated agy no longer sees the pi tool bridge. `AskAntigravity` spawns `agy -p`, and any agy on the machine discovers MCP servers from the global `~/.gemini/config/mcp_config.json`, which carries a live `pi-bridge-*` entry for every running pi session. A delegation could therefore connect to a host bridge and call tools (observed live: `memory_search`), which the round-trip store denies fail-closed with "no active antigravity turn" the moment no provider turn is streaming - a dead end for the delegation and an error toast in the host session. The bridge entries are now suppressed while a delegated agy starts: disabled before the spawn, re-enabled on process close or after a 5s grace, whichever lands first. Suppression is reference-counted, so overlapping delegations cannot re-enable early; session start re-enables any entries a crashed delegation left disabled. Foreign MCP servers in the file are never touched. Residual race, documented in code: another session's provider agy respawning inside the window reads the entries disabled and that process lacks bridge tools until its next recycle.
+- Real bridge tool-call failures now land on disk in default mode. The daily log records only errors, and `call-tool-fail` was logged at warn tier (toast only), so a failure like the one above left no durable trace. Genuine rejections now log at error tier; routine turn-end and shutdown aborts stay silent, with the reasons shared as constants between the emit sites and the log classifier so the two cannot drift.
+
+### Changed
+
+- README corrected: the bridge mechanism section described only the dir-scoped discovery and claimed the user's global agy config is never touched. Global per-pid registration shipped earlier and is now documented, along with the delegation suppression and its window.
+
 ## [1.5.0] - 2026-09-08
 
 ### Added
