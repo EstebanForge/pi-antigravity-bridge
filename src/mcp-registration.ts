@@ -93,6 +93,61 @@ export function unregisterBridgeServer(pid: number, configPath: string = mcpConf
 	return { wrote: true };
 }
 
+/** Flip `disabled` on every pi-bridge-* entry (foreign servers untouched).
+ *
+ *  (1) Delegation isolation: the global config is read by ANY agy on the
+ *  machine, so an `agy -p` we spawn ourselves (AskAntigravity) would discover
+ *  live bridge entries and call tools the round-trip store cannot serve
+ *  outside a live provider turn (fail-closed "no active antigravity turn",
+ *  observed live 2026-09-15). agy reads the config once at startup, so a
+ *  short suppression window around the spawn hides the bridge from it.
+ *
+ *  (2) Startup healing (disabled=false): clears entries a crashed delegation
+ *  left suppressed. */
+export function setBridgeEntriesDisabled(
+	disabled: boolean,
+	configPath: string = mcpConfigPath(),
+): { wrote: boolean; changed: number; reason?: string } {
+	const read = readConfig(configPath);
+	if (!read.ok) return { wrote: false, changed: 0, reason: read.reason };
+	let changed = 0;
+	for (const [name, entry] of Object.entries(read.config.mcpServers)) {
+		if (!/^pi-bridge-\d+$/.test(name)) continue;
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const e = entry as { disabled?: unknown };
+		if ((e.disabled === true) === disabled) continue;
+		e.disabled = disabled;
+		changed++;
+	}
+	if (changed === 0) return { wrote: false, changed: 0 };
+	writeConfig(configPath, read.config);
+	return { wrote: true, changed };
+}
+
+const suppressionRefs = new Map<string, number>();
+
+/** Reference-counted suppression for a self-spawned agy process (AskAntigravity
+ *  delegation). First acquire disables every pi-bridge-* entry, last release
+ *  re-enables; nested acquires are free, so overlapping delegations in one
+ *  process cannot clobber each other's window. Same-process only: delegations
+ *  from two pi sessions still race on the shared file - accepted, fail-open
+ *  to the status-quo error. */
+export function acquireBridgeSuppression(configPath: string = mcpConfigPath()): () => void {
+	const key = path.resolve(configPath);
+	const refs = (suppressionRefs.get(key) ?? 0) + 1;
+	suppressionRefs.set(key, refs);
+	if (refs === 1) setBridgeEntriesDisabled(true, configPath);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		const left = Math.max(0, (suppressionRefs.get(key) ?? 1) - 1);
+		if (left === 0) suppressionRefs.delete(key);
+		else suppressionRefs.set(key, left);
+		if (left === 0) setBridgeEntriesDisabled(false, configPath);
+	};
+}
+
 /** Default liveness probe: can the signal be delivered? */
 function pidAlive(pid: number): boolean {
 	try {

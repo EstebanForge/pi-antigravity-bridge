@@ -27,7 +27,7 @@ src/config.ts         persisted runtime config (engine + acp block, bridgeTools,
 src/daily-log.ts      daily NDJSON support log (one file per day, 14-day retention, secret redaction, AGY_DEBUG verbose gate); fed by both drivers, the bridge, round-trips, /agy, and ask-tool
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip. Also the approval park: POST /approval (ticket early-ack) + GET /approval/<id>, fail-closed on timeout/unwired/close
-src/mcp-registration.ts registers/unregisters the bridge in ~/.gemini/config/mcp_config.json for the stream-json CLI (per-pid, atomic, stale sweep)
+src/mcp-registration.ts registers/unregisters the bridge in ~/.gemini/config/mcp_config.json for the stream-json CLI (per-pid, atomic, stale sweep) and flips our entries off around AskAntigravity spawns (refcounted; session start re-enables)
 src/approval-gate.ts  shadow tool factory (bash/write/edit): marker calls are ticket-verified approval round-trips, non-marker calls delegate; maps agy native tools onto the shadow surface
 src/approval-detect.ts third-party pi permission-extension detection; resolves approvals.gateMode auto (off until a gate extension exists)
 src/approval-hook.ts  merge-safe .agents/hooks.json staging (PreToolUse) + generated 0600 early-ack/poll hook script; staged timeout exceeds the park budget (hook timeouts soft-pass)

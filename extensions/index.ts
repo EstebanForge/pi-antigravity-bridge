@@ -72,6 +72,7 @@ import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.j
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
+	setBridgeEntriesDisabled,
 	sweepStaleBridgeServers,
 	unregisterBridgeServer,
 } from "../src/mcp-registration.js";
@@ -131,6 +132,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const modelInput: Array<"text" | "image"> = engine === "acp" ? ["text", "image"] : ["text"];
 	const models = entries.map((e) => toPiModel(e, modelInput));
 
+	// failAll reasons the bridge treats as routine (turn end / shutdown
+	// sweep), not faults. Shared by the emitters below and the mcpLog
+	// classifier so the substring match cannot drift from the text.
+	const FAIL_REASON_TURN_END = "antigravity turn ended with an unresolved pi tool call";
+	const FAIL_REASON_SHUTDOWN = "antigravity session shut down";
+
 	// Daily file log: every sink below feeds ~/.pi/extensions-data/
 	// estebanforge/pi-antigravity-bridge/logs/<YYYY-MM-DD>.ndjson (see
 	// src/daily-log.ts). Fire-and-forget, secrets redacted, old days pruned.
@@ -140,14 +147,15 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// routine disk traffic), so a warn that never reaches the UI is lost.
 	// Every warn toasts here instead; AGY_DEBUG=1 restores the full file
 	// trail. Silent exceptions: deliberate aborts (pi already shows
-	// "Operation aborted"), connection exits (the turn's own error block
-	// carries real crashes), and call-tool-fail (same-instant duplicate of
-	// round-trip-fail). No UI (headless): warn text falls back to stderr.
+	// "Operation aborted") and connection exits (the turn's own error block
+	// carries real crashes). call-tool-fail needs no exclusion here: its tier
+	// is debug or error, never warn. No UI (headless): warn text falls back
+	// to stderr.
 	const rawFileLog = fileLog.log.bind(fileLog);
 	fileLog.log = (event, data, level) => {
 		rawFileLog(event, data, level);
 		if (level !== "warn") return;
-		if (event.startsWith("abort:") || event === "connection-exited" || event === "call-tool-fail") return;
+		if (event.startsWith("abort:") || event === "connection-exited") return;
 		const d = (data ?? {}) as Record<string, unknown>;
 		let text: string;
 		if (event === "round-trip-fail") {
@@ -341,7 +349,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			{ status: outcome.status, error: outcome.error?.slice(0, 500), aborted: outcome.aborted },
 			outcome.status === "OK" ? "info" : "warn",
 		);
-		roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
+		roundTrips.failAll(FAIL_REASON_TURN_END);
 	};
 	streamDriver.onTurnEnd = onTurnEnd;
 	acpDriver.onTurnEnd = onTurnEnd;
@@ -593,18 +601,27 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			// filters below only decide what reaches the user. Bridge calls
 			// start/end at info (one record per tool call, the fragile-path
 			// skeleton); list-tools and startup chatter stay verbose.
-			const level = failures.has(s)
-				? "warn"
-				: s === "call-tool" || s === "call-tool-ok"
+			// Routine abort traffic (failAll on turn end / session shutdown
+			// answers every parked call with an error) is not a fault: debug
+			// only. Any other call-tool-fail is a real rejection (e.g. "no
+			// active antigravity turn" from a client that should not see the
+			// bridge) and lands at error tier - default mode records errors
+			// only, so this is the sole durable trace of the incident.
+			const detail = (d as { msg?: string } | undefined)?.msg ?? "";
+			const routineAbort =
+				s === "call-tool-fail" &&
+				(detail.includes(FAIL_REASON_TURN_END) || detail.includes(FAIL_REASON_SHUTDOWN));
+			const level = !failures.has(s)
+				? s === "call-tool" || s === "call-tool-ok"
 					? "info"
-					: "debug";
+					: "debug"
+				: routineAbort
+					? "debug"
+					: s === "call-tool-fail"
+						? "error"
+						: "warn";
 			fileLog.log(s, d, level);
-			// Routine abort traffic: failAll fires on turn end / session shutdown
-			// and the bridge answers every parked call with an error. Not a fault.
-			if (s === "call-tool-fail") {
-				const detail = (d as { msg?: string } | undefined)?.msg ?? "";
-				if (detail.includes("unresolved pi tool call") || detail.includes("session shut down")) return;
-			}
+			if (routineAbort) return;
 			if (!failures.has(s)) return;
 			const msg = `[antigravity-bridge mcp] ${s}${d !== undefined ? " " + JSON.stringify(d) : ""}`;
 			if (ctx.hasUI) ctx.ui.notify(msg, "warning");
@@ -708,11 +725,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		);
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
-			// Stream-json engine registration: the agy CLI discovers MCP servers
-			// from ~/.gemini/config/mcp_config.json (ACP uses session/new
-			// mcpServers instead; verified live 2026-09-07). Per-pid entry,
-			// removed at session_shutdown; stale entries swept at start.
+			// Stale entries swept at start; entries a crashed delegation left
+			// suppressed are healed here (live bridges start every session
+			// enabled).
 			sweepStaleBridgeServers();
+			setBridgeEntriesDisabled(false);
 			registerBridgeServer({
 				pid: process.pid,
 				port: r.handle.port,
@@ -816,7 +833,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const h = mcpHandle;
 		mcpHandle = null;
 		await h?.close();
-		roundTrips.failAll("antigravity session shut down");
+		roundTrips.failAll(FAIL_REASON_SHUTDOWN);
 		// "recycle", NOT "shutdown": pi fires session_shutdown on /new, /resume
 		// and /fork (docs/extensions.md session lifecycle), not only on process
 		// exit. The drivers are process-lifetime singletons; closing them with

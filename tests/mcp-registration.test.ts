@@ -11,9 +11,11 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "vitest";
 import {
+	acquireBridgeSuppression,
 	bridgeServerName,
 	mcpConfigPath,
 	registerBridgeServer,
+	setBridgeEntriesDisabled,
 	sweepStaleBridgeServers,
 	unregisterBridgeServer,
 } from "../src/mcp-registration.js";
@@ -116,4 +118,77 @@ test("sweep removes dead-pid bridge entries, keeps live ones and foreign ones", 
 test("bridgeServerName and mcpConfigPath shapes", () => {
 	assert.equal(bridgeServerName(7), "pi-bridge-7");
 	assert.equal(mcpConfigPath("/h"), path.join("/h", ".gemini", "config", "mcp_config.json"));
+});
+
+test("setBridgeEntriesDisabled flips only our entries and restores them", () => {
+	const home = tmpHome();
+	const file = cfgFile(home);
+	registerBridgeServer({ ...ENTRY, pid: 1111 }, file);
+	registerBridgeServer({ ...ENTRY, pid: 2222 }, file);
+	const seed = JSON.parse(fs.readFileSync(file, "utf8"));
+	seed.mcpServers["user-server"] = { serverUrl: "https://example.com/mcp" };
+	fs.writeFileSync(file, JSON.stringify(seed));
+
+	const off = setBridgeEntriesDisabled(true, file);
+	assert.equal(off.wrote, true);
+	assert.equal(off.changed, 2);
+	let parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+	assert.equal(parsed.mcpServers["pi-bridge-1111"].disabled, true);
+	assert.equal(parsed.mcpServers["pi-bridge-2222"].disabled, true);
+	assert.equal(parsed.mcpServers["user-server"].disabled, undefined, "foreign untouched");
+	assert.ok(parsed.mcpServers["user-server"], "foreign preserved");
+
+	// Idempotent: no change means no write.
+	const again = setBridgeEntriesDisabled(true, file);
+	assert.equal(again.wrote, false);
+	assert.equal(again.changed, 0);
+
+	const on = setBridgeEntriesDisabled(false, file);
+	assert.equal(on.wrote, true);
+	assert.equal(on.changed, 2);
+	parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+	assert.equal(parsed.mcpServers["pi-bridge-1111"].disabled, false);
+	assert.equal(parsed.mcpServers["pi-bridge-2222"].disabled, false);
+	assert.ok(parsed.mcpServers["user-server"], "foreign still preserved");
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("acquireBridgeSuppression refcounts: first acquire disables, last release restores", () => {
+	const home = tmpHome();
+	const file = cfgFile(home);
+	registerBridgeServer(ENTRY, file);
+
+	const releaseA = acquireBridgeSuppression(file);
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, true);
+
+	// Overlapping acquire: no extra write needed, and an early release must
+	// NOT restore while another holder is still active (the clobber race).
+	const releaseB = acquireBridgeSuppression(file);
+	releaseA();
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, true);
+
+	releaseB();
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, false);
+
+	// Double release is a no-op.
+	releaseA();
+	assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers["pi-bridge-4242"].disabled, false);
+	fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("setBridgeEntriesDisabled refuses corrupt config, no-ops on missing/empty", () => {
+	const home = tmpHome();
+	const file = cfgFile(home);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, "{broken");
+	const refused = setBridgeEntriesDisabled(true, file);
+	assert.equal(refused.wrote, false);
+	assert.match(refused.reason ?? "", /refusing/);
+	assert.equal(fs.readFileSync(file, "utf8"), "{broken");
+
+	// Missing file: nothing to flip, nothing to write.
+	const missing = setBridgeEntriesDisabled(false, cfgFile(tmpHome()));
+	assert.equal(missing.wrote, false);
+	assert.equal(missing.changed, 0);
+	fs.rmSync(home, { recursive: true, force: true });
 });
