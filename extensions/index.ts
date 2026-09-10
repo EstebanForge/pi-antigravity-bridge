@@ -88,6 +88,7 @@ import {
 import { mapAgyToolToNative } from "../src/native-tools.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
+import { withDialogLock } from "../src/dialog-lock.js";
 
 // Last UI seen (session_start / /agy commands). The ACP login URL arrives
 // via the driver log sink, which has no command context; the stash lets that
@@ -808,7 +809,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 								: typeof params.path === "string"
 									? params.path
 									: JSON.stringify(stripMarkerFields(params)).slice(0, 200);
-						const ok = await extCtx.ui.confirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS });
+						// Dialog lock: parallel agy tool approvals queue up instead of
+						// clobbering the live dialog (which silently loses the approval).
+						// Capture the narrowed method: TS drops the guard's narrowing
+						// inside the deferred closure.
+						const uiConfirm = extCtx.ui.confirm.bind(extCtx.ui);
+						const ok = await withDialogLock(() =>
+							uiConfirm(`agy ${tool}?`, what, { timeout: APPROVAL_PARK_MS }),
+						);
 						return ok ? { allow: true } : { allow: false, reason: `declined in pi (agy ${tool})` };
 					};
 					const handle = r.handle;

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.3] - 2026-09-10
+
+### Fixed
+
+- **Parallel agy tool approvals no longer clobber each other.** The shadow-tool `GatePolicy` asked through pi's `ui.confirm`, but pi's TUI shows ONE extension dialog at a time and an overlapping call replaces the live dialog without settling it: with several agy bash/write/edit calls in flight, approvals were silently lost (the park timeout eventually resolved them as declines). The confirm now holds the same shared cross-extension dialog lock as the pi-*-me gates (`withDialogLock`, `Symbol.for("pi-me.dialog-lock")`), so approvals queue and render in turn; the park timeout still bounds each dialog and is held inside the lock. New `src/dialog-lock.ts` module plus contract tests (FIFO order, throw-release, shared key).
+
 ## [1.5.2] - 2026-09-15
 
 ### Fixed
