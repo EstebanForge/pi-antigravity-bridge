@@ -89,3 +89,45 @@ test(
 		}
 	},
 );
+
+test(
+	"suppression releases when the spawn itself fails", 
+	{ timeout: 20_000 },
+	async () => {
+		// AGY_BIN points at a path that does not exist: spawn emits "error",
+		// the tool surfaces "failed to run agy", and the error path must still
+		// fire exactly one release (no leak on the non-clean-exit route).
+		const bin = path.join(os.tmpdir(), `agy-bin-missing-${process.pid}-${Date.now()}`);
+		fs.rmSync(bin, { force: true });
+		const prevBin = process.env.AGY_BIN;
+		process.env.AGY_BIN = bin;
+		try {
+			const tools: Array<{ execute: (id: string, params: Record<string, unknown>, signal?: unknown, onUpdate?: unknown, ctx?: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }> }> = [];
+			const fakePi = {
+				registerTool: (tool: { execute: (id: string, params: Record<string, unknown>, signal?: unknown, onUpdate?: unknown, ctx?: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }> }) =>
+					tools.push(tool),
+			} as unknown as ExtensionAPI;
+			await registerAskAntigravityTool(fakePi, []);
+
+			const before = suppressionEvents.length;
+			const start = Date.now();
+			const res = await tools[0].execute(
+				"t2",
+				{ prompt: "noop", cwd: process.cwd(), timeoutMinutes: 1 },
+				undefined,
+				undefined,
+				{},
+			);
+			const events = suppressionEvents.slice(before);
+
+			// Failed fast (spawn error, not the watchdog) and said so.
+			expect(Date.now() - start).toBeLessThan(5000);
+			expect(JSON.stringify(res)).toContain("failed to run agy");
+			expect(events.filter((e) => e.event === "acquire")).toHaveLength(1);
+			expect(events.filter((e) => e.event === "release")).toHaveLength(1);
+		} finally {
+			if (prevBin === undefined) delete process.env.AGY_BIN;
+			else process.env.AGY_BIN = prevBin;
+		}
+	},
+);

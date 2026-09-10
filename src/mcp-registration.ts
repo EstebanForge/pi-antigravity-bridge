@@ -231,8 +231,9 @@ const suppressionRefs = new Map<string, number>();
  *  (previously a same-process-only refcount raced on the shared file).
  *  Nested acquires in one process are free. Residual race: concurrent
  *  read-modify-write of the marker across processes is last-writer-wins
- *  (atomic rename, ~1ms window, accepted); a lost entry degrades to the
- *  status-quo fail-closed deny, never to a stuck-open bridge. */
+ *  (atomic rename), and a syscall-scale interleave can still briefly re-open
+ *  the bridge during a live delegation; both are bounded, self-heal at the
+ *  next release/heal, and degrade to the status-quo fail-closed deny. */
 export function acquireBridgeSuppression(opts: SuppressionOptions = {}): () => void {
 	const configPath = opts.configPath ?? mcpConfigPath();
 	const markerPath = opts.markerPath ?? suppressionMarkerPath();
@@ -243,10 +244,14 @@ export function acquireBridgeSuppression(opts: SuppressionOptions = {}): () => v
 	const refs = (suppressionRefs.get(key) ?? 0) + 1;
 	suppressionRefs.set(key, refs);
 	if (refs === 1) {
-		setBridgeEntriesDisabled(true, configPath);
+		// Marker BEFORE the config flip: a session-start heal racing between
+		// the two writes reads an empty marker and would re-enable entries for
+		// a delegation that is about to go live. Recording first shrinks that
+		// window to the config flip itself.
 		const marker = readSuppressionMarker(markerPath);
 		marker.delegators[String(pid)] = { since: now() };
 		bestEffortWriteMarker(markerPath, marker);
+		setBridgeEntriesDisabled(true, configPath);
 	}
 	let released = false;
 	return () => {
@@ -260,7 +265,11 @@ export function acquireBridgeSuppression(opts: SuppressionOptions = {}): () => v
 			delete marker.delegators[String(pid)];
 			const { kept } = pruneDelegators(marker, isAlive, now());
 			bestEffortWriteMarker(markerPath, kept);
-			if (Object.keys(kept.delegators).length === 0) {
+			// Re-read right before the flip: an acquire that raced us between
+			// the marker write and this read is already live and must keep its
+			// suppression (a stale snapshot here would re-enable over it).
+			const fresh = readSuppressionMarker(markerPath);
+			if (Object.keys(fresh.delegators).length === 0) {
 				setBridgeEntriesDisabled(false, configPath);
 			}
 		}
@@ -297,7 +306,10 @@ export function healBridgeSuppression(opts: SuppressionOptions = {}): {
 	const marker = readSuppressionMarker(markerPath);
 	const { kept, pruned } = pruneDelegators(marker, isAlive, now());
 	if (pruned.length > 0) bestEffortWriteMarker(markerPath, kept);
-	if (Object.keys(kept.delegators).length > 0) return { pruned, reEnabled: false };
+	// Decide on a FRESH read, not the pruned snapshot: an acquire that raced
+	// us after our write is already live and must keep its suppression.
+	const fresh = readSuppressionMarker(markerPath);
+	if (Object.keys(fresh.delegators).length > 0) return { pruned, reEnabled: false };
 	const flip = setBridgeEntriesDisabled(false, configPath);
 	return { pruned, reEnabled: flip.changed > 0, reason: flip.reason };
 }
