@@ -48,14 +48,6 @@ const FAMILY_DEFAULT_TIER: Record<Family, ThinkingTier> = {
 	other: "medium",
 };
 
-/** Bridge-suppression grace for a delegated `agy -p`. The shared config stays
- *  disabled for min(process close, this): agy reads it once at startup, so
- *  this bound covers that read without staying disabled for the whole run.
- *  Residual race: a provider agy respawn in ANOTHER session landing inside
- *  the window reads the entries disabled and that process lacks bridge tools
- *  until its next recycle (session start heals the file). Fail-open past the
- *  window = status-quo behavior. */
-const BRIDGE_SUPPRESS_MS = 5000;
 const TIER_RANK: Record<ThinkingTier, number> = { low: 0, medium: 1, high: 2 };
 
 // Static alias overlay for non-Gemini models agy may or may not surface.
@@ -520,30 +512,20 @@ export async function registerAskAntigravityTool(
 			const binary = process.env.AGY_BIN || "agy";
 			let out = "";
 
-			// Delegation isolation: any agy on this machine reads the global
-			// mcp_config.json, so this spawned `agy -p` would discover live
-			// pi-bridge-* entries and call tools the host bridge cannot serve
-			// outside a live provider turn ("no active antigravity turn").
-			// Delegation isolation: any agy on this machine reads the global
-			// mcp_config.json, so this spawned `agy -p` would discover live
-			// pi-bridge-* entries and call tools the host bridge cannot serve
-			// outside a live provider turn ("no active antigravity turn").
-			// Window = min(close, grace): the release fires on process close or
-			// after BRIDGE_SUPPRESS_MS, whichever lands first. Refcounted, so an
-			// overlapping delegation cannot re-enable early. A refused config
-			// fail-opens to the status quo.
-			const releaseBridge = acquireBridgeSuppression();
-			let suppressTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(
-				releaseBridge,
-				BRIDGE_SUPPRESS_MS,
-			);
-			const restoreBridge = (): void => {
-				if (suppressTimer) {
-					clearTimeout(suppressTimer);
-					suppressTimer = undefined;
-				}
-				releaseBridge();
-			};
+			// Delegation isolation: any agy on this machine discovers MCP servers
+			// from the global mcp_config.json, so this spawned `agy -p` would find
+			// live pi-bridge-* entries and call tools the host bridge cannot serve
+			// outside a live provider turn ("no active antigravity turn"). agy also
+			// WATCHES that file (ReloadMcpConfig): re-enabling mid-run pokes the live
+			// delegation to reconnect. The old 5s grace timer did exactly that -
+			// observed live 2026-09-09 as a call-tool-fail ~50s into a delegation -
+			// so the entries now stay hidden for the WHOLE delegated run. The release
+			// fires only on process close/error (cleanup + finally below); if pi
+			// itself dies first, session start heals the file
+			// (setBridgeEntriesDisabled(false) in extensions/index.ts). Refcounted,
+			// so overlapping delegations in this process cannot release each other's
+			// window early. A refused config fail-opens to the status quo.
+			const restoreBridge = acquireBridgeSuppression();
 
 			const statusInterval = onUpdate
 				? setInterval(() => {
