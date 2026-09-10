@@ -522,9 +522,10 @@ export async function registerAskAntigravityTool(
 			// so the entries now stay hidden for the WHOLE delegated run. The release
 			// fires only on process close/error (cleanup + finally below); if pi
 			// itself dies first, session start heals the file
-			// (setBridgeEntriesDisabled(false) in extensions/index.ts). Refcounted,
-			// so overlapping delegations in this process cannot release each other's
-			// window early. A refused config fail-opens to the status quo.
+			// (healBridgeSuppression in extensions/index.ts, marker-aware). Cross-
+			// process coordination rides the suppression marker in mcp-registration.
+			// Refcounted, so overlapping delegations in this process cannot release
+			// each other's window early. A refused config fail-opens to the status quo.
 			const restoreBridge = acquireBridgeSuppression();
 
 			const statusInterval = onUpdate

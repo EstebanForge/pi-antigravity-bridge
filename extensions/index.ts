@@ -72,7 +72,7 @@ import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.j
 import { startMcpServer, TOKEN_HEADER, type McpServerHandle } from "../src/mcp-server.js";
 import {
 	registerBridgeServer,
-	setBridgeEntriesDisabled,
+	healBridgeSuppression,
 	sweepStaleBridgeServers,
 	unregisterBridgeServer,
 } from "../src/mcp-registration.js";
@@ -726,10 +726,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		if (r.ok && r.handle) {
 			mcpHandle = r.handle;
 			// Stale entries swept at start; entries a crashed delegation left
-			// suppressed are healed here (live bridges start every session
-			// enabled).
+			// suppressed are healed here - but only when no live delegation is in
+			// flight anywhere (marker-aware heal). A blind re-enable used to
+			// un-hide the bridge during another session's active delegation.
 			sweepStaleBridgeServers();
-			setBridgeEntriesDisabled(false);
+			healBridgeSuppression();
 			registerBridgeServer({
 				pid: process.pid,
 				port: r.handle.port,

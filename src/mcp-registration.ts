@@ -66,20 +66,32 @@ function writeConfig(file: string, config: McpConfig): void {
 }
 
 /** Register (or refresh) the bridge's per-pid server entry. Foreign servers
- *  in the file are preserved. */
+ *  in the file are preserved.
+ *
+ *  One shared guard for delegation isolation: while ANY live delegation is
+ *  in flight anywhere on the machine (per the suppression marker), a fresh
+ *  registration lands disabled - the delegated agy must not discover a new
+ *  bridge mid-run. The last release re-enables every entry again. */
 export function registerBridgeServer(
 	entry: { pid: number; port: number; token: string; tokenHeader: string },
 	configPath: string = mcpConfigPath(),
-): { wrote: boolean; reason?: string } {
+	opts: {
+		markerPath?: string;
+		isAlive?: (pid: number) => boolean;
+		now?: () => number;
+	} = {},
+): { wrote: boolean; disabled: boolean; reason?: string } {
+	const marker = readSuppressionMarker(opts.markerPath ?? suppressionMarkerPath());
+	const disabled = hasLiveDelegator(marker, opts.isAlive ?? pidAlive, (opts.now ?? Date.now)());
 	const read = readConfig(configPath);
-	if (!read.ok) return { wrote: false, reason: read.reason };
+	if (!read.ok) return { wrote: false, disabled, reason: read.reason };
 	read.config.mcpServers[bridgeServerName(entry.pid)] = {
-		disabled: false,
+		disabled,
 		headers: { [entry.tokenHeader]: entry.token },
 		serverUrl: `http://127.0.0.1:${entry.port}/mcp`,
 	} satisfies BridgeServerEntry;
 	writeConfig(configPath, read.config);
-	return { wrote: true };
+	return { wrote: true, disabled };
 }
 
 /** Remove the bridge's per-pid server entry (close path). */
@@ -124,19 +136,118 @@ export function setBridgeEntriesDisabled(
 	return { wrote: true, changed };
 }
 
+// --- Cross-process suppression marker --------------------------------------
+
+/** Shape of the shared delegator marker (suppression.json). Keyed by pi pid;
+ *  `since` is the acquire timestamp in ms since epoch. Coordination ONLY:
+ *  the disabled flags in mcp_config.json stay the actual gate. */
+export interface SuppressionMarker {
+	delegators: Record<string, { since: number }>;
+}
+
+/** Marker path, mirroring the extensions-data convention (src/config.ts
+ *  logsDir). Lives OUTSIDE ~/.gemini so agy's watched config dir stays
+ *  untouched. */
+export function suppressionMarkerPath(home: string = os.homedir()): string {
+	return path.join(
+		home,
+		".pi",
+		"extensions-data",
+		"estebanforge",
+		"pi-antigravity-bridge",
+		"suppression.json",
+	);
+}
+
+/** A SIGKILLed pi can leave its marker entry behind, and pid reuse could
+ *  keep kill(pid,0) answering forever. The age bound caps that wedge: a
+ *  delegation never legitimately runs this long, so an entry this old is
+ *  dead regardless of what the pid probe says. */
+const DELEGATOR_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function readSuppressionMarker(file: string): SuppressionMarker {
+	try {
+		const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { delegators: {} };
+		const delegators = (parsed as SuppressionMarker).delegators;
+		if (!delegators || typeof delegators !== "object" || Array.isArray(delegators)) {
+			return { delegators: {} };
+		}
+		return { delegators };
+	} catch {
+		// Missing or corrupt marker: fail-open to empty. Never worse than the
+		// pre-marker blind re-enable; the next write replaces the file.
+		return { delegators: {} };
+	}
+}
+
+function writeSuppressionMarker(file: string, marker: SuppressionMarker): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+	const tmp = `${file}.${process.pid}.tmp`;
+	fs.writeFileSync(tmp, JSON.stringify(marker, null, 2) + "\n", { mode: 0o600 });
+	fs.renameSync(tmp, file);
+}
+
+function delegatorLive(pid: string, entry: { since?: number } | undefined, isAlive: (pid: number) => boolean, now: number): boolean {
+	const n = Number(pid);
+	const since = typeof entry?.since === "number" ? entry.since : 0;
+	return Number.isFinite(n) && n > 0 && now - since < DELEGATOR_MAX_AGE_MS && isAlive(n);
+}
+
+function pruneDelegators(
+	marker: SuppressionMarker,
+	isAlive: (pid: number) => boolean,
+	now: number,
+): { kept: SuppressionMarker; pruned: string[] } {
+	const kept: SuppressionMarker = { delegators: {} };
+	const pruned: string[] = [];
+	for (const [pid, entry] of Object.entries(marker.delegators)) {
+		if (delegatorLive(pid, entry, isAlive, now)) kept.delegators[pid] = { since: entry.since };
+		else pruned.push(pid);
+	}
+	return { kept, pruned };
+}
+
+function hasLiveDelegator(marker: SuppressionMarker, isAlive: (pid: number) => boolean, now: number): boolean {
+	return Object.entries(marker.delegators).some(([pid, entry]) => delegatorLive(pid, entry, isAlive, now));
+}
+
+function bestEffortWriteMarker(file: string, marker: SuppressionMarker): void {
+	try {
+		writeSuppressionMarker(file, marker);
+	} catch {
+		// Coordination hint only; a failed write must never break a release or
+		// a heal. The disabled flags in mcp_config.json remain the gate.
+	}
+}
+
 const suppressionRefs = new Map<string, number>();
 
 /** Reference-counted suppression for a self-spawned agy process (AskAntigravity
- *  delegation). First acquire disables every pi-bridge-* entry, last release
- *  re-enables; nested acquires are free, so overlapping delegations in one
- *  process cannot clobber each other's window. Same-process only: delegations
- *  from two pi sessions still race on the shared file - accepted, fail-open
- *  to the status-quo error. */
-export function acquireBridgeSuppression(configPath: string = mcpConfigPath()): () => void {
-	const key = path.resolve(configPath);
+ *  delegation). First acquire disables every pi-bridge-* entry AND records
+ *  this process's pid in the shared suppression marker; last release removes
+ *  it and re-enables only when no LIVE delegator remains - so two pi sessions
+ *  delegating concurrently no longer re-enable each other's entries
+ *  (previously a same-process-only refcount raced on the shared file).
+ *  Nested acquires in one process are free. Residual race: concurrent
+ *  read-modify-write of the marker across processes is last-writer-wins
+ *  (atomic rename, ~1ms window, accepted); a lost entry degrades to the
+ *  status-quo fail-closed deny, never to a stuck-open bridge. */
+export function acquireBridgeSuppression(opts: SuppressionOptions = {}): () => void {
+	const configPath = opts.configPath ?? mcpConfigPath();
+	const markerPath = opts.markerPath ?? suppressionMarkerPath();
+	const pid = opts.pid ?? process.pid;
+	const isAlive = opts.isAlive ?? pidAlive;
+	const now = opts.now ?? Date.now;
+	const key = `${path.resolve(markerPath)}\u0000${pid}`;
 	const refs = (suppressionRefs.get(key) ?? 0) + 1;
 	suppressionRefs.set(key, refs);
-	if (refs === 1) setBridgeEntriesDisabled(true, configPath);
+	if (refs === 1) {
+		setBridgeEntriesDisabled(true, configPath);
+		const marker = readSuppressionMarker(markerPath);
+		marker.delegators[String(pid)] = { since: now() };
+		bestEffortWriteMarker(markerPath, marker);
+	}
 	let released = false;
 	return () => {
 		if (released) return;
@@ -144,8 +255,51 @@ export function acquireBridgeSuppression(configPath: string = mcpConfigPath()): 
 		const left = Math.max(0, (suppressionRefs.get(key) ?? 1) - 1);
 		if (left === 0) suppressionRefs.delete(key);
 		else suppressionRefs.set(key, left);
-		if (left === 0) setBridgeEntriesDisabled(false, configPath);
+		if (left === 0) {
+			const marker = readSuppressionMarker(markerPath);
+			delete marker.delegators[String(pid)];
+			const { kept } = pruneDelegators(marker, isAlive, now());
+			bestEffortWriteMarker(markerPath, kept);
+			if (Object.keys(kept.delegators).length === 0) {
+				setBridgeEntriesDisabled(false, configPath);
+			}
+		}
 	};
+}
+
+export interface SuppressionOptions {
+	/** Global mcp_config.json path (default: the real user config). */
+	configPath?: string;
+	/** Cross-process delegator marker path (default: suppression.json in the
+	 *  bridge's extensions-data dir). */
+	markerPath?: string;
+	/** Delegator identity; defaults to this process's pid. Injectable so tests
+	 *  can simulate two sessions in one process. */
+	pid?: number;
+	isAlive?: (pid: number) => boolean;
+	now?: () => number;
+}
+
+/** Session-start heal, marker-aware. Prunes dead or stale delegators, then
+ *  re-enables the entries ONLY when no live delegator remains. A blind
+ *  re-enable here used to un-hide the bridge during another session's active
+ *  delegation - a plain session start in a second window could reproduce the
+ *  fail-closed deny this file exists to prevent. */
+export function healBridgeSuppression(opts: SuppressionOptions = {}): {
+	pruned: string[];
+	reEnabled: boolean;
+	reason?: string;
+} {
+	const configPath = opts.configPath ?? mcpConfigPath();
+	const markerPath = opts.markerPath ?? suppressionMarkerPath();
+	const isAlive = opts.isAlive ?? pidAlive;
+	const now = opts.now ?? Date.now;
+	const marker = readSuppressionMarker(markerPath);
+	const { kept, pruned } = pruneDelegators(marker, isAlive, now());
+	if (pruned.length > 0) bestEffortWriteMarker(markerPath, kept);
+	if (Object.keys(kept.delegators).length > 0) return { pruned, reEnabled: false };
+	const flip = setBridgeEntriesDisabled(false, configPath);
+	return { pruned, reEnabled: flip.changed > 0, reason: flip.reason };
 }
 
 /** Default liveness probe: can the signal be delivered? */
