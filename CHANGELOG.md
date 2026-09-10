@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.2] - 2026-09-15
+
+### Fixed
+
+- Delegation suppression now spans the whole delegated run. The 1.5.1 suppression window ended after 5 seconds, but agy watches `mcp_config.json` and hot-reloads MCP servers on every file change (`ReloadMcpConfig` in the binary): the window's rewrite poked the live delegation into reconnecting, and a delegated peer review hit the fail-closed "no active antigravity turn" deny ~50 seconds in (observed live, reproduced on demand through `AskAntigravity`). The bridge entries are now hidden until the delegated process actually closes; the release fires on process close or error only, and a regression test pins "exactly one release, at close, never on a timer" with a fake `AGY_BIN` that outlives the old grace (plus the spawn-error route).
+- Suppression is coordinated across pi processes through a shared marker file (`suppression.json` in the bridge's extensions-data dir, `{pid: since}` per live delegation, 0600/0700, atomic rename). Release and the session-start heal re-enable the entries only when no live delegator remains, so two sessions delegating concurrently - or a second pi window opening mid-delegation, which the old blind heal did unconditionally - no longer un-hide each other's entries, and a session starting mid-delegation registers its own entry disabled. Dead delegators are pruned by pid liveness with a 24h age bound against pid reuse; re-enable decisions read the marker fresh at the flip, so a racing acquire keeps its suppression. The marker is coordination only (the disabled flags in `mcp_config.json` stay the gate), lives outside agy's watched config dir, and its writes are best-effort: a lost entry in the syscall-scale read-modify-write window degrades to the status-quo fail-closed deny, and any residual interleave is bounded and self-heals at the next release or heal.
+
+### Changed
+
+- README's recursion-safety paragraph, the DEVELOPMENT regression list, and the AGENTS.md module lines describe the shipped mechanism: whole-run suppression, cross-process marker, marker-aware heal and registration guard.
+
 ## [1.5.1] - 2026-09-15
 
 ### Fixed
