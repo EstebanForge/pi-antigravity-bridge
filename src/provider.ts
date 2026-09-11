@@ -1231,6 +1231,8 @@ async function runTurnDriver(
 				effort,
 				mode: config.mode,
 				skipPermissions: config.skipPermissions,
+				timeoutMin: config.turnTimeoutMin,
+				inactivityMin: config.inactivityTimeoutMin,
 				conversationId: existing?.conversationId ?? null,
 				prompt: fullPrompt,
 				images: images.length > 0 ? images : undefined,

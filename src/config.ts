@@ -141,6 +141,26 @@ export interface AgyConfig {
 	 *  digest (per-turn) is not. Turn off for agy-native behavior (agy's own
 	 *  system prompt only). */
 	systemPrompt: boolean;
+	/** Overall cap on ONE agy turn in minutes, both engines. When it fires, the
+	 *  bridge kills the agy process mid-task ("ACP turn exceeded the Xm
+	 *  deadline" / "agy exceeded the Xm turn timeout"). The ACP server binary
+	 *  exposes no timeout flag of its own (--helpfull: debug/notices only), so
+	 *  this bridge cap is the only knob.
+	 *
+	 *  Default is TTY-aware: 0 (no cap) on an interactive pi - the user aborts
+	 *  with Esc and is the better backstop - and 20 on headless runs, where
+	 *  nobody can abort and one runaway turn blocks the drivers' serialized
+	 *  turn queue. Explicit values opt into the gate: 1..1440 valid, 0
+	 *  disables, anything else (garbage, negative, >1440) falls back to the
+	 *  TTY-aware default. The inactivity stall guard (5m silence) still bounds
+	 *  a hung server either way. Next-turn effect. Env AGY_TURN_TIMEOUT_MIN
+	 *  wins over the file. */
+	turnTimeoutMin: number;
+	/** Silence cap in minutes, both engines: no stream-json stdout / no ACP
+	 *  session/update for this long fails the turn as a stall. Default 5;
+	 *  0 disables the guard. Next-turn effect.
+	 *  Env AGY_INACTIVITY_TIMEOUT_MIN wins over the file. */
+	inactivityTimeoutMin: number;
 	/** Approval gate over agy NATIVE tool calls (create_file, run_command,
 	 *  ...). pi tools agy calls already pass through pi's gates via the G9
 	 *  round-trip; this covers the rest. Default auto (off until a
@@ -158,9 +178,33 @@ const DEFAULTS: AgyConfig = {
 	bridgeTools: "all",
 	digest: false,
 	systemPrompt: true,
+	turnTimeoutMin: 0, // placeholder: the real default is resolved per loadConfig call (defaultTurnTimeoutMin)
+	inactivityTimeoutMin: 5,
 	approvals: { gateMode: "auto", mode: "ask" },
 	acp: { bin: "", permissions: "auto", usageEstimate: "estimate" },
 };
+
+/** Hard ceiling for a free-typed turn cap: one day, in minutes. */
+export const MAX_TURN_CAP_MIN = 1440;
+
+/** TTY-aware default for the overall turn cap. An interactive user aborts
+ *  with Esc and is the better backstop; the wall clock only earns its keep
+ *  where nobody can abort (headless runs: one runaway turn also blocks the
+ *  drivers' serialized turn queue). */
+export function defaultTurnTimeoutMin(): number {
+	return process.stdout.isTTY || process.stdin.isTTY ? 0 : 20;
+}
+
+/** Explicit cap minutes: 0 keeps (disable), 1..MAX_TURN_CAP_MIN keeps;
+ *  garbage, negative, or out-of-range falls back to the caller's default.
+ *  Pass Number.NaN as the fallback to detect rejection via isNaN. */
+export function parseCapMinutes(raw: string | number | undefined, fallback: number): number {
+	if (raw === undefined || String(raw).trim() === "") return fallback;
+	const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+	if (!Number.isFinite(n)) return fallback;
+	if (n === 0) return 0;
+	return n >= 1 && n <= MAX_TURN_CAP_MIN ? n : fallback;
+}
 
 /** Load config merged over defaults. Env vars override the file when set. */
 export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
@@ -228,6 +272,16 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		? ["1", "true", "on"].includes(envSys.toLowerCase())
 		: file.systemPrompt ?? DEFAULTS.systemPrompt;
 
+	// Turn caps, minutes. Env wins over the file (same pattern as mode).
+	const turnTimeoutMin = parseCapMinutes(
+		process.env.AGY_TURN_TIMEOUT_MIN ?? file.turnTimeoutMin,
+		defaultTurnTimeoutMin(),
+	);
+	const inactivityTimeoutMin = parseCapMinutes(
+		process.env.AGY_INACTIVITY_TIMEOUT_MIN ?? file.inactivityTimeoutMin,
+		DEFAULTS.inactivityTimeoutMin,
+	);
+
 	// Approval gate (docs/TODO.md 2.5). Unknown values fall back to "auto"
 	// so a typo can never silently force the gate on.
 	const gateRaw = (process.env.AGY_APPROVALS ?? file.approvals?.gateMode ?? DEFAULTS.approvals.gateMode).toLowerCase();
@@ -268,6 +322,8 @@ export function loadConfig(configPath: string = CONFIG_PATH): AgyConfig {
 		bridgeTools,
 		digest,
 		systemPrompt,
+		turnTimeoutMin,
+		inactivityTimeoutMin,
 		approvals: { gateMode, mode: gateAskMode },
 		patchCleanupNotified: file.patchCleanupNotified === true,
 	};

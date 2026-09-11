@@ -97,3 +97,29 @@ describe("stream-json driver shutdown latch", () => {
 		assert.match(outcome.error ?? "", /recycled mid-turn \(session switch\)/);
 	});
 });
+
+describe("stream-json driver zero timeouts disable both caps", () => {
+	test("timeoutMin/inactivityMin 0 keep a hung turn running", async () => {
+		process.env.PATH = `${FAKE_BIN_DIR}:${process.env.PATH}`;
+		const driver = new StreamDriver();
+		const handle = await driver.run({
+			prompt: "HANG",
+			cwd: process.cwd(),
+			model: "gemini-3.8-flash",
+			mode: "accept-edits",
+			skipPermissions: true,
+			timeoutMin: 0,
+			inactivityMin: 0,
+		});
+		// A missing guard arms setTimeout(fn, 0) and settles the turn as ERROR
+		// inside this window; the skipped caps leave it running.
+		const raced = await Promise.race([
+			handle.outcome.then((o) => o.status),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 400)),
+		]);
+		assert.equal(raced, "running");
+		await driver.close("shutdown");
+		const outcome = await handle.outcome;
+		assert.equal(outcome.status, "ERROR");
+	});
+});

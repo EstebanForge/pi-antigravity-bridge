@@ -65,7 +65,7 @@ import { runAcpAuth } from "../src/acp/auth.js";
 import { setupAuthUrlCapture } from "../src/acp/browser-capture.js";
 import { ensureAcpReady, inspectAcpSetup } from "../src/acp/setup.js";
 import type { TurnDriver, TurnOutcome } from "../src/driver-types.js";
-import { CONFIG_PATH, loadConfig, logsDir, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
+import { CONFIG_PATH, loadConfig, logsDir, MAX_TURN_CAP_MIN, parseCapMinutes, saveConfig, type AgyMode, type BridgeTools, type Engine, type ThinkingTier } from "../src/config.js";
 import { agyMissingMessage, isAgyInstalled, savedEngineMessage, showEnginePicker, shouldOfferEnginePicker } from "../src/engine-picker.js";
 import { createDailyLogger, type DailyLogger } from "../src/daily-log.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
@@ -905,6 +905,7 @@ interface PendingConfig {
 	skipPermissions?: boolean;
 	defaultModel?: string;
 	defaultThinking?: ThinkingTier;
+	turnTimeoutMin?: number;
 	askTool?: boolean;
 	bridgeTools?: BridgeTools;
 	digest?: boolean;
@@ -941,7 +942,7 @@ function statusText(ctx: AgyCommandCtx): string {
 function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 	pi.registerCommand("agy", {
 		description:
-			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|acp-bin <path|auto>|patch-cleanup|clear]",
+			"Antigravity provider: status, doctor, settings picker, clear sessions. Usage: /agy [status|doctor|auth|auth-manual|engine stream-json|acp|mode plan|accept-edits|permissions on|off|ask on|off|model <alias>|thinking low|medium|high|bridge all|mcp|none|digest on|off|system-prompt on|off|timeout <1-1440|off>|acp-bin <path|auto>|patch-cleanup|clear]",
 		handler: async (args, cmdCtx: ExtensionCommandContext) => {
 			const ui = cmdCtx.ui;
 			if (ui) activeUi = ui;
@@ -973,6 +974,33 @@ function registerAgyCommand(pi: ExtensionAPI, ctx: AgyCommandCtx): void {
 						? `Restored ${r.restoredFiles.length} file(s) from ${r.backupDir}. The running session is unaffected; the files on disk are clean again.`
 						: `patch-cleanup failed: ${r.reason}`,
 					r.ok ? "info" : "error",
+				);
+				return;
+			}
+			if (sub === "timeout") {
+				// Free-type entry point for the turn cap (the TUI picker only offers
+				// presets). Same sanity rules as loadConfig: 1..MAX valid, off/0
+				// disables, anything else rejected with the valid range.
+				const live = loadConfig();
+				const cur = live.turnTimeoutMin;
+				if (!val) {
+					ui?.notify(
+						`Turn time cap: ${cur === 0 ? "off (no cap)" : `${cur}m`}. Usage: /agy timeout <1-${MAX_TURN_CAP_MIN}|off>. Default: off on an interactive pi, 20m headless.`,
+						"info",
+					);
+					return;
+				}
+				const parsed = val === "off" ? 0 : parseCapMinutes(val, Number.NaN);
+				if (Number.isNaN(parsed)) {
+					ui?.notify(`Invalid turn cap "${val}". Use 1-${MAX_TURN_CAP_MIN} minutes, or off/0 to disable.`, "error");
+					return;
+				}
+				saveConfig({ turnTimeoutMin: parsed });
+				ui?.notify(
+					parsed === 0
+						? `Turn time cap disabled. The inactivity stall guard (${live.inactivityTimeoutMin}m silence) still applies.`
+						: `Turn time cap set to ${parsed}m. Takes effect next turn.`,
+					"info",
 				);
 				return;
 			}
@@ -1355,6 +1383,14 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			values: ["all", "mcp", "none"],
 		},
 		{
+			id: "turn-cap",
+			label: "Turn time cap",
+			description:
+				"Max minutes for ONE agy turn before the bridge kills it. Default: no cap on an interactive pi (abort with Esc), 20 headless. 0 disables; 1-1440 enables the gate. Free type via /agy timeout <minutes|off> or config.json. Takes effect next turn.",
+			currentValue: String(config.turnTimeoutMin),
+			values: ["0", "1", "5", "10", "15", "30", "60", "120", "360", "720", "1440"],
+		},
+		{
 			id: "digest",
 			label: "Context digest",
 			description:
@@ -1394,6 +1430,8 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 					pending.askTool = newValue === "on";
 				} else if (id === "bridge") {
 					pending.bridgeTools = newValue as BridgeTools;
+				} else if (id === "turn-cap") {
+					pending.turnTimeoutMin = Number(newValue);
 				} else if (id === "digest") {
 					pending.digest = newValue === "on";
 				} else if (id === "system-prompt") {
@@ -1441,6 +1479,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			pending.bridgeTools !== undefined ? `bridge=${next.bridgeTools}` : null,
 			pending.digest !== undefined ? `digest=${next.digest ? "on" : "off"}` : null,
 			pending.systemPrompt !== undefined ? `system-prompt=${next.systemPrompt ? "on" : "off"}` : null,
+			pending.turnTimeoutMin !== undefined ? `turn cap=${next.turnTimeoutMin === 0 ? "off" : `${next.turnTimeoutMin}m`}` : null,
 		]
 			.filter(Boolean)
 			.join(", ");

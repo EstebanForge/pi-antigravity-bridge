@@ -141,6 +141,34 @@ test("streamSimple forwards image blocks from the user message to the driver", a
 	assert.deepEqual(seen.opts?.images, [{ data: "aGVsbG8=", mimeType: "image/png" }]);
 });
 
+test("streamSimple forwards the config turn caps to the driver", async () => {
+	const prevTurn = process.env.AGY_TURN_TIMEOUT_MIN;
+	const prevIdle = process.env.AGY_INACTIVITY_TIMEOUT_MIN;
+	try {
+		process.env.AGY_TURN_TIMEOUT_MIN = "45";
+		process.env.AGY_INACTIVITY_TIMEOUT_MIN = "5";
+		const entry = { full: "gemini-3.6-flash", id: "gemini-flash" };
+		const opts = await captureTurn(entry, undefined);
+		assert.equal(opts?.timeoutMin, 45);
+		assert.equal(opts?.inactivityMin, 5);
+		// 0 = disable: the value must reach the driver verbatim, not fall back
+		// to the driver-side default of 10.
+		process.env.AGY_TURN_TIMEOUT_MIN = "0";
+		const disabled = await captureTurn(entry, undefined);
+		assert.equal(disabled?.timeoutMin, 0);
+		// Unset: the TTY-aware default resolves (vitest stdio is piped: 20).
+		delete process.env.AGY_TURN_TIMEOUT_MIN;
+		const fallback = await captureTurn(entry, undefined);
+		assert.equal(fallback?.timeoutMin, 20);
+		assert.equal(fallback?.inactivityMin, 5);
+	} finally {
+		if (prevTurn === undefined) delete process.env.AGY_TURN_TIMEOUT_MIN;
+		else process.env.AGY_TURN_TIMEOUT_MIN = prevTurn;
+		if (prevIdle === undefined) delete process.env.AGY_INACTIVITY_TIMEOUT_MIN;
+		else process.env.AGY_INACTIVITY_TIMEOUT_MIN = prevIdle;
+	}
+});
+
 /** Context with a prior foreign-provider assistant turn, so the G1 digest
  *  has real content to deliver (buildContextDigest skips the current prompt). */
 function digestContext(): Context {

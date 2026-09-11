@@ -611,6 +611,9 @@ export class AcpDriver implements TurnDriver {
 	}
 
 	#startOverallTimer(turn: ActiveTurn, ms: number): void {
+		// 0 disables the deadline (config turnTimeoutMin: 0). setTimeout(fn, 0)
+		// would fire instantly and kill every turn, guard or not.
+		if (ms <= 0) return;
 		// The deadline lives HERE, not just in the callers: the running branch
 		// of #armOverall never assigns it, and #pauseOverall keys off
 		// `deadline !== null` to do anything at all. Without this line every
@@ -649,13 +652,16 @@ export class AcpDriver implements TurnDriver {
 	#armIdle(turn: ActiveTurn): void {
 		if (turn.idleTimer) clearTimeout(turn.idleTimer);
 		if (turn.parks > 0) return; // parked: idle timer resumes on unpark
+		const idleMs = this.#idleBudgetMs(turn);
+		// 0 disables the stall guard (config inactivityTimeoutMin: 0).
+		if (idleMs <= 0) return;
 		turn.idleTimer = setTimeout(() => {
 			if (turn.closed) return;
 			this.#log("stall", { sessionId: turn.sessionId });
 			this.#conn?.abortAll("idle stall");
 			this.#conn?.kill();
-			this.#failTurn(turn, `ACP stalled for ${(this.#idleBudgetMs(turn) / 60_000) | 0}m with no output`);
-		}, this.#idleBudgetMs(turn));
+			this.#failTurn(turn, `ACP stalled for ${(idleMs / 60_000) | 0}m with no output`);
+		}, idleMs);
 	}
 
 	#clearIdle(turn: ActiveTurn): void {

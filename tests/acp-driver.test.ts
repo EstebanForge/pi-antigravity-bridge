@@ -283,6 +283,43 @@ describe("acp/driver timers", () => {
 		assert.equal(run.driver.state, "dead");
 	});
 
+	test("timeoutMin/inactivityMin 0 disable both caps on a silent server", async () => {
+		// config turnTimeoutMin/inactivityTimeoutMin: 0 = no caps. A missing
+		// guard arms setTimeout(fn, 0), which settles the turn as ERROR inside
+		// this window; the skipped arm leaves it running until the abort.
+		const dir = tmpDir();
+		const driver = new AcpDriver({
+			bin: process.execPath,
+			binArgs: [FAKE_SERVER],
+			extraEnv: { ACP_FAKE_SCENARIO: "slow", ACP_FAKE_LOG: path.join(dir, "log.jsonl") },
+			log: () => {},
+		});
+		cleanups.push(() => {
+			void driver.close("shutdown");
+			fs.rmSync(dir, { recursive: true, force: true });
+		});
+		const controller = new AbortController();
+		const handle = await driver.run({
+			cwd: dir,
+			model: "gemini-3.8-flash",
+			effort: "low",
+			mode: "accept-edits",
+			skipPermissions: true,
+			prompt: "hang",
+			timeoutMin: 0,
+			inactivityMin: 0,
+			signal: controller.signal,
+		});
+		const raced = await Promise.race([
+			handle.outcome.then((o) => o.status),
+			new Promise<"running">((r) => setTimeout(() => r("running"), 400)),
+		]);
+		assert.equal(raced, "running");
+		controller.abort();
+		const outcome = await handle.outcome;
+		assert.equal(outcome.aborted, true);
+	});
+
 	test("stale connection's late exit never fails the replacement turn", async () => {
 		// Live race, hit during the parity run: RC01's signal handler intercepts
 		// SIGTERM and the killed server outlives its replacement by seconds.

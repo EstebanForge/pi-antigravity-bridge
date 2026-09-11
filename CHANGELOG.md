@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-09-14
+
+### Added
+
+- Turn-cap knobs (`turnTimeoutMin`, `inactivityTimeoutMin`) with TTY-aware defaults. The "ACP turn exceeded the 10m deadline" error was the bridge's own overall turn cap - not a Google server limit: the ACP server binary exposes no timeout flag (`--helpfull` lists only debug/notices), and the stream-json engine carried the identical 10m cap ("agy exceeded the 10m turn timeout"). The cap never refreshed on activity, so healthy long turns died mid-task at exactly 10m. The default is now `0` (no cap) on an interactive pi - the user aborts with Esc and is the better backstop - and `20` minutes headless, where nobody can abort and one runaway turn blocks the drivers' serialized turn queue. Opt into a timed gate with 1-1440 minutes: free type via `config.json` or the new `/agy timeout <1-1440|off>` subcommand, or pick a preset (0/1/5/10/15/30/60/120/360/720/1440) in the `/agy` settings picker; `0` disables explicitly; garbage, negative, or >1440 falls back to the TTY-aware default. The 5m inactivity stall guard is unchanged, so a silent hung server still dies. Env `AGY_TURN_TIMEOUT_MIN` / `AGY_INACTIVITY_TIMEOUT_MIN` win over the file.
+
 ## [1.5.3] - 2026-09-10
 
 ### Fixed

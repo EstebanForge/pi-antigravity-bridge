@@ -36,9 +36,9 @@ export interface DriverTurnRequest extends DriverProfile {
 	contextBlock?: { uri: string; text: string };
 	signal?: AbortSignal;
 	/** Overall turn cap in minutes (default 10). Fractional values are valid
-	 *  (tests use sub-minute caps). */
+	 *  (tests use sub-minute caps). 0 disables the cap. */
 	timeoutMin?: number;
-	/** Stdout-inactivity cap in minutes (default 5). */
+	/** Stdout-inactivity cap in minutes (default 5). 0 disables the cap. */
 	inactivityMin?: number;
 }
 

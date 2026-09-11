@@ -165,12 +165,15 @@ export class StreamDriver implements TurnDriver {
 		if (turn.parks > 0) turn.parks -= 1;
 		if (turn.parks === 0 && !turn.idleTimer) {
 			const idleMin = turn.request.inactivityMin ?? 5;
-			turn.idleTimer = setTimeout(() => {
-				if (turn.closed) return;
-				this.#log(`stall:${turn.id}`);
-				this.#killChild();
-				this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
-			}, idleMin * 60_000);
+			// 0 disables the stall guard (config inactivityTimeoutMin: 0).
+			if (idleMin > 0) {
+				turn.idleTimer = setTimeout(() => {
+					if (turn.closed) return;
+					this.#log(`stall:${turn.id}`);
+					this.#killChild();
+					this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
+				}, idleMin * 60_000);
+			}
 		}
 	}
 
@@ -295,20 +298,26 @@ export class StreamDriver implements TurnDriver {
 	}
 
 	#armTimers(turn: ActiveTurn): void {
+		// 0 disables a cap (config turnTimeoutMin / inactivityTimeoutMin: 0):
+		// setTimeout(fn, 0) would fire instantly and kill every turn.
 		const totalMin = turn.request.timeoutMin ?? 10;
-		turn.overallTimer = setTimeout(() => {
-			if (turn.closed) return;
-			this.#log(`timeout:${turn.id}`);
-			this.#killChild();
-			this.#failTurn(turn, `agy exceeded the ${totalMin}m turn timeout`);
-		}, totalMin * 60_000);
+		if (totalMin > 0) {
+			turn.overallTimer = setTimeout(() => {
+				if (turn.closed) return;
+				this.#log(`timeout:${turn.id}`);
+				this.#killChild();
+				this.#failTurn(turn, `agy exceeded the ${totalMin}m turn timeout`);
+			}, totalMin * 60_000);
+		}
 		const idleMin = turn.request.inactivityMin ?? 5;
-		turn.idleTimer = setTimeout(() => {
-			if (turn.closed) return;
-			this.#log(`stall:${turn.id}`);
-			this.#killChild();
-			this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
-		}, idleMin * 60_000);
+		if (idleMin > 0) {
+			turn.idleTimer = setTimeout(() => {
+				if (turn.closed) return;
+				this.#log(`stall:${turn.id}`);
+				this.#killChild();
+				this.#failTurn(turn, `agy stalled for ${idleMin}m with no output`);
+			}, idleMin * 60_000);
+		}
 	}
 
 	#start(request: DriverTurnRequest): void {
